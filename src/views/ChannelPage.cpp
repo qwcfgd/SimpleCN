@@ -1,4 +1,9 @@
 #include "ChannelPage.h"
+#include "SignalTransmitPage.h"
+#include "UdsDiagnosticPage.h"
+#include "UdsSettingsDialog.h"
+#include <QTabWidget>
+#include <QTabBar>
 #include <QBoxLayout>
 #include <QGridLayout>
 #include <QFrame>
@@ -26,6 +31,8 @@
 #include <QFormLayout>
 #include <QScopedValueRollback>
 #include <QScreen>
+#include <QResizeEvent>
+#include <QtMath>
 #include "protocol/FlashJob.h"
 namespace host {
 static QLabel *label(const QString &text,QWidget *parent=nullptr){auto w=new QLabel(text,parent);w->setTextFormat(Qt::PlainText);return w;}
@@ -40,9 +47,9 @@ static QSpinBox *spin(const char *name,int low,int high) {
 }
 ChannelPage::ChannelPage(ChannelViewModel *vm,QWidget *parent):QWidget(parent),m_vm(vm) {
     setObjectName(vm->settings().bus==communication::Bus::Lin?"linPage":"canPage");
-    build();loadSettings();refreshHardware();render();
+    build();loadSettings();render();
     connect(vm,&ChannelViewModel::changed,this,&ChannelPage::render);
-    connect(vm,&ChannelViewModel::hardwareListChanged,this,&ChannelPage::refreshHardware);
+
     connect(vm,&ChannelViewModel::settingsChanged,this,[this](){if(!m_applying)loadSettings();});
     connect(vm,&ChannelViewModel::logAdded,m_log,&QPlainTextEdit::appendPlainText);
     connect(vm,&ChannelViewModel::logsCleared,m_log,&QPlainTextEdit::clear);
@@ -52,7 +59,8 @@ ChannelPage::ChannelPage(ChannelViewModel *vm,QWidget *parent):QWidget(parent),m
 }
 void ChannelPage::build() {
     const bool lin=m_vm->settings().bus==communication::Bus::Lin;
-    auto root=new QVBoxLayout(this);root->setContentsMargins(0,6,0,0);root->setSpacing(8);
+    auto root=new QVBoxLayout(this);root->setContentsMargins(6,0,0,0);root->setSpacing(0);
+    m_regions=new QSplitter(Qt::Vertical);m_regions->setObjectName("channelRegions");m_regions->setChildrenCollapsible(false);
     auto hardwareCard=new QFrame;hardwareCard->setProperty("card",true);
     auto hardwareLayout=new QVBoxLayout(hardwareCard);hardwareLayout->setContentsMargins(12,6,12,6);hardwareLayout->setSpacing(6);
     auto status=new QHBoxLayout;
@@ -62,42 +70,18 @@ void ChannelPage::build() {
     status->addWidget(m_state);status->addWidget(m_busHealth,1);
     status->addWidget(label("设备通道"));status->addWidget(m_device);status->addSpacing(14);status->addWidget(label("硬件通道"));status->addWidget(m_handle);
     hardwareLayout->addLayout(status);
-    auto row=new QHBoxLayout;row->setSpacing(8);
-    m_parameters=new QWidget;auto grid=new QGridLayout(m_parameters);grid->setContentsMargins(0,0,0,0);grid->setHorizontalSpacing(8);grid->setVerticalSpacing(3);
-    m_mode=new QComboBox;m_mode->setObjectName("modeCombo");m_mode->addItems({ChannelPageInitialValues::onlineLabel,ChannelPageInitialValues::simulationLabel});
-    m_hardware=new QComboBox;m_hardware->setObjectName("hardwareCombo");
-    m_hardware->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);m_hardware->setMinimumContentsLength(12);
-    m_software=new QComboBox;m_software->setObjectName("softwareChannelCombo");
-    m_software->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);m_software->setMinimumContentsLength(8);
-    m_software->setToolTip("将本软件通道绑定到所选设备的可用硬件通道；其他页面已占用的通道不再列出。");
-    m_bitrate=new QComboBox;m_bitrate->setObjectName("bitrateCombo");
-    const QList<int> rates=lin?QList<int>{19200,9600,10400,20000,2400,4800}:QList<int>{1000000,800000,500000,250000,125000,100000,50000,20000,10000,5000};
-    for(int rate:rates)m_bitrate->addItem(QString::number(rate)+" bit/s",rate);
-    QStringList names={"硬件选择","软件通道","波特率","运行模式"};
-    QList<QComboBox*> combos={m_hardware,m_software,m_bitrate,m_mode};
-    for(int i=0;i<4;++i){grid->addWidget(label(names[i]),0,i);grid->addWidget(combos[i],1,i);}
-    grid->setColumnStretch(0,3);grid->setColumnStretch(1,2);
-    row->addWidget(m_parameters,1);
-    auto actions=new QVBoxLayout;actions->setSpacing(4);
-    m_reconnect=new QCheckBox("自动重连");m_reconnect->setObjectName("autoReconnect");
-    m_reconnect->setToolTip("仅在硬件提供可靠持续身份时启用；手动断开会停止重连。");
-    m_protocol=new QPushButton("通道设置…");m_protocol->setObjectName("protocolSettings");
-    status->addSpacing(12);status->addWidget(m_reconnect);status->addWidget(m_protocol);actions->addStretch();
-    auto connection=new QHBoxLayout;
-    m_refresh=new QPushButton("刷新");m_refresh->setObjectName("refreshButton");
-    m_connect=new QPushButton("连接");m_connect->setObjectName("connectButton");m_connect->setProperty("primary",true);
-    connection->addWidget(m_refresh);connection->addWidget(m_connect);actions->addLayout(connection);
-    row->addLayout(actions);hardwareLayout->addLayout(row);root->addWidget(hardwareCard);
+    m_protocol=new QPushButton("参数配置…");m_protocol->setObjectName("downloadParameters");
+    m_connect=new QPushButton("连接");m_connect->setObjectName("connectButton");m_connect->setProperty("primary",true);status->addWidget(m_connect);
+    root->addWidget(hardwareCard);root->addWidget(m_regions,1);
 
     auto download=new QFrame;download->setObjectName("downloadPanel");download->setProperty("card",true);download->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Minimum);
-    auto downloadLayout=new QHBoxLayout(download);downloadLayout->setContentsMargins(12,8,12,8);downloadLayout->setSpacing(16);
+    auto downloadLayout=new QHBoxLayout(download);downloadLayout->setContentsMargins(12,8,12,8);downloadLayout->setSpacing(6);
     m_images=new QWidget;m_images->setObjectName("imageRegion");
     auto imageGrid=new QGridLayout(m_images);imageGrid->setContentsMargins(0,0,0,0);imageGrid->setHorizontalSpacing(6);imageGrid->setVerticalSpacing(3);
     auto heading=label("下载镜像");heading->setObjectName("sectionTitle");
     m_downloadSettings=new QPushButton("下载设置…");m_downloadSettings->setObjectName("downloadSettings");
-    m_downloadSettings->setStyleSheet("QPushButton { padding:2px 8px;min-height:16px;font-size:11px; }");
     auto imageHeader=new QHBoxLayout;imageHeader->addWidget(heading);imageHeader->addStretch();
-    imageHeader->addWidget(m_downloadSettings);imageGrid->addLayout(imageHeader,0,0,1,3);
+    imageHeader->addWidget(m_protocol);imageHeader->addWidget(m_downloadSettings);imageGrid->addLayout(imageHeader,0,0,1,3);
     connect(m_downloadSettings,&QPushButton::clicked,this,&ChannelPage::editDownload);
     m_flashPath=edit("flashPath",32767);m_flashPath->setPlaceholderText("Flash Driver · BIN / HEX（可选）");
     m_appPath=edit("applicationPath",32767);m_appPath->setPlaceholderText("Application · BIN / HEX");
@@ -116,23 +100,37 @@ void ChannelPage::build() {
     // Image addresses live in the settings dialog; image selection and task controls stay visible.
     for(auto address:{m_flashAddress,m_appAddress}){address->setParent(this);address->hide();}
     imageGrid->setColumnStretch(1,1);
-    downloadLayout->addWidget(m_images,3);
-    auto divider=new QFrame;divider->setFrameShape(QFrame::VLine);divider->setStyleSheet("color:#E3EAF1");downloadLayout->addWidget(divider);
+    auto downloadSplit=new QSplitter(Qt::Horizontal);downloadSplit->setObjectName("downloadSplit");downloadSplit->setChildrenCollapsible(false);
+    downloadLayout->addWidget(downloadSplit);downloadSplit->addWidget(m_images);
     auto taskRegion=new QWidget;taskRegion->setObjectName("taskRegion");
-    auto runLayout=new QVBoxLayout(taskRegion);runLayout->setContentsMargins(0,0,0,0);runLayout->setSpacing(7);
-    auto taskHeading=new QHBoxLayout;auto title=label("下载任务");title->setObjectName("sectionTitle");taskHeading->addWidget(title,1);
-    m_elapsedText=label("0.0 s");m_elapsedText->setObjectName("muted");taskHeading->addWidget(m_elapsedText);runLayout->addLayout(taskHeading);
-    m_task=label("等待开始");m_task->setWordWrap(true);m_task->setObjectName("taskText");runLayout->addWidget(m_task);
-    m_progress=new QProgressBar;m_progress->setObjectName("downloadProgress");m_progress->setRange(0,100);m_progress->setValue(0);m_progress->setMinimumHeight(22);runLayout->addWidget(m_progress);
-    auto progressRow=new QHBoxLayout;
+    auto runLayout=new QVBoxLayout(taskRegion);runLayout->setContentsMargins(8,0,0,0);runLayout->setSpacing(8);
+    auto taskHeading=new QHBoxLayout;auto title=label("下载任务");title->setObjectName("sectionTitle");taskHeading->addWidget(title);
+    // Equal flexible bands keep the progress bar vertically centered while
+    // keeping the title at the top and the status/actions directly below it.
+    auto upperBand=new QVBoxLayout;upperBand->setSpacing(0);upperBand->addLayout(taskHeading);upperBand->addStretch();runLayout->addLayout(upperBand,1);
+    m_progress=new QProgressBar;m_progress->setObjectName("downloadProgress");m_progress->setRange(0,100);m_progress->setValue(0);m_progress->setMinimumHeight(22);
+    runLayout->addWidget(m_progress);
+    auto footer=new QHBoxLayout;footer->setSpacing(8);auto statusLayout=new QVBoxLayout;statusLayout->setSpacing(3);auto statusRow=new QHBoxLayout;statusRow->setSpacing(6);
+    auto elapsedLabel=label("总耗时");elapsedLabel->setObjectName("muted");statusRow->addWidget(elapsedLabel);m_elapsedText=label("0.0 s");m_elapsedText->setObjectName("muted");statusRow->addWidget(m_elapsedText);
+    m_task=label("等待开始");m_task->setWordWrap(true);m_task->setObjectName("taskText");statusRow->addWidget(m_task,1);statusLayout->addLayout(statusRow);
+    m_hint=label("");m_hint->setObjectName("muted");m_hint->setWordWrap(true);statusLayout->addWidget(m_hint);
+    m_error=label("");m_error->setObjectName("inlineError");m_error->setWordWrap(true);m_error->hide();statusLayout->addWidget(m_error);
+    footer->addLayout(statusLayout,1);
     m_start=new QPushButton("开始下载");m_start->setObjectName("startButton");m_start->setProperty("primary",true);
-    m_cancel=new QPushButton("取消");m_cancel->setObjectName("cancelButton");progressRow->addWidget(m_start,1);progressRow->addWidget(m_cancel);runLayout->addLayout(progressRow);
-    m_hint=label("");m_hint->setObjectName("muted");m_hint->setWordWrap(true);runLayout->addWidget(m_hint);
-    m_error=label("");m_error->setObjectName("inlineError");m_error->setWordWrap(true);m_error->hide();runLayout->addWidget(m_error);runLayout->addStretch();
-    downloadLayout->addWidget(taskRegion,2);root->addWidget(download);
+    m_cancel=new QPushButton("取消");m_cancel->setObjectName("cancelButton");footer->addWidget(m_start);footer->addWidget(m_cancel);
+    auto lowerBand=new QVBoxLayout;lowerBand->setSpacing(0);lowerBand->addLayout(footer);lowerBand->addStretch();runLayout->addLayout(lowerBand,1);
+    downloadSplit->addWidget(taskRegion);downloadSplit->setSizes({600,400});
+    auto tasks=new QTabWidget;m_tasks=tasks;tasks->setObjectName("taskPages");tasks->setDocumentMode(true);
+    tasks->tabBar()->setObjectName("taskTabBar");
+    tasks->addTab(download,"下载");
+    auto diagnosticScroll=new QScrollArea;diagnosticScroll->setObjectName("udsScrollArea");diagnosticScroll->setWidgetResizable(true);
+    diagnosticScroll->setFrameShape(QFrame::NoFrame);diagnosticScroll->setWidget(new UdsDiagnosticPage(m_vm));
+    tasks->addTab(diagnosticScroll,"UDS 诊断");
+    tasks->addTab(new SignalTransmitPage(m_vm->signalTransmission()),"信号发送");m_regions->addWidget(tasks);
 
-    auto outputs=new QSplitter(Qt::Horizontal);outputs->setChildrenCollapsible(false);outputs->setMinimumHeight(142);
+    auto outputs=new QSplitter(Qt::Horizontal);m_outputs=outputs;outputs->setObjectName("outputSplit");outputs->setChildrenCollapsible(false);outputs->setMinimumHeight(150);
     QVBoxLayout *frameLayout,*logLayout;auto frameCard=card("报文监视",frameLayout);auto logCard=card("运行日志",logLayout);
+    frameCard->setObjectName("frameMonitorPanel");logCard->setObjectName("eventLogPanel");
     auto frameActions=new QHBoxLayout;auto filter=edit("frameFilter",120);filter->setPlaceholderText("筛选 ID、方向、数据或状态");
     m_count=label("0 条");m_count->setObjectName("muted");
     auto clear=new QPushButton("清空");clear->setObjectName("clearFrames");
@@ -147,16 +145,18 @@ void ChannelPage::build() {
     m_table->verticalHeader()->hide();m_table->verticalHeader()->setDefaultSectionSize(27);
     auto proxy=new QSortFilterProxyModel(this);proxy->setSourceModel(m_vm->frames());proxy->setFilterKeyColumn(-1);proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
     m_table->setModel(proxy);m_table->setShowGrid(false);m_table->horizontalHeader()->setStretchLastSection(true);
-    const QList<int> widths={100,105,90,70,90,46,205,120};for(int i=0;i<widths.size();++i)m_table->setColumnWidth(i,widths[i]);
+    const QList<int> widths={90,75,95,65,45,90,36,205,120};for(int i=0;i<widths.size();++i)m_table->setColumnWidth(i,widths[i]);
     frameLayout->addWidget(m_table,1);
     auto logActions=new QHBoxLayout;auto clearLog=new QPushButton("清空");auto exportLog=new QPushButton("导出");
     logActions->addWidget(label(QString("最近 %1 条事件").arg(ChannelPageInitialValues::logCapacity)),1);logActions->addWidget(clearLog);logActions->addWidget(exportLog);logLayout->addLayout(logActions);
     m_log=new QPlainTextEdit;m_log->setObjectName("eventLog");m_log->setReadOnly(true);m_log->setMaximumBlockCount(ChannelPageInitialValues::logCapacity);
     m_log->setPlaceholderText("连接变化、扫描和任务结果将在这里显示。");logLayout->addWidget(m_log);
     frameCard->setMinimumWidth(510);logCard->setMinimumWidth(210);outputs->addWidget(frameCard);outputs->addWidget(logCard);outputs->setSizes({850,330});
-    root->addWidget(outputs,1);
+    m_regions->addWidget(outputs);m_regions->setStretchFactor(0,0);m_regions->setStretchFactor(1,1);
+    connect(tasks,&QTabWidget::currentChanged,this,[this]{updateRegionSizes();});
+    connect(m_regions,&QSplitter::splitterMoved,this,[this]{const auto sizes=m_regions->sizes();const int total=sizes.value(0)+sizes.value(1);if(total>0)(m_tasks->currentIndex()==2?m_signalRatio:m_tasks->currentIndex()==1?m_udsRatio:m_downloadRatio)=double(sizes[0])/total;});
+    QTimer::singleShot(0,this,[this]{updateRegionSizes();});
     connect(m_connect,&QPushButton::clicked,m_vm,&ChannelViewModel::toggleConnection);
-    connect(m_refresh,&QPushButton::clicked,m_vm,&ChannelViewModel::refresh);
     connect(m_start,&QPushButton::clicked,m_vm,&ChannelViewModel::start);
     connect(m_cancel,&QPushButton::clicked,m_vm,&ChannelViewModel::cancel);
     connect(m_scan,&QPushButton::clicked,m_vm,&ChannelViewModel::scanHeaders);
@@ -171,119 +171,36 @@ void ChannelPage::build() {
     connect(proxy,&QAbstractItemModel::rowsRemoved,this,count);connect(proxy,&QAbstractItemModel::modelReset,this,count);
     for(auto e:{m_flashPath,m_appPath,m_flashAddress,m_appAddress})
         connect(e,&QLineEdit::textChanged,this,&ChannelPage::applyForm);
-    for(auto c:{m_reconnect,m_rxdEnabled})connect(c,&QCheckBox::toggled,this,&ChannelPage::applyForm);
-    for(auto c:{m_mode,m_software,m_bitrate})connect(c,qOverload<int>(&QComboBox::currentIndexChanged),this,&ChannelPage::applyForm);
-    connect(m_hardware,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](){if(!m_loading && !m_refreshing)refreshPorts(true);});
+    connect(m_rxdEnabled,&QCheckBox::toggled,this,&ChannelPage::applyForm);
+}
+void ChannelPage::updateRegionSizes(){
+    if(!m_outputs||!m_tasks)return;
+    const bool uds=m_tasks->currentIndex()==1;
+    m_outputs->setMinimumHeight(uds?qMax(150,qCeil(window()->height()*0.30)):150);
+    const int total=qMax(1,m_regions->height()-m_regions->handleWidth());
+    const int top=qRound(total*(m_tasks->currentIndex()==2?m_signalRatio:uds?m_udsRatio:m_downloadRatio));
+    m_regions->setSizes({top,total-top});
+}
+void ChannelPage::resizeEvent(QResizeEvent *event){
+    QWidget::resizeEvent(event);
+    updateRegionSizes();
 }
 void ChannelPage::loadSettings() {
     m_loading=true;const auto &s=m_vm->settings();
-    m_mode->setCurrentIndex(s.simulation?1:0);
-    int rate=m_bitrate->findData(s.bitrate);if(rate<0){m_bitrate->addItem(QString::number(s.bitrate)+" bit/s",s.bitrate);rate=m_bitrate->count()-1;}m_bitrate->setCurrentIndex(rate);
-    m_reconnect->setChecked(s.autoReconnect);m_rxdEnabled->setChecked(s.rxdEnabled);
+    m_rxdEnabled->setChecked(s.rxdEnabled);
     m_flashPath->setText(s.flashPath);m_appPath->setText(s.applicationPath);m_flashAddress->setText(s.flashAddress);m_appAddress->setText(s.applicationAddress);
-    m_loading=false;refreshHardware();
+    m_loading=false;
 }
 void ChannelPage::applyForm() {
     if(m_loading || m_applying || m_vm->busy())return;
-    auto s=m_vm->settings();s.simulation=m_mode->currentIndex()==1;
-    s.bitrate=m_bitrate->currentData().toInt();s.hardwareKey=m_software->currentData().toString();
-    s.handle=m_software->currentData(Qt::UserRole+1).toUInt();
-    s.autoReconnect=m_reconnect->isChecked();s.rxdEnabled=m_rxdEnabled->isChecked();
+    auto s=m_vm->settings();s.rxdEnabled=m_rxdEnabled->isChecked();
     s.flashPath=m_flashPath->text();s.applicationPath=m_appPath->text();s.flashAddress=m_flashAddress->text();s.applicationAddress=m_appAddress->text();
     QScopedValueRollback<bool> guard(m_applying,true);m_vm->setSettings(s);
 }
-void ChannelPage::refreshHardware() {
-    if(m_refreshing)return;QScopedValueRollback<bool> guard(m_refreshing,true);
-    QSignalBlocker blocker(m_hardware);const auto &s=m_vm->settings();
-    const QString prior=m_hardware->currentData().toString();
-    QString selected;QSet<QString> devices;
-    m_hardware->clear();
-    for(const auto &h:m_vm->hardware()){
-        const auto device=hardwareDeviceKey(h);
-        if(!devices.contains(device)){
-            devices.insert(device);m_hardware->addItem(h.label.section(" / SDK channel",0,0).section(" / channel",0,0),device);
-            m_hardware->setItemData(m_hardware->count()-1,h.label+" · "+device,Qt::ToolTipRole);
-        }
-        if(h.key==s.hardwareKey)selected=device;
-    }
-    if(selected.isEmpty() && !s.hardwareKey.isEmpty()) {
-        // Keep an unplugged selection visible; never silently bind a different adapter.
-        selected=s.hardwareKey.section(':',0,-2);
-        if(!devices.contains(selected))m_hardware->addItem("已选设备未连接",selected);
-    }
-    if(selected.isEmpty() && devices.contains(prior))selected=prior;
-    if(selected.isEmpty() && devices.size()==1)selected=m_hardware->itemData(0).toString();
-    if(selected.isEmpty()){m_hardware->insertItem(0,devices.isEmpty()?"未发现硬件":"请选择硬件",QString());m_hardware->setCurrentIndex(0);}
-    else m_hardware->setCurrentIndex(m_hardware->findData(selected));
-    m_hardware->setToolTip(m_hardware->currentText());refreshPorts();
-}
-void ChannelPage::refreshPorts(bool deviceChanged) {
-    QSignalBlocker blocker(m_software);const auto s=m_vm->settings();
-    const QString device=m_hardware->currentData().toString();int chosen=-1;
-    m_software->clear();
-    for(const auto &h:m_vm->hardware()) {
-        if(hardwareDeviceKey(h)!=device)continue;
-        const bool own=(m_vm->hardwareLocked() || m_vm->communicationIndicator()==2) && h.key==s.hardwareKey;
-        if(!h.available && !own)continue;
-        m_software->addItem(QString("通道 %1").arg(h.controller)+(own && !h.available && !m_vm->connected()?" · 已占用":""),h.key);
-        const int row=m_software->count()-1;m_software->setItemData(row,h.handle,Qt::UserRole+1);
-        m_software->setItemData(row,QString("SDK 通道 %1 · 句柄 0x%2").arg(h.controller).arg(h.handle,0,16),Qt::ToolTipRole);
-        if(!deviceChanged && h.key==s.hardwareKey)chosen=row;
-    }
-    if(!deviceChanged && chosen<0 && !s.hardwareKey.isEmpty() && (m_vm->hardwareLocked() || m_vm->communicationIndicator()==2)){
-        m_software->addItem("原通道 · 未连接",s.hardwareKey);chosen=m_software->count()-1;
-        m_software->setItemData(chosen,s.handle,Qt::UserRole+1);
-    }
-    if(!m_software->count()){m_software->addItem(device.isEmpty()?"请先选择硬件":"无剩余可用通道",QString());chosen=0;}
-    m_software->setCurrentIndex(chosen<0?0:chosen);
-    if(!m_vm->hardwareLocked() && (deviceChanged || m_vm->communicationIndicator()!=2))applyForm();
-    render();
-}
 void ChannelPage::editProtocol() {
-    if(m_vm->hardwareLocked())return;
-    const auto original=m_vm->settings();const bool lin=original.bus==communication::Bus::Lin;
-    QDialog dialog(this);dialog.setObjectName("protocolDialog");dialog.setWindowTitle(original.softwareId+" · UDS 配置");dialog.setMinimumWidth(520);
-    auto layout=new QVBoxLayout(&dialog);layout->setContentsMargins(20,16,20,16);layout->setSpacing(10);
-    auto form=new QGridLayout;form->setHorizontalSpacing(10);form->setVerticalSpacing(8);layout->addLayout(form);
-    auto profile=edit("profileId");profile->setText(original.profileId);form->addWidget(label("配置名称"),0,0);form->addWidget(profile,0,1,1,3);
-    auto request=edit("requestId",10),response=edit("responseId",10),functional=edit("functionalId",10),nad=edit("nad",4);
-    request->setText(original.requestId);response->setText(original.responseId);functional->setText(original.functionalId);nad->setText(original.nad);
-    auto extended=new QCheckBox("29 位扩展 ID");extended->setObjectName("extendedId");extended->setChecked(original.extendedId);
-    // Every widget has an owner, including fields irrelevant to this bus.
-    for(auto widget:{request,response,functional,nad})widget->setParent(&dialog);
-    extended->setParent(&dialog);
-    if(lin){
-        form->addWidget(label("NAD · hex"),1,0);form->addWidget(nad,1,1);
-        form->addWidget(label("Master · 0x3C / 0x3D"),1,2,1,2);request->hide();response->hide();functional->hide();extended->hide();
-    }else{
-        form->addWidget(label("请求 ID · hex"),1,0);form->addWidget(request,1,1);form->addWidget(label("响应 ID · hex"),1,2);form->addWidget(response,1,3);
-        form->addWidget(label("功能 ID · hex"),2,0);form->addWidget(functional,2,1);form->addWidget(extended,2,2,1,2);nad->hide();
-    }
-    auto p2=spin("p2Ms",1,60000),star=spin("p2StarMs",1,600000),pending=spin("maxPendingMs",1,3600000);
-    auto session=spin("programmingSession",1,127),security=spin("securityLevel",1,125);
-    session->setDisplayIntegerBase(16);session->setPrefix("0x");security->setDisplayIntegerBase(16);security->setPrefix("0x");security->setSingleStep(2);
-    p2->setValue(original.p2Ms);star->setValue(original.p2StarMs);pending->setValue(original.maxPendingMs);session->setValue(original.programmingSession);security->setValue(original.securityLevel);
-    QList<QSpinBox*> values={p2,star,session,security};QStringList titles={"P2 / ms","P2* / ms","编程会话","安全级别"};
-    for(int i=0;i<values.size();++i){form->addWidget(label(titles[i]),3+i/2,(i%2)*2);form->addWidget(values[i],3+i/2,(i%2)*2+1);}
-    form->addWidget(label("待响应上限 / ms"),5,0);form->addWidget(pending,5,1);
-    auto enabled=new QCheckBox("使能 TesterPresent 保活");enabled->setObjectName("testerPresentEnabled");enabled->setChecked(original.testerPresentEnabled);
-    auto period=spin("testerPresentMs",1,600000);period->setValue(qMax(1,original.testerPresentMs));period->setEnabled(enabled->isChecked());
-    form->addWidget(enabled,6,0,1,2);form->addWidget(label("周期 / ms"),6,2);form->addWidget(period,6,3);
-    connect(enabled,&QCheckBox::toggled,period,&QSpinBox::setEnabled);
-    auto note=label("参数独立保存到当前软件通道。APP / Boot 流程编程会话固定为 10 02；安全级别和保活按本页配置。");note->setObjectName("muted");note->setWordWrap(true);layout->addWidget(note);
-    auto error=label("");error->setObjectName("inlineError");error->setWordWrap(true);error->hide();layout->addWidget(error);
-    auto buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel);layout->addWidget(buttons);
-    buttons->button(QDialogButtonBox::Ok)->setText("保存");buttons->button(QDialogButtonBox::Cancel)->setText("取消");
-    connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
-    connect(buttons,&QDialogButtonBox::accepted,&dialog,[&](){
-        auto s=original;s.profileId=profile->text();s.requestId=request->text();s.responseId=response->text();s.functionalId=functional->text();s.nad=nad->text();s.extendedId=extended->isChecked();
-        s.p2Ms=p2->value();s.p2StarMs=star->value();s.maxPendingMs=pending->value();s.programmingSession=session->value();s.securityLevel=security->value();
-        s.testerPresentEnabled=enabled->isChecked();s.testerPresentMs=period->value();
-        communication::SoftwareChannelConfiguration c;QString message;
-        if(!s.toConfiguration(c,message)){error->setText(message);error->show();return;}
-        if(m_vm->setSettings(s))dialog.accept();
-    });dialog.exec();
+    editUdsSettings(m_vm,this,true);
 }
+
 void ChannelPage::editDownload() {
     if(m_vm->busy())return;
     const auto original=m_vm->settings();boot::FlashProfile profile;QString message;
@@ -417,14 +334,13 @@ void ChannelPage::render() {
     m_busHealth->setText(health);m_busHealth->setToolTip(m_vm->healthDetail());
     m_device->setText("—");m_handle->setText("—");
     const auto list=m_vm->hardware();
-    for(const auto &h:list)if(h.key==m_software->currentData().toString()){
+    for(const auto &h:list)if(h.key==s.hardwareKey){
         m_device->setText(QString("%1 / %2").arg(h.deviceId).arg(h.controller));
         m_handle->setText(QString("0x%1").arg(h.handle,0,16));break;
     }
-    m_parameters->setEnabled(!m_vm->hardwareLocked());m_reconnect->setEnabled(!m_vm->hardwareLocked());
-    m_protocol->setEnabled(!m_vm->hardwareLocked());
+    m_protocol->setEnabled(!m_vm->busy());
     m_images->setEnabled(!m_vm->busy());m_flashPath->setEnabled(s.flashRequired);m_browseFlash->setEnabled(s.flashRequired);
-    m_flashInfo->setEnabled(s.flashRequired);m_refresh->setEnabled(!m_vm->pending());
+    m_flashInfo->setEnabled(s.flashRequired);
     m_connect->setText(m_vm->pending()?"处理中…":(connected?"断开":"连接"));
     m_connect->setEnabled(!m_vm->pending() && (connected || m_vm->canConnect()));
     m_start->setText(s.simulation?"开始模拟下载":"开始下载");m_start->setEnabled(m_vm->canStart());
@@ -442,8 +358,7 @@ void ChannelPage::render() {
         m_elapsedText->setText(QString("%1 s").arg(m_elapsed.elapsed()/1000.0,0,'f',1));
     }
     m_lastTask=m_vm->taskState();
-    if(!m_loading && !m_applying && !m_vm->hardwareLocked() && m_vm->communicationIndicator()!=2 &&
-       m_mode->currentIndex()==int(s.simulation) && s.hardwareKey!=m_software->currentData().toString())applyForm();
+
 }
 void ChannelPage::browseImage(bool flash) {
     const QString current=flash?m_vm->settings().flashPath:m_vm->settings().applicationPath;

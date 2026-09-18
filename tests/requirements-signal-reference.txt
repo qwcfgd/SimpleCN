@@ -1,0 +1,14 @@
+# Development-only comparison tools; never shipped or invoked by QtBootloader.
+cantools==44.1.0
+ldfparser==0.26.0
+bitstruct==8.23.0
+python-can==4.6.1
+textparser==0.26.2
+argparse-addons==0.12.0
+crccheck==1.3.1
+lark==1.3.1
+jinja2==3.1.6
+MarkupSafe==3.0.3
+wrapt==1.17.3
+packaging==26.3
+typing_extensions==4.16.0

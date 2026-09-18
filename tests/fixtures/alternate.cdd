@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Independent synthetic ECU: different services, identifiers, types and variants. -->
+<CANDELA dtdvers="12.0.0"><ECUDOC>
+<DATATYPES>
+ <IDENT id="label"><QUAL>Label</QUAL><CVALUETYPE bl="8" bo="21" enc="asc" qty="field" minsz="4" maxsz="4"/></IDENT>
+ <TEXTTBL id="mode"><QUAL>Mode</QUAL><CVALUETYPE bl="8" bo="21" enc="uns" qty="atom"/>
+  <TEXTMAP s="1" e="1"><TEXT><TUV xml:lang="en-US">Quick</TUV></TEXT></TEXTMAP>
+  <TEXTMAP s="2" e="2"><TEXT><TUV xml:lang="en-US">Complete</TUV></TEXT></TEXTMAP>
+ </TEXTTBL>
+</DATATYPES>
+<PROTOCOLSERVICES>
+ <PROTOCOLSERVICE id="writeLabel" phys="1"><QUAL>Write</QUAL>
+  <REQ><CONSTCOMP bl="8" v="46" spec="sid"/><CONSTCOMP bl="16" v="4660" spec="id"/><DATAOBJ dtref="label"><QUAL>Label</QUAL></DATAOBJ></REQ>
+  <POS><CONSTCOMP bl="8" v="110" spec="sid"/><CONSTCOMP bl="16" v="4660" spec="id"/></POS>
+ </PROTOCOLSERVICE>
+ <PROTOCOLSERVICE id="runRoutine" phys="1"><QUAL>Routine</QUAL>
+  <REQ><CONSTCOMP bl="8" v="49" spec="sid"/><CONSTCOMP bl="8" v="1" spec="sub"/><CONSTCOMP bl="16" v="43981" spec="id"/><DATAOBJ dtref="mode"><QUAL>Mode</QUAL></DATAOBJ></REQ>
+  <POS><CONSTCOMP bl="8" v="113" spec="sid"/><CONSTCOMP bl="8" v="1" spec="sub"/><CONSTCOMP bl="16" v="43981" spec="id"/></POS>
+ </PROTOCOLSERVICE>
+</PROTOCOLSERVICES>
+<ECU id="benchEcu"><QUAL>BenchECU</QUAL>
+ <VAR id="benchA" base="1"><QUAL>BenchA</QUAL><DIAGCLASS><QUAL>Bench</QUAL>
+  <DIAGINST><QUAL>Label</QUAL><SERVICE id="labelWrite" tmplref="writeLabel"><QUAL>Write</QUAL></SERVICE></DIAGINST>
+  <DIAGINST><QUAL>Calibration</QUAL><SERVICE id="calibrationStart" tmplref="runRoutine"><QUAL>Start</QUAL></SERVICE></DIAGINST>
+ </DIAGCLASS></VAR>
+ <VAR id="benchB"><QUAL>BenchB</QUAL><DIAGCLASS><QUAL>Bench</QUAL>
+  <DIAGINST><QUAL>Calibration</QUAL><SERVICE id="benchBStart" tmplref="runRoutine"><QUAL>Start</QUAL></SERVICE></DIAGINST>
+ </DIAGCLASS></VAR>
+</ECU></ECUDOC></CANDELA>

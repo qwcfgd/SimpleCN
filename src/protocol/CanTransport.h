@@ -14,6 +14,7 @@ struct CanOptions {
     quint32 txId=0x715,rxId=0x795;
     bool extended=false;
     int blockSize=8,stMin=1,maxWaitFrames=3,nAsMs=1000,nBsMs=1000,nCrMs=1000,receiveCapacity=4095,padding=0xff;
+    int nArMs=0; // Legacy profiles use N_As for flow-control confirmations.
     bool valid(QString &) const;
     static bool fromJson(const QJsonObject &,CanOptions &,QString &);
     QJsonObject toJson() const;

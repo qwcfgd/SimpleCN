@@ -2,7 +2,7 @@
 #include <QMainWindow>
 #include "ChannelPage.h"
 #include "MainWindowDefaults.h"
-#include "infrastructure/SettingsStore.h"
+#include "viewmodels/ChannelConfigurationViewModel.h"
 namespace Ui {class MainWindow;}
 namespace host {
 class MainWindow : public QMainWindow {
@@ -19,11 +19,12 @@ public:
     QString nextChannelName(communication::Bus)const;
     static QString styleSheetText();
 private:
-    void createChannelDialog();
+    void createChannelDialog(ChannelViewModel*target=nullptr);
+    void channelContextMenu(int index,const QPoint&globalPosition);
     void loadChannels();
     void updateChannels();
     Ui::MainWindow *ui;
-    SettingsStore m_store;
+    ChannelConfigurationViewModel m_configuration;
     QVector<ChannelViewModel*> m_channels;
     bool m_simulation=false,m_updating=false;
 };

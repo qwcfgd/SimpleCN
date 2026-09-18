@@ -7,7 +7,8 @@ UdsSession::UdsSession(DiagnosticTransport &transport,SessionOptions options,QOb
     m_response.setSingleShot(true);m_limit.setSingleShot(true);
     connect(&transport,&DiagnosticTransport::sent,this,[this]{
         if(!m_active)return;m_sent=true;
-        m_limit.start(m_options.maxPendingMs);m_response.start(m_options.p2Ms);
+        m_limit.start(qMax(m_options.maxPendingMs,m_current.suppressed?m_options.p3Ms:0));
+        m_response.start(m_current.suppressed?qMax(m_options.p2Ms,m_options.p3Ms):m_options.p2Ms);
     });
     connect(&transport,&DiagnosticTransport::responseStarted,this,[this](const QByteArray &prefix){
         if(!m_active||!m_sent||prefix.isEmpty())return;
@@ -21,14 +22,16 @@ UdsSession::UdsSession(DiagnosticTransport &transport,SessionOptions options,QOb
     });
     connect(&m_limit,&QTimer::timeout,this,[this]{finish(false,{},m_sent?"UDS absolute response deadline":"UDS transmit timeout");});
     connect(&m_keepalive,&QTimer::timeout,this,[this]{
-        if(m_established&&!busy())request(QByteArray::fromHex("3e80"),QByteArray::fromHex("7e00"),
-          [this](bool ok,const QByteArray &,const QString &error){if(!ok){m_established=false;emit notice("TesterPresent: "+error);}},true);
+        if(m_established&&!busy())request(m_options.testerPresentRequest,QByteArray::fromHex("7e00"),
+          [this](bool ok,const QByteArray &,const QString &error){if(!ok){m_established=false;emit notice("TesterPresent: "+error);}},
+          m_options.testerPresentRequest.size()>1&&(quint8(m_options.testerPresentRequest[1])&0x80));
     });
     if(options.testerPresentMs>0)m_keepalive.start(options.testerPresentMs);
 }
 bool UdsSession::request(QByteArray b,QByteArray expected,Reply reply,bool suppressed){
     if(b.isEmpty()||b.size()>maximumPdu()||expected.isEmpty()||m_queue.size()>=32)return false;
     m_queue.enqueue({std::move(b),std::move(expected),std::move(reply),suppressed});
+    emit activityChanged(true);
     const auto epoch=m_epoch;QTimer::singleShot(0,this,[this,epoch]{if(epoch==m_epoch)pump();});return true;
 }
 void UdsSession::pump(){
@@ -55,9 +58,9 @@ void UdsSession::response(const QByteArray &pdu){
         if(pdu.size()==2){m_established=true;finish(true,pdu,{});return;}
         const int p2=(quint8(pdu[2])<<8)|quint8(pdu[3]);
         const int star=((quint8(pdu[4])<<8)|quint8(pdu[5]))*10;
-        if(p2<=0||star<=0||p2>m_options.maxPendingMs||star>m_options.maxPendingMs){finish(false,pdu,"Session timing out of configured bounds");return;}
+        if(p2<=0||star<=0||p2+m_options.p2MarginMs>m_options.maxPendingMs||star+m_options.p2StarMarginMs>m_options.maxPendingMs){finish(false,pdu,"Session timing out of configured bounds");return;}
         // Include client/transport margin; never reduce the configured client timeout.
-        m_options.p2Ms=qMax(m_options.p2Ms,p2);m_options.p2StarMs=qMax(m_options.p2StarMs,star);m_established=true;
+        m_options.p2Ms=qMax(m_options.p2Ms,p2+m_options.p2MarginMs);m_options.p2StarMs=qMax(m_options.p2StarMs,star+m_options.p2StarMarginMs);m_established=true;
     }
     if(sid==0x11)m_established=false;
     finish(true,pdu,{});
@@ -66,12 +69,20 @@ void UdsSession::finish(bool ok,const QByteArray &pdu,const QString &error){
     if(!m_active)return;
     m_transport.cancel();m_response.stop();m_limit.stop();m_active=m_sent=false;
     auto reply=std::move(m_current.reply);m_current={};
-    if(!ok){m_queue.clear();m_established=false;}
+    QQueue<Request> abandoned;
+    if(!ok){abandoned.swap(m_queue);m_established=false;}
     if(m_options.testerPresentMs>0)m_keepalive.start(m_options.testerPresentMs);
     const auto epoch=m_epoch;if(reply)reply(ok,pdu,error);
+    // A manual diagnostic may be waiting behind TesterPresent. Report its
+    // cancellation on a keepalive/link failure so the caller can leave busy state.
+    while(!abandoned.isEmpty()&&epoch==m_epoch){
+        auto queued=abandoned.dequeue();if(queued.reply)queued.reply(false,{},"Previous UDS request failed: "+error);
+    }
+    emit activityChanged(busy());
     QTimer::singleShot(0,this,[this,epoch]{if(epoch==m_epoch)pump();});
 }
 void UdsSession::cancel(){
     ++m_epoch;m_response.stop();m_limit.stop();m_transport.cancel();m_queue.clear();m_current={};m_active=m_sent=m_established=false;
+    emit activityChanged(false);
 }
 }

@@ -9,14 +9,14 @@ bool CanOptions::valid(QString &error) const {
     const quint32 max=extended?0x1fffffff:0x7ff;
     if(txId>max||rxId>max||txId==rxId||blockSize<0||blockSize>255||CanTransport::separationUs(stMin)<0||
        maxWaitFrames<0||maxWaitFrames>255||nAsMs<1||nAsMs>60000||nBsMs<1||nBsMs>60000||
-       nCrMs<1||nCrMs>60000||receiveCapacity<8||receiveCapacity>4095||padding<0||padding>255){
+       nCrMs<1||nCrMs>60000||nArMs<0||nArMs>60000||receiveCapacity<8||receiveCapacity>4095||padding<0||padding>255){
         error="Invalid Classic CAN ISO-TP configuration";return false;
     }
     error.clear();return true;
 }
 QJsonObject CanOptions::toJson() const{
     return {{"blockSize",blockSize},{"stMin",stMin},{"maxWaitFrames",maxWaitFrames},{"nAsMs",nAsMs},
-      {"nBsMs",nBsMs},{"nCrMs",nCrMs},{"receiveCapacity",receiveCapacity},{"padding",padding}};
+      {"nBsMs",nBsMs},{"nCrMs",nCrMs},{"nArMs",nArMs},{"receiveCapacity",receiveCapacity},{"padding",padding}};
 }
 bool CanOptions::fromJson(const QJsonObject &json,CanOptions &out,QString &error){
     CanOptions options=out;
@@ -30,6 +30,7 @@ bool CanOptions::fromJson(const QJsonObject &json,CanOptions &out,QString &error
     options.stMin=json.value("stMin").toInt(options.stMin);
     options.maxWaitFrames=json.value("maxWaitFrames").toInt(options.maxWaitFrames);
     options.nAsMs=json.value("nAsMs").toInt(options.nAsMs);
+    options.nArMs=json.value("nArMs").toInt(options.nArMs);
     options.nBsMs=json.value("nBsMs").toInt(options.nBsMs);
     options.nCrMs=json.value("nCrMs").toInt(options.nCrMs);
     options.receiveCapacity=json.value("receiveCapacity").toInt(options.receiveCapacity);
@@ -66,7 +67,7 @@ void CanTransport::submit(QByteArray bytes,Kind kind){
     while(bytes.size()<8)bytes.append(char(m_options.padding));
     const CanFrame frame{m_options.txId,m_options.extended,false,false,false,bytes};
     m_pending=kind;m_token=++m_serial;const auto token=m_token,epoch=m_epoch;
-    m_as.start(m_options.nAsMs);
+    m_as.start((kind==FlowControl||kind==Overflow)&&m_options.nArMs>0?m_options.nArMs:m_options.nAsMs);
     // Always return from send() before publishing frames or completing a PDU.
     QTimer::singleShot(0,this,[this,frame,token,epoch]{
         if(epoch!=m_epoch||token!=m_token)return;

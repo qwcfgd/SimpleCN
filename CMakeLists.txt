@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(QtController VERSION 0.2.2 LANGUAGES CXX)
+if(MINGW)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
+endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -7,12 +10,53 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/src/views")
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets Test)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets Test)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets Test Concurrent)
+include(cmake/SignalDependencies.cmake)
+add_library(signal_database STATIC
+    src/domain/SignalTypes.h src/model/SignalCodec.h src/model/SignalCodec.cpp
+    src/model/DatabaseImporter.h src/model/DatabaseImporter.cpp
+    src/model/DbcImporter.cpp src/model/LdfImporter.cpp
+    src/infrastructure/SignalConfigurationStore.cpp src/infrastructure/SignalConfigurationStore.h)
+target_include_directories(signal_database PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(signal_database PUBLIC Qt${QT_VERSION_MAJOR}::Core PRIVATE signal_dbcppp signal_exact_decimal)
+add_library(signal_runtime STATIC
+    src/protocol/CanTxScheduler.cpp src/protocol/CanTxScheduler.h
+    src/protocol/LinScheduleRunner.cpp src/protocol/LinScheduleRunner.h
+    src/protocol/OperationCoordinator.h)
+target_link_libraries(signal_runtime PUBLIC signal_database)
 set(COMMUNICATION_SOURCE_DIR "" CACHE PATH "Directory containing the external peak_communication CMakeLists.txt")
-if(NOT EXISTS "${COMMUNICATION_SOURCE_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR "Set COMMUNICATION_SOURCE_DIR to your authorized communication module directory")
+if(NOT COMMUNICATION_SOURCE_DIR)
+    # Resolve the shared module independently of the build directory. An explicit
+    # cache value still takes precedence over the supported sibling layouts.
+    foreach(candidate IN ITEMS
+            "${CMAKE_CURRENT_SOURCE_DIR}/../Qt-ACTestController/resource/communication"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../communication-provider/resource/communication")
+        if(EXISTS "${candidate}/CMakeLists.txt")
+            get_filename_component(candidate "${candidate}" REALPATH)
+            set(COMMUNICATION_SOURCE_DIR "${candidate}" CACHE PATH
+                "Directory containing the external peak_communication CMakeLists.txt" FORCE)
+            break()
+        endif()
+    endforeach()
 endif()
+if(NOT EXISTS "${COMMUNICATION_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+        "Communication module not found at '${COMMUNICATION_SOURCE_DIR}'. "
+        "Place Qt-ACTestController or communication-provider beside this project, "
+        "or set -DCOMMUNICATION_SOURCE_DIR=<module>/resource/communication.")
+endif()
+message(STATUS "Communication module: ${COMMUNICATION_SOURCE_DIR}")
 add_subdirectory("${COMMUNICATION_SOURCE_DIR}" peak_communication)
+if(NOT TARGET peak_communication OR NOT COMMAND peak_deploy)
+    message(FATAL_ERROR "COMMUNICATION_SOURCE_DIR must define peak_communication and peak_deploy")
+endif()
+add_library(cdd_model STATIC
+    src/model/CddDatabase.h src/model/CddDatabase.cpp src/model/CddCodec.cpp)
+target_include_directories(cdd_model PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(cdd_model PUBLIC Qt${QT_VERSION_MAJOR}::Core)
+if(MINGW)
+    target_compile_options(cdd_model PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
+endif()
 add_library(bootloader_protocol STATIC
     src/protocol/DiagnosticTransport.h
     src/protocol/CanTransport.h src/protocol/CanTransport.cpp
@@ -29,14 +73,25 @@ add_library(bootloader_ui STATIC
     src/domain/HostTypes.h src/domain/HostTypes.cpp
     src/infrastructure/SettingsStore.h src/infrastructure/SettingsStore.cpp
     src/infrastructure/ChannelWorker.h src/infrastructure/ChannelWorker.cpp
+    src/infrastructure/SignalTransmitter.h src/infrastructure/SignalTransmitter.cpp
     src/model/ChannelModel.h src/model/ChannelModel.cpp
     src/model/FrameTableModel.h src/model/FrameTableModel.cpp
+    src/model/UdsServiceTableModel.h
     src/viewmodels/ChannelViewModel.h src/viewmodels/ChannelViewModel.cpp
+    src/viewmodels/SignalTransmitViewModel.h src/viewmodels/SignalTransmitViewModel.cpp
+    src/viewmodels/SignalTableModels.h src/viewmodels/SignalTableModels.cpp
+    src/viewmodels/ChannelConfigurationViewModel.h src/viewmodels/ChannelConfigurationViewModel.cpp
+    src/viewmodels/DiagnosticDraftViewModel.h src/viewmodels/DiagnosticDraftViewModel.cpp
+    src/views/ChannelHardwareEditor.h src/views/ChannelHardwareEditor.cpp
     src/views/ChannelPage.h src/views/ChannelPage.cpp
+    src/views/SignalTransmitPage.h src/views/SignalTransmitPage.cpp src/views/SignalCommunicationDialog.cpp
+    src/views/ChannelTabs.h
+    src/views/UdsDiagnosticPage.h src/views/UdsDiagnosticPage.cpp
+    src/views/UdsSettingsDialog.h src/views/UdsSettingsDialog.cpp
     src/views/MainWindow.h src/views/MainWindow.cpp src/views/MainWindow.ui
     resources/resources.qrc)
 target_include_directories(bootloader_ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(bootloader_ui PUBLIC bootloader_protocol peak_communication Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(bootloader_ui PUBLIC bootloader_protocol cdd_model peak_communication signal_runtime Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Concurrent)
 if(MINGW)
     target_compile_options(bootloader_ui PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
 endif()
@@ -57,6 +112,7 @@ if(BUILD_SEEDKEY_BRIDGE)
     add_custom_target(seedkey_bridge ALL DEPENDS "${SEEDKEY_BRIDGE}")
 endif()
 function(host_deploy target)
+    signal_deploy(${target})
     if(BUILD_SEEDKEY_BRIDGE)
         add_dependencies(${target} seedkey_bridge)
     endif()

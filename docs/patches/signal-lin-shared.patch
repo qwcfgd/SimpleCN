@@ -1,0 +1,182 @@
+--- a/resource/communication/CMakeLists.txt
++++ b/resource/communication/CMakeLists.txt
+@@ -3,7 +3,7 @@
+     ../driverCan/pcanBasicClass.cpp ../driverCan/tstPeakCan.cpp
+     ../driverLin/plinApiClass.cpp ../driverLin/tstPeakLin.cpp
+     ChannelTypes.h PeakLibrary.h HardwareBackend.h HardwareBackend.cpp
+-    SoftwareChannel.h SoftwareChannel.cpp)
++    SoftwareChannel.h SoftwareChannel.cpp SignalLinExtensions.cpp)
+ set_target_properties(peak_communication PROPERTIES AUTOMOC ON)
+ target_compile_features(peak_communication PUBLIC cxx_std_11)
+ target_compile_definitions(peak_communication PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+--- /dev/null
++++ b/resource/communication/SignalLinExtensions.cpp
+@@ -0,0 +1,128 @@
++#include "../driverLin/tstPeakLin.h"
++#include <cstring>
++
++bool tstPeakLin::signalConfigureMode(bool master)
++{
++    const auto mode = master ? modMaster : modSlave;
++    if (!t_open) { t_LastLinErr = errIllegalHardwareState; return false; }
++    if (!signalStop()) return false;
++    if (t_HwMode == mode) return true;
++    if (!stopDevice() || !setDevMode(mode) || !startDevice()) return false;
++    return signalStop();
++}
++
++bool tstPeakLin::signalStop()
++{
++    if (!t_open) { t_LastLinErr = errIllegalHardwareState; return false; }
++    TLINError first = errOK;
++    const auto remember = [&](TLINError e) { if (first == errOK && e != errOK) first = e; };
++    BYTE state = schNotRunning;
++    auto query = t_pPLinApi->GetHardwareParam(t_hHw, hwpScheduleState, &state, sizeof(state));
++    remember(query);
++    if (query == errOK && state == schRunning)
++        remember(t_pPLinApi->SuspendSchedule(t_hClient, t_hHw));
++    remember(t_pPLinApi->SetScheduleBreakPoint(t_hClient, t_hHw, 0, 0));
++    remember(t_pPLinApi->SetScheduleBreakPoint(t_hClient, t_hHw, 1, 0));
++    auto keepAlive = t_pPLinApi->SuspendKeepAlive(t_hClient, t_hHw);
++    if (keepAlive != errIllegalSchedulerState && keepAlive != errIllegalHardwareMode) remember(keepAlive);
++    // Clear all 64 entries, including a previous role's publishers, before any
++    // subset is installed. Continue cleanup even after an individual SDK error.
++    for (int id = 0; id < 64; ++id) {
++        TLINFrameEntry frame = {};
++        frame.FrameId = BYTE(id); frame.Length = 8;
++        frame.Direction = dirSubscriber;
++        frame.ChecksumType = id >= 60 ? cstClassic : cstEnhanced;
++        frame.Flags = 0; // RESPONSE_ENABLE must never survive stop or monitor.
++        remember(t_pPLinApi->SetFrameEntry(t_hClient, t_hHw, &frame));
++    }
++    t_signalFirstSlot = 0;
++    t_LastLinErr = first;
++    if (first != errOK) {
++        // If response cleanup cannot be confirmed, release/reset the device.
++        stopDevice(); t_LastLinErr = first;
++    }
++    return first == errOK;
++}
++
++bool tstPeakLin::signalInstallFrames(const QVector<TLINFrameEntry> &frames)
++{
++    if (!signalStop()) return false;
++    bool seen[64] = {};
++    // Install every entry with publisher response initially disabled.
++    for (auto frame : frames) {
++        if (frame.FrameId > 63 || frame.Length < 1 || frame.Length > 8 || seen[frame.FrameId]) {
++            t_LastLinErr = errIllegalFrameConfiguration; return false;
++        }
++        seen[frame.FrameId] = true;
++        frame.Flags &= ~FRAME_FLAG_RESPONSE_ENABLE;
++        t_LastLinErr = t_pPLinApi->SetFrameEntry(t_hClient, t_hHw, &frame);
++        if (t_LastLinErr != errOK) { auto error = t_LastLinErr; signalStop(); t_LastLinErr = error; return false; }
++    }
++    // Hardware has no atomic table commit. Enable only after all payloads have
++    // been installed; any failure disables the whole set again.
++    for (auto frame : frames) if (frame.Flags & FRAME_FLAG_RESPONSE_ENABLE) {
++        t_LastLinErr = t_pPLinApi->SetFrameEntry(t_hClient, t_hHw, &frame);
++        if (t_LastLinErr != errOK) { auto error = t_LastLinErr; signalStop(); t_LastLinErr = error; return false; }
++    }
++    return true;
++}
++
++bool tstPeakLin::signalStartSchedule(QVector<TLINScheduleSlot> entries)
++{
++    if (!t_open || t_HwMode != modMaster || entries.isEmpty() || entries.size() > 256) {
++        t_LastLinErr = errIllegalSlotCount; return false;
++    }
++    // One resident schedule uses the entire pool. A new table is loaded only
++    // after the first-slot breakpoint confirms completion of the previous round.
++    for (int number = 0; number < 8; ++number) {
++        t_LastLinErr = t_pPLinApi->DeleteSchedule(t_hClient, t_hHw, number);
++        if (t_LastLinErr != errOK && t_LastLinErr != errIllegalSchedule) return false;
++    }
++    for (const auto &slot : entries) if (slot.Type != sltUnconditional || slot.Delay < 4 || slot.FrameId[0] > 59) {
++        t_LastLinErr = errIllegalFrameConfiguration; return false;
++    }
++    t_LastLinErr = t_pPLinApi->SetSchedule(t_hClient, t_hHw, 0, entries.data(), entries.size());
++    if (t_LastLinErr != errOK) return false;
++    t_signalFirstSlot = entries.first().Handle;
++    if (!t_signalFirstSlot) { t_LastLinErr = errIllegalSchedule; return false; }
++    t_LastLinErr = t_pPLinApi->StartSchedule(t_hClient, t_hHw, 0);
++    return t_LastLinErr == errOK;
++}
++
++bool tstPeakLin::signalRequestRoundBoundary()
++{
++    if (!t_open || !t_signalFirstSlot) { t_LastLinErr = errIllegalSchedule; return false; }
++    // PLIN breaks BEFORE the named slot (manual SetSchedule example). Arming
++    // slot zero while running stops on the next round, after the last delay.
++    t_LastLinErr = t_pPLinApi->SetScheduleBreakPoint(t_hClient, t_hHw, 0, t_signalFirstSlot);
++    return t_LastLinErr == errOK;
++}
++
++bool tstPeakLin::signalRoundBoundaryReached(bool &reached)
++{
++    reached = false;
++    if (!t_open || !t_signalFirstSlot) { t_LastLinErr = errIllegalSchedule; return false; }
++    BYTE state = schNotRunning;
++    t_LastLinErr = t_pPLinApi->GetHardwareParam(t_hHw, hwpScheduleState, &state, sizeof(state));
++    if (t_LastLinErr != errOK) return false;
++    if (state == schRunning) return true;
++    if (state != schSuspended) { t_LastLinErr = errIllegalSchedulerState; return false; }
++    DWORD handle = 0;
++    t_LastLinErr = t_pPLinApi->GetHardwareParam(t_hHw, hwpScheduleSuspendedSlot, &handle, sizeof(handle));
++    if (t_LastLinErr != errOK) return false;
++    if (handle != t_signalFirstSlot) { t_LastLinErr = errIllegalSchedulerState; return false; }
++    reached = true;
++    t_LastLinErr = t_pPLinApi->SetScheduleBreakPoint(t_hClient, t_hHw, 0, 0);
++    return t_LastLinErr == errOK;
++}
++
++bool tstPeakLin::signalUpdateFrame(BYTE id, const QByteArray &payload)
++{
++    if (!t_open || id > 59 || payload.isEmpty() || payload.size() > 8) {
++        t_LastLinErr = errIllegalFrameConfiguration; return false;
++    }
++    BYTE bytes[8] = {};
++    std::memcpy(bytes, payload.constData(), size_t(payload.size()));
++    t_LastLinErr = t_pPLinApi->UpdateByteArray(t_hClient, t_hHw, id, 0, BYTE(payload.size()), bytes);
++    return t_LastLinErr == errOK;
++}
+--- a/resource/driverLin/tstPeakLin.cpp
++++ b/resource/driverLin/tstPeakLin.cpp
+@@ -118,8 +118,8 @@
+         for (BYTE client : clients) if (client && client!=t_hClient) other = true;
+         // Never reset shared configuration when ownership cannot be established.
+         if (query==errOK && !other) {
+-            int schedule = -1;
+-            if (t_pPLinApi->GetHardwareParam(t_hHw,hwpScheduleActive,&schedule,sizeof(schedule))==errOK && schedule>=0)
++            BYTE scheduleState = schNotRunning;
++            if (t_pPLinApi->GetHardwareParam(t_hHw,hwpScheduleState,&scheduleState,sizeof(scheduleState))==errOK && scheduleState==schRunning)
+                 remember(t_pPLinApi->SuspendSchedule(t_hClient,t_hHw));
+             remember(t_pPLinApi->ResetHardwareConfig(t_hClient,t_hHw));
+         }
+--- a/resource/driverLin/tstPeakLin.h
++++ b/resource/driverLin/tstPeakLin.h
+@@ -34,6 +34,16 @@
+     communication::Health hardwareHealth(QString *detail=nullptr);
+     bool sendRaw(TLINMsg message);
+     DWORD recvRaw(DWORD capacity, TLINRcvMsg messages[]);
++
++    // Signal page operations. All callers must hold the software channel lease
++    // and serialize calls on its worker. No extra SDK client is created.
++    bool signalConfigureMode(bool master);
++    bool signalStop();
++    bool signalInstallFrames(const QVector<TLINFrameEntry> &frames);
++    bool signalStartSchedule(QVector<TLINScheduleSlot> entries);
++    bool signalRequestRoundBoundary();
++    bool signalRoundBoundaryReached(bool &reached);
++    bool signalUpdateFrame(BYTE id, const QByteArray &payload);
+ 
+ 
+     //following are the channel function:
+@@ -121,6 +131,7 @@
+     /* private variables */
+     bool t_ownsApi = true;
+     bool t_open = false;
++    DWORD t_signalFirstSlot = 0;
+     bool t_acquired = false;
+     //PLinApiClass *m_pPLinApi; // the masked API pointer.
+     PLinApiClass *t_pPLinApi;

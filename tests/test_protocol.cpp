@@ -43,6 +43,18 @@ class ProtocolTest : public QObject {
         i.segments.append({address,b});i.size=count;return i;
     }
 private slots:
+    void configuredTesterPresentAndSuppressedWait(){
+        ManualTransport transport;SessionOptions options{200,250,600,50};options.p3Ms=350;options.testerPresentRequest=hex("3e00");
+        UdsSession session(transport,options);QSignalSpy activity(&session,&UdsSession::activityChanged);QSignalSpy confirmed(&transport,&DiagnosticTransport::sent);
+        QVERIFY(session.request(hex("1003"),hex("5003"),[](bool,const QByteArray &,const QString &){}));
+        QTRY_COMPARE(confirmed.count(),1);transport.reply(hex("5003"));
+        QTRY_COMPARE(confirmed.count(),2);QCOMPARE(transport.requests.last(),hex("3e00"));QVERIFY(session.busy());
+        transport.reply(hex("7e00"));QVERIFY(!session.busy());session.cancel();
+        bool done=false;QElapsedTimer elapsed;elapsed.start();
+        QVERIFY(session.request(hex("3e80"),hex("7e00"),[&](bool ok,const QByteArray &,const QString &){QVERIFY(ok);done=true;},true));
+        QTest::qWait(65);QVERIFY(!done);QVERIFY(session.busy());QTRY_VERIFY(done);QVERIFY(elapsed.elapsed()>=330);
+        QVERIFY(!activity.isEmpty());QCOMPARE(activity.last()[0].toBool(),false);
+    }
     void codecFixedVectors(){
         QCOMPARE(LinCodec::encode(1,hex("1002")),QList<QByteArray>{hex("01021002ffffffff")});
         const auto frames=LinCodec::encode(0x15,hex("3400440000ff0000001000"));
@@ -172,6 +184,19 @@ private slots:
         off.request(hex("1002"),hex("5002"),[](bool,const QByteArray &,const QString &){});
         QTRY_COMPARE(disabled.requests.size(),1);QTest::qWait(1);disabled.reply(hex("50020032000a"));
         QTest::qWait(80);QCOMPARE(disabled.requests.size(),1);
+    }
+    void keepaliveFailureCompletesQueuedDiagnostic(){
+        ManualTransport transport;UdsSession session(transport,{100,120,1000,20});QSignalSpy sent(&transport,&DiagnosticTransport::sent);
+        bool established=false;QVERIFY(session.request(hex("1002"),hex("5002"),[&](bool ok,const QByteArray &,const QString &){established=ok;}));
+        QTRY_COMPARE(sent.size(),1);transport.reply(hex("50020032000a"));QVERIFY(established);
+        QTRY_COMPARE(sent.size(),2);QCOMPARE(transport.requests.last(),hex("3e80"));
+        int completed=0;QString failure;
+        QVERIFY(session.request(hex("22f190"),hex("62f190"),[&](bool ok,const QByteArray &pdu,const QString &why){QVERIFY(!ok);QVERIFY(pdu.isEmpty());++completed;failure=why;}));
+        transport.reply(hex("7f3e22"));QCOMPARE(completed,1);QVERIFY(!failure.isEmpty());QVERIFY(!session.busy());
+        QCOMPARE(transport.requests.size(),2);
+        // A new request can start after the failure has been reported.
+        QVERIFY(session.request(hex("22f190"),hex("62f190"),[&](bool ok,const QByteArray &,const QString &){QVERIFY(ok);++completed;}));
+        QTRY_COMPARE(sent.size(),3);transport.reply(hex("62f19001"));QCOMPARE(completed,2);
     }
     void linTimeoutAndBadFrame(){
         LinTransport t(1,1,25,[](quint8,const QByteArray &,QString &){return true;});

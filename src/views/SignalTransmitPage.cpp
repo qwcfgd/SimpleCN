@@ -1,0 +1,146 @@
+#include "SignalTransmitPage.h"
+#include "viewmodels/SignalTableModels.h"
+#include <QBoxLayout>
+#include <QFormLayout>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QComboBox>
+#include <QTreeView>
+#include <QTableView>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QSplitter>
+#include <QSortFilterProxyModel>
+#include <QFileDialog>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QSpinBox>
+#include <QSignalBlocker>
+#include <QScopedValueRollback>
+#include <QInputDialog>
+#include <QTimer>
+#include <limits>
+namespace host {
+using namespace signal;
+static QLabel*plain(const QString&s){auto*l=new QLabel(s);l->setTextFormat(Qt::PlainText);l->setWordWrap(true);return l;}
+static QPushButton*button(const QString&text,const char*name){auto*b=new QPushButton(text);b->setObjectName(name);return b;}
+static void tableStyle(QTableView*t){t->setAlternatingRowColors(true);t->setSelectionBehavior(QAbstractItemView::SelectRows);t->setSelectionMode(QAbstractItemView::SingleSelection);t->verticalHeader()->hide();t->horizontalHeader()->setStretchLastSection(true);t->verticalHeader()->setDefaultSectionSize(27);}
+SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent):QWidget(parent),m_vm(vm){
+    setObjectName("signalTransmitPage");auto*root=new QVBoxLayout(this);root->setContentsMargins(10,6,10,6);root->setSpacing(5);
+    m_configurationDialog=new QDialog(this);m_configurationDialog->setObjectName("signalSettingsDialog");m_configurationDialog->setWindowTitle("通信配置");m_configurationDialog->resize(800,480);
+    auto*configuration=new QVBoxLayout(m_configurationDialog);
+    auto*heading=new QHBoxLayout;heading->addWidget(plain(vm->database()->bus==Bus::Can?"DBC 报文 / 发送工作区":"LDF 帧 / 发送工作区"));heading->addStretch();
+    auto*settings=button("通信配置…","signalSettings");heading->addWidget(settings);root->addLayout(heading);
+    connect(settings,&QPushButton::clicked,this,[this]{m_configurationDialog->exec();});
+    auto*files=new QHBoxLayout;m_path=new QLineEdit;m_path->setObjectName("signalDatabasePath");m_path->setReadOnly(true);m_path->setPlaceholderText(vm->database()->bus==Bus::Can?"导入只读 DBC，或新增自建 CAN 报文":"导入只读 LDF");
+    m_import=button("导入…","signalImport");m_reload=button("重新加载","signalReload");m_communication=button("信号初值 / 配置文件…","signalCommunication");files->addWidget(m_path,1);files->addWidget(m_import);files->addWidget(m_reload);files->addWidget(m_communication);configuration->addLayout(files);
+    m_summary=plain("");m_summary->setObjectName("signalDatabaseSummary");configuration->addWidget(m_summary);
+    m_rolePanel=new QWidget;auto*roles=new QHBoxLayout(m_rolePanel);roles->setContentsMargins(0,0,0,0);
+    m_role=new QComboBox;m_role->setObjectName("signalLinRole");m_role->addItems({"主节点","从节点","监听"});m_node=new QComboBox;m_node->setObjectName("signalLinNode");m_schedule=new QComboBox;m_schedule->setObjectName("signalLinSchedule");
+    roles->addWidget(plain("实际角色"));roles->addWidget(m_role);roles->addWidget(plain("实际节点"));roles->addWidget(m_node);roles->addWidget(plain("调度表"));roles->addWidget(m_schedule,1);
+    m_schedules=button("编辑调度结构…","signalEditSchedules");roles->addWidget(m_schedules);configuration->addWidget(m_rolePanel);
+    auto*split=new QSplitter(Qt::Horizontal);split->setObjectName("signalMainSplit");auto*browser=new QWidget;auto*bl=new QVBoxLayout(browser);bl->setContentsMargins(0,0,0,0);
+    m_search=new QLineEdit;m_search->setObjectName("signalSearch");m_search->setPlaceholderText("浏览节点 / 搜索报文，不改变发送选择");bl->addWidget(m_search);
+    m_tree=new QTreeView;m_tree->setObjectName("signalTree");auto*treeModel=new SignalTreeModel(vm,this);auto*proxy=new QSortFilterProxyModel(this);proxy->setSourceModel(treeModel);proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);proxy->setFilterKeyColumn(-1);proxy->setRecursiveFilteringEnabled(true);m_tree->setModel(proxy);m_tree->setColumnWidth(0,165);bl->addWidget(m_tree);split->addWidget(browser);
+    m_plan=new QTableView;m_plan->setObjectName("signalPlanTable");tableStyle(m_plan);
+    if(vm->database()->bus==Bus::Can){m_canModel=new CanTxTableModel(vm,this);m_plan->setModel(m_canModel);connect(m_canModel,&CanTxTableModel::validation,this,&SignalTransmitPage::feedback);m_plan->setColumnWidth(0,45);m_plan->setColumnWidth(1,165);m_plan->setColumnWidth(4,45);m_plan->setColumnWidth(5,80);}
+    else{m_linModel=new LinScheduleTableModel(vm,this);m_plan->setModel(m_linModel);m_plan->setColumnWidth(0,40);m_plan->setColumnWidth(1,150);}
+    split->addWidget(m_plan);split->setSizes({280,720});root->addWidget(split,1);
+    m_editor=new QWidget;auto*editor=new QVBoxLayout(m_editor);editor->setContentsMargins(0,0,0,0);editor->setSpacing(4);m_frameInfo=plain("选择报文以编辑发送工作副本");m_frameInfo->setObjectName("signalFrameInfo");editor->addWidget(m_frameInfo);
+    auto*rawRow=new QHBoxLayout;rawRow->addWidget(plain("帧 raw"));m_raw=new QLineEdit;m_raw->setObjectName("signalFrameRaw");m_raw->setPlaceholderText("线序 HEX，仅数据区；回车或失焦提交");rawRow->addWidget(m_raw,1);m_signalEdit=button("信号值 / 枚举…","signalValueDialog");rawRow->addWidget(m_signalEdit);editor->addLayout(rawRow);
+    m_values=new QTableView;m_values->setObjectName("signalValues");m_valueModel=new SignalValueTableModel(vm,false,this);m_values->setModel(m_valueModel);tableStyle(m_values);m_values->setColumnWidth(0,150);m_values->setColumnWidth(1,130);m_values->setColumnWidth(2,130);m_values->setColumnWidth(3,145);editor->addWidget(m_values,1);root->addWidget(m_editor,1);
+    auto*actions=new QHBoxLayout;m_add=button("新增自建 CAN…","signalAddCan");m_edit=button("修改自建帧…","signalEditCan");m_delete=button("删除自建帧","signalDeleteCan");m_once=button("单次发送","signalSendOnce");m_start=button("周期发送","signalStart");m_start->setProperty("primary",true);m_stop=button("停止","signalStop");m_back=button("回退：上一步","signalBack");m_restore=button("撤销：恢复配置基准","signalRestore");
+    auto*structureActions=new QHBoxLayout;for(auto*b:{m_add,m_edit,m_delete})structureActions->addWidget(b);structureActions->addStretch();configuration->addLayout(structureActions);
+    auto*history=new QHBoxLayout;history->addWidget(m_back);history->addWidget(m_restore);history->addStretch();configuration->addLayout(history);
+    m_configurationFeedback=plain("");m_configurationFeedback->setObjectName("signalConfigurationFeedback");configuration->addWidget(m_configurationFeedback);configuration->addStretch();
+    auto*close=new QDialogButtonBox(QDialogButtonBox::Close);configuration->addWidget(close);connect(close,&QDialogButtonBox::rejected,m_configurationDialog,&QDialog::reject);
+    actions->addStretch();for(auto*b:{m_once,m_start,m_stop})actions->addWidget(b);root->addLayout(actions);
+    m_status=plain("已停止");m_status->setObjectName("signalRunStatus");m_validation=plain("");m_validation->setObjectName("signalValidation");root->addWidget(m_status);root->addWidget(m_validation);
+    connect(m_search,&QLineEdit::textChanged,proxy,&QSortFilterProxyModel::setFilterFixedString);
+    connect(m_tree->selectionModel(),&QItemSelectionModel::currentChanged,this,[this,proxy](const QModelIndex&i){const auto source=proxy->mapToSource(i.sibling(i.row(),0));const auto key=source.data(Qt::UserRole).toString();if(!key.isEmpty()){for(int row=0;row<m_plan->model()->rowCount();++row)if((m_canModel?m_canModel->key(row):m_linModel->key(row))==key){m_plan->selectRow(row);break;}}});
+    connect(m_plan->selectionModel(),&QItemSelectionModel::currentRowChanged,this,[this](const QModelIndex&i){selectFrame(m_canModel?m_canModel->key(i.row()):m_linModel->key(i.row()));});
+    connect(m_import,&QPushButton::clicked,this,[this]{const auto path=QFileDialog::getOpenFileName(m_configurationDialog,"导入只读信号数据库",m_path->text(),m_canModel?"DBC (*.dbc *.DBC)":"LDF (*.ldf *.LDF)");if(!path.isEmpty())m_vm->importAsync(path);});
+    connect(m_reload,&QPushButton::clicked,this,[this]{m_vm->importAsync(m_vm->database()->path);});
+    connect(m_communication,&QPushButton::clicked,this,&SignalTransmitPage::communication);
+    connect(m_raw,&QLineEdit::editingFinished,this,[this]{if(m_rendering||m_key.isEmpty()||!m_vm->canData())return;const auto&draft=m_vm->working().frames[m_key];const auto current=QString::fromLatin1(draft.applied.bytes.toHex(' ')).toUpper();if(m_raw->text()==current&&draft.frameError.isEmpty())return;QString error;m_vm->editPayload(m_key,m_raw->text(),error);feedback(error);renderFrame();});
+    connect(m_valueModel,&SignalValueTableModel::validation,this,&SignalTransmitPage::feedback);
+    connect(m_add,&QPushButton::clicked,this,[this]{editCustom(false);});connect(m_edit,&QPushButton::clicked,this,[this]{editCustom(true);});
+    connect(m_delete,&QPushButton::clicked,this,[this]{QString error;if(!m_vm->removeCustom(m_key,error))feedback(error);});
+    connect(m_schedules,&QPushButton::clicked,this,&SignalTransmitPage::editSchedules);
+    connect(m_signalEdit,&QPushButton::clicked,this,&SignalTransmitPage::editSignalValue);
+    connect(m_once,&QPushButton::clicked,this,[this]{QString error;if(!m_vm->start(false,error))feedback(error);});
+    connect(m_start,&QPushButton::clicked,this,[this]{QString error;if(!m_vm->start(true,error))feedback(error);});connect(m_stop,&QPushButton::clicked,m_vm,&SignalTransmitViewModel::stop);
+    connect(m_back,&QPushButton::clicked,m_vm,&SignalTransmitViewModel::back);connect(m_restore,&QPushButton::clicked,m_vm,&SignalTransmitViewModel::restore);
+    connect(m_role,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int role){if(m_rendering)return;QString error;
+        if(!m_vm->setRole(LinRole(role),{},error)){feedback(error);rebuild();}});
+    connect(m_node,qOverload<int>(&QComboBox::currentIndexChanged),this,[this]{if(m_rendering)return;QString error;if(!m_vm->setRole(LinRole(m_role->currentIndex()),m_node->currentText(),error))feedback(error);});
+    connect(m_schedule,qOverload<int>(&QComboBox::currentIndexChanged),this,[this]{if(m_rendering)return;QString error;if(!m_vm->selectSchedule(m_schedule->currentText(),error))feedback(error);render();});
+    connect(m_plan->model(),&QAbstractItemModel::modelReset,this,&SignalTransmitPage::rebuild);
+    connect(vm,&SignalTransmitViewModel::structureChanged,this,&SignalTransmitPage::rebuild);connect(vm,&SignalTransmitViewModel::changed,this,&SignalTransmitPage::render);
+    connect(vm,&SignalTransmitViewModel::frameChanged,this,[this](const QString&key){if(key==m_key)renderFrame();});rebuild();
+}
+void SignalTransmitPage::feedback(const QString&text){m_validation->setText(text);m_validation->setVisible(!text.isEmpty());m_configurationFeedback->setText(text);}
+void SignalTransmitPage::selectFrame(const QString&key){if(key.isEmpty()||!m_vm->frame(key))return;m_key=key;m_valueModel->setFrame(key);renderFrame();}
+void SignalTransmitPage::rebuild(){QScopedValueRollback<bool>guard(m_rendering,true);m_path->setText(m_vm->database()->path);m_role->setCurrentIndex(int(m_vm->working().role));m_node->clear();
+    for(const auto&n:m_vm->database()->nodes)if(m_vm->working().role!=LinRole::Slave||n!=m_vm->database()->master)m_node->addItem(n);m_node->setCurrentText(m_vm->working().node);
+    m_schedule->clear();for(const auto&s:m_vm->working().schedules)m_schedule->addItem(s.name);m_schedule->setCurrentText(m_vm->working().schedule);
+    m_tree->expandToDepth(0);int selected=-1;
+    for(int row=0;row<m_plan->model()->rowCount();++row)if((m_canModel?m_canModel->key(row):m_linModel->key(row))==m_key){selected=row;break;}
+    if(selected<0 && m_plan->model()->rowCount()>0)selected=0;
+    if(selected>=0){m_plan->selectRow(selected);selectFrame(m_canModel?m_canModel->key(selected):m_linModel->key(selected));}
+    else{m_key.clear();m_valueModel->setFrame({});}render();
+}
+void SignalTransmitPage::render(){QScopedValueRollback<bool>guard(m_rendering,true);const bool can=m_canModel!=nullptr;const bool structure=m_vm->canStructure();
+    m_rolePanel->setVisible(!can);m_import->setEnabled(structure);m_reload->setEnabled(structure&&!m_vm->database()->path.isEmpty());m_add->setVisible(can);m_edit->setVisible(can);m_delete->setVisible(can);m_once->setVisible(can);
+    m_add->setEnabled(structure);m_schedules->setEnabled(structure&&!m_vm->database()->path.isEmpty());m_role->setEnabled(structure);m_node->setEnabled(structure&&m_vm->working().role==LinRole::Slave);
+    const auto state=m_vm->status().state;m_schedule->setEnabled((structure||m_vm->running())&&state!=RunState::SwitchPending&&state!=RunState::Switching&&state!=RunState::Stopping);
+    m_schedule->setCurrentText(m_vm->status().pending.isEmpty()?m_vm->working().schedule:m_vm->status().pending);
+    m_once->setEnabled(m_vm->canStart());m_start->setEnabled(m_vm->canStart());m_stop->setEnabled(m_vm->running()&&state!=RunState::Stopping);m_back->setEnabled(m_vm->canBack());m_restore->setEnabled(m_vm->canRestore());
+    m_start->setText(can?"周期发送":m_vm->working().role==LinRole::Master?"启动主调度":m_vm->working().role==LinRole::Slave?"启动从节点响应":"开始监听");
+    const auto db=m_vm->database();m_summary->setText(m_vm->importing()?m_vm->message():QString("%1 · %2 个节点 / %3 个帧 · %4%5").arg(can?"DBC":"LDF").arg(db->nodes.size()).arg(m_vm->definitions().size()).arg(db->version,db->diagnostics.isEmpty()?QString():QString(" · %1 条能力诊断（悬停查看）").arg(db->diagnostics.size())));m_summary->setToolTip(db->diagnostics.join('\n'));if(!db->diagnostics.isEmpty())m_summary->setText(m_summary->text()+"\n"+db->diagnostics.join('\n'));
+    quint64 sent=0,missed=0;for(auto n:m_vm->status().sent)sent+=n;for(auto n:m_vm->status().missed)missed+=n;
+    m_status->setText(QString("%1 · 已提交 %2 · 漏期 %3%4%5").arg(m_vm->status().detail.isEmpty()?"已停止":m_vm->status().detail).arg(sent).arg(missed).arg(missed?"（过载，不补发）":"",m_vm->status().pending.isEmpty()?QString():" · 当前 "+m_vm->status().current+" → 待切 "+m_vm->status().pending));
+    if(!m_vm->message().isEmpty())m_configurationFeedback->setText(m_vm->message());renderFrame();
+}
+void SignalTransmitPage::renderFrame(){const auto*f=m_vm->frame(m_key);m_editor->setEnabled(m_vm->canData());m_raw->setEnabled(f&&f->issue.isEmpty()&&m_vm->canData());m_signalEdit->setEnabled(f&&!f->fields.isEmpty()&&m_vm->canData());m_edit->setEnabled(f&&f->custom&&m_vm->canStructure());m_delete->setEnabled(f&&f->custom&&m_vm->canStructure());
+    if(!f){m_frameInfo->setText("选择报文以编辑发送工作副本");m_raw->clear();return;}const auto&d=m_vm->working().frames[m_key];
+    QStringList details;const auto hint=m_vm->publicationHint(m_key);if(!hint.isEmpty())details.append(hint);details.append(m_vm->protocolInfo(m_key));const auto permission=details.join(" · ");
+    m_frameInfo->setText(QString("%1 · ID 0x%2 · %3 B · 发布 %4 · 数据修订 %5%6%7\nRX：%8").arg(f->name,QString::number(f->id,16).toUpper()).arg(f->length).arg(f->publisher).arg(d.applied.revision).arg(permission.isEmpty()?QString():" · "+permission,f->custom?" · 无数据库信号定义":f->issue.isEmpty()?QString():" · "+f->issue).arg(!d.rx.received?"未接收":QString("%1 · 硬件时间 %2 us / 到达 %3 us").arg(d.rx.detail).arg(d.rx.hardwareUs).arg(d.rx.arrivalUs)));
+    if(!m_raw->hasFocus())m_raw->setText(d.frameError.isEmpty()?QString::fromLatin1(d.applied.bytes.toHex(' ')).toUpper():d.frameInput);m_raw->setToolTip(d.frameError);m_raw->setStyleSheet(d.frameError.isEmpty()?QString():"background:#ffe0e0");
+}
+void SignalTransmitPage::communication(){openSignalCommunicationDialog(m_vm,m_key,m_configurationDialog);}
+void SignalTransmitPage::editCustom(bool existing){
+    if(!m_vm->canStructure())return;const auto*f=existing?m_vm->frame(m_key):nullptr;if(existing&&(!f||!f->custom))return;const auto oldKey=f?f->key:QString();
+    QDialog dialog(m_configurationDialog);dialog.setWindowTitle(existing?"修改自建 CAN 报文":"新增自建 CAN 报文");auto*layout=new QFormLayout(&dialog);auto*name=new QLineEdit(f?f->name:QString());auto*id=new QLineEdit(f?QString::number(f->id,16):QString());auto*type=plain("ID ≤ 0x7FF：标准；其余：扩展（自动）");
+    auto*length=new QSpinBox;length->setRange(0,8);length->setValue(f?f->length:8);auto*period=new QSpinBox;period->setRange(0,std::numeric_limits<int>::max());period->setValue(f?m_vm->working().frames[f->key].cycleMs:0);period->setSpecialValueText("仅单次");auto*error=plain("");
+    layout->addRow("名称",name);layout->addRow("ID（HEX）",id);layout->addRow(type);layout->addRow("字节数",length);layout->addRow("周期 ms",period);layout->addRow(error);auto*buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel);layout->addRow(buttons);
+    connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);connect(buttons,&QDialogButtonBox::accepted,&dialog,[&]{bool parsed=false;const auto value=id->text().toULongLong(&parsed,16);QString why;if(!parsed||value>0x1fffffff){error->setText("ID 必须在 0–0x1FFFFFFF");return;}if(!m_vm->putCustom(oldKey,name->text(),quint32(value),length->value(),period->value(),why)){error->setText(why);return;}selectFrame(frameKey(Bus::Can,quint32(value),value>0x7ff));dialog.accept();});dialog.exec();
+}
+void SignalTransmitPage::editSignalValue(){
+    const auto*f=m_vm->frame(m_key);const auto index=m_values->currentIndex();if(!f||!index.isValid()||index.row()>=f->fields.size()||!m_vm->canData())return;const auto field=index.row();const auto s=f->fields[field];
+    QDialog dialog(this);dialog.setWindowTitle("编辑信号："+s.name);auto*form=new QFormLayout(&dialog);auto*mode=new QComboBox;mode->addItems({"raw 整数 / 位模式","物理值"});auto*value=new QLineEdit(m_valueModel->index(field,2).data().toString());auto*labels=new QComboBox;labels->addItem("选择枚举",QString());for(auto it=s.labels.begin();it!=s.labels.end();++it)labels->addItem(it.value()+" = "+QString::number(it.key()),QString::number(it.key()));
+    auto*range=new QComboBox;range->addItem("自动（歧义时拒绝）",-1);for(int i=0;i<s.ranges.size();++i){const auto&r=s.ranges[i];range->addItem(QString("%1：raw %2..%3，%4 × raw + %5").arg(i+1).arg(r.first).arg(r.last).arg(r.factor,r.offset),i);}auto*error=plain("");
+    form->addRow("输入类型",mode);form->addRow("值",value);form->addRow("逻辑枚举",labels);form->addRow("物理换算段",range);form->addRow(error);auto*buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel);form->addRow(buttons);
+    connect(labels,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[&](int i){if(i>0){mode->setCurrentIndex(0);value->setText(labels->currentData().toString());}});connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+    connect(buttons,&QDialogButtonBox::accepted,&dialog,[&]{QString why;if(!m_vm->editSignal(m_key,field,value->text(),mode->currentIndex()==1,why,range->currentData().toInt())){error->setText(why);return;}dialog.accept();});dialog.exec();
+}
+void SignalTransmitPage::editSchedules(){
+    if(!m_vm->canStructure())return;QDialog dialog(m_configurationDialog);dialog.setWindowTitle("LIN 运行调度副本（不修改 LDF）");dialog.resize(680,460);auto*layout=new QVBoxLayout(&dialog);auto schedules=m_vm->working().schedules;
+    auto*toolbar=new QHBoxLayout;auto*selector=new QComboBox;auto*add=button("新增表","signalNewSchedule");auto*remove=button("删除表","signalRemoveSchedule");toolbar->addWidget(selector,1);toolbar->addWidget(add);toolbar->addWidget(remove);layout->addLayout(toolbar);
+    auto*table=new QTableWidget;table->setColumnCount(2);table->setHorizontalHeaderLabels({"LDF 帧","delay ms（相邻槽起点）"});table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);tableStyle(table);layout->addWidget(table,1);
+    auto*slotActions=new QHBoxLayout;auto*insert=button("增加槽","signalAddSlot");auto*erase=button("删除槽","signalRemoveSlot");auto*up=button("上移","signalSlotUp");auto*down=button("下移","signalSlotDown");for(auto*b:{insert,erase,up,down})slotActions->addWidget(b);layout->addLayout(slotActions);auto*error=plain("");layout->addWidget(error);
+    int current=-1;const auto definitions=m_vm->database()->frames;
+    auto capture=[&]{if(current<0||current>=schedules.size())return;auto&entries=schedules[current].entries;entries.clear();schedules[current].issue.clear();for(int row=0;row<table->rowCount();++row){auto*combo=qobject_cast<QComboBox*>(table->cellWidget(row,0));entries.append({combo->currentData().toString(),table->item(row,1)->text(),{},0});}};
+    auto display=[&]{table->setRowCount(0);if(current<0||current>=schedules.size())return;const auto entries=schedules[current].entries;table->setRowCount(entries.size());for(int row=0;row<entries.size();++row){auto*combo=new QComboBox;for(const auto&f:definitions)combo->addItem(f.name+" · 0x"+QString::number(f.id,16),f.key);int index=combo->findData(entries[row].frame);if(index<0){combo->addItem(entries[row].frame+"（不支持）",entries[row].frame);index=combo->count()-1;}combo->setCurrentIndex(index);table->setCellWidget(row,0,combo);table->setItem(row,1,new QTableWidgetItem(entries[row].delayMs));}};
+    auto refresh=[&]{QSignalBlocker block(selector);selector->clear();for(const auto&s:schedules)selector->addItem(s.name);selector->setCurrentIndex(current);display();};
+    for(int i=0;i<schedules.size();++i)if(schedules[i].name==m_vm->working().schedule)current=i;if(current<0&&!schedules.isEmpty())current=0;refresh();
+    connect(selector,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[&](int index){capture();current=index;display();});
+    connect(add,&QPushButton::clicked,&dialog,[&]{bool ok=false;const auto name=QInputDialog::getText(&dialog,"新增调度表","名称",QLineEdit::Normal,{},&ok);if(!ok)return;capture();schedules.append({name,{},{}});current=schedules.size()-1;refresh();});
+    connect(remove,&QPushButton::clicked,&dialog,[&]{if(current<0)return;schedules.removeAt(current);current=schedules.isEmpty()?-1:qMin(current,int(schedules.size())-1);refresh();});
+    connect(insert,&QPushButton::clicked,&dialog,[&]{if(current<0||definitions.isEmpty())return;capture();schedules[current].entries.append({definitions.first().key,"10",{},0});display();});
+    connect(erase,&QPushButton::clicked,&dialog,[&]{const int row=table->currentRow();if(current<0||row<0)return;capture();schedules[current].entries.removeAt(row);display();});
+    auto move=[&](int delta){const int row=table->currentRow();if(current<0||row<0||row+delta<0||row+delta>=table->rowCount())return;capture();schedules[current].entries.swapItemsAt(row,row+delta);display();table->selectRow(row+delta);};connect(up,&QPushButton::clicked,&dialog,[&]{move(-1);});connect(down,&QPushButton::clicked,&dialog,[&]{move(1);});
+    auto*buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel);layout->addWidget(buttons);connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);connect(buttons,&QDialogButtonBox::accepted,&dialog,[&]{capture();QString why;if(!m_vm->replaceSchedules(schedules,current>=0?schedules[current].name:QString(),why)){error->setText(why);return;}dialog.accept();});dialog.exec();
+}
+}

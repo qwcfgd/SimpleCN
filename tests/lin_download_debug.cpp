@@ -8,6 +8,7 @@
 #include <QDir>
 #include "viewmodels/ChannelViewModel.h"
 #include "infrastructure/SettingsStore.h"
+#include "driverLin/tstPeakLin.h"
 #include "protocol/FirmwareImage.h"
 using namespace host;
 int main(int argc,char **argv){

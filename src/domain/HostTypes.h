@@ -3,9 +3,15 @@
 #include <QDateTime>
 #include <QFileInfo>
 #include <QJsonObject>
-#include "views/ChannelPageDefaults.h"
+#include "domain/ChannelDefaults.h"
 namespace host {
 struct ChannelSettings : ChannelPageInitialValues {
+    QJsonObject signalConfiguration;
+    QString cddPath,cddEcu,cddVariant;
+    int udsRepeatCount=1,udsRepeatDelayMs=1000;
+    bool udsRepeatEnabled=false;
+    int p3Ms=0,p2ServerMs=0,p2StarServerMs=0,linSlotMs=0,linAsMs=1000,linCrMs=1000;
+    QString testerPresentRequest="3E80";
     static ChannelSettings defaults(communication::Bus bus);
     bool toConfiguration(communication::SoftwareChannelConfiguration &out,QString &error) const;
     QJsonObject toJson() const;
@@ -15,6 +21,7 @@ struct FrameRecord {
     QString timestamp,channel,direction,identifier,data,status;
     int length=0;bool error=false,warning=false;
     QString relativeTime;
+    QString intervalMs;
 };
 using FrameBatch=QVector<FrameRecord>;
 enum class TaskState {Idle,Running,Completed,Cancelled,Failed};

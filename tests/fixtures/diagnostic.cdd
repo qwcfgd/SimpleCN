@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE CANDELA SYSTEM "candela.dtd">
+<!-- Synthetic diagnostic fixture, no target ECU data. -->
+<CANDELA dtdvers="15.0.4"><ECUDOC>
+<DATATYPES>
+ <IDENT id="byte"><QUAL>Byte</QUAL><CVALUETYPE bl="8" bo="21" enc="uns" qty="atom"/></IDENT>
+ <IDENT id="word"><QUAL>Word</QUAL><CVALUETYPE bl="16" bo="21" enc="uns" qty="atom"/></IDENT>
+ <IDENT id="littleWord"><QUAL>Value</QUAL><CVALUETYPE bl="16" bo="12" enc="uns" qty="atom"/></IDENT>
+ <IDENT id="vin"><QUAL>VIN</QUAL><CVALUETYPE bl="8" bo="21" enc="asc" qty="field" minsz="17" maxsz="17"/></IDENT>
+</DATATYPES>
+<PROTOCOLSERVICES>
+ <PROTOCOLSERVICE id="session" phys="1" func="1"><QUAL>Session</QUAL>
+  <REQ><CONSTCOMP bl="8" v="16" spec="sid"><QUAL>SID</QUAL></CONSTCOMP><STATICCOMP id="sessionSub" spec="sub" dtref="byte" respsupbit="1"><QUAL>Session</QUAL></STATICCOMP></REQ>
+  <POS><CONSTCOMP bl="8" v="80" spec="sid"><QUAL>SID</QUAL></CONSTCOMP><STATICCOMP id="sessionEcho" spec="sub" dtref="byte"><QUAL>Session</QUAL></STATICCOMP><DATAOBJ dtref="word"><QUAL>P2</QUAL></DATAOBJ><DATAOBJ dtref="word"><QUAL>P2Star</QUAL></DATAOBJ></POS>
+ </PROTOCOLSERVICE>
+ <PROTOCOLSERVICE id="read" phys="1"><QUAL>Read</QUAL>
+  <REQ><CONSTCOMP bl="8" v="34" spec="sid"><QUAL>SID</QUAL></CONSTCOMP><STATICCOMP id="readDid" spec="id" dtref="word"><QUAL>DID</QUAL></STATICCOMP></REQ>
+  <POS><CONSTCOMP bl="8" v="98" spec="sid"><QUAL>SID</QUAL></CONSTCOMP><STATICCOMP id="readEcho" spec="id" dtref="word"><QUAL>DID</QUAL></STATICCOMP><SIMPLEPROXYCOMP id="readData" must="1" minbl="8"><QUAL>Data</QUAL></SIMPLEPROXYCOMP></POS>
+ </PROTOCOLSERVICE>
+ <PROTOCOLSERVICE id="write" phys="1"><QUAL>Write</QUAL>
+  <REQ><CONSTCOMP bl="8" v="46" spec="sid"><QUAL>SID</QUAL></CONSTCOMP><STATICCOMP id="writeDid" spec="id" dtref="word"><QUAL>DID</QUAL></STATICCOMP><SIMPLEPROXYCOMP id="writeData" must="1" minbl="8"><QUAL>Data</QUAL></SIMPLEPROXYCOMP></REQ>
+  <POS><CONSTCOMP bl="8" v="110" spec="sid"><QUAL>SID</QUAL></CONSTCOMP><STATICCOMP id="writeEcho" spec="id" dtref="word"><QUAL>DID</QUAL></STATICCOMP></POS>
+ </PROTOCOLSERVICE>
+</PROTOCOLSERVICES>
+<DCLTMPLS>
+ <DCLTMPL id="sessionClass"><QUAL>SessionClass</QUAL>
+  <DCLSRVTMPL id="sessionTemplate" tmplref="session"/>
+  <SHSTATIC id="sessionMap"><STATICCOMPREF idref="sessionSub"/><STATICCOMPREF idref="sessionEcho"/></SHSTATIC>
+ </DCLTMPL>
+ <DCLTMPL id="didClass"><QUAL>Data</QUAL>
+  <DCLSRVTMPL id="readTemplate" tmplref="read"/><DCLSRVTMPL id="writeTemplate" tmplref="write"/>
+  <SHSTATIC id="didMap"><STATICCOMPREF idref="readDid"/><STATICCOMPREF idref="readEcho"/><STATICCOMPREF idref="writeDid"/><STATICCOMPREF idref="writeEcho"/></SHSTATIC>
+  <SHPROXY id="dataMap"><PROXYCOMPREF idref="readData"/><PROXYCOMPREF idref="writeData"/></SHPROXY>
+ </DCLTMPL>
+</DCLTMPLS>
+<DIDS><DID id="vinData" n="61840"><QUAL>VIN</QUAL><STRUCTURE><DATAOBJ dtref="vin"><QUAL>VIN</QUAL></DATAOBJ></STRUCTURE></DID></DIDS>
+<ECU id="exampleEcu"><NAME><TUV xml:lang="en-US">Example ECU</TUV></NAME><QUAL>ExampleECU</QUAL>
+ <VAR id="base"><NAME><TUV xml:lang="en-US">Base Variant</TUV></NAME><QUAL>Base</QUAL>
+  <DIAGCLASS><QUAL>Services</QUAL>
+   <DIAGINST id="defaultSession" tmplref="sessionClass"><QUAL>DefaultSession</QUAL><STATICVALUE shstaticref="sessionMap" v="1"/><SERVICE id="sessionStart" tmplref="sessionTemplate"><QUAL>Start</QUAL></SERVICE></DIAGINST>
+   <DIAGINST id="number" tmplref="didClass"><QUAL>Number</QUAL><STATICVALUE shstaticref="didMap" v="61856"/><SIMPLECOMPCONT shproxyref="dataMap"><DATAOBJ dtref="littleWord"><QUAL>Number</QUAL></DATAOBJ></SIMPLECOMPCONT><SERVICE id="numberRead" tmplref="readTemplate"><QUAL>Read</QUAL></SERVICE><SERVICE id="numberWrite" tmplref="writeTemplate"><QUAL>Write</QUAL></SERVICE></DIAGINST>
+   <DIAGINST id="vinInstance" tmplref="didClass"><QUAL>VIN</QUAL><STATICVALUE shstaticref="didMap" v="61840"/><SIMPLECOMPCONT shproxyref="dataMap"><DIDDATAREF didRef="vinData"/></SIMPLECOMPCONT><SERVICE id="vinRead" tmplref="readTemplate"><QUAL>Read</QUAL></SERVICE><SERVICE id="vinWrite" tmplref="writeTemplate"><QUAL>Write</QUAL></SERVICE></DIAGINST>
+  </DIAGCLASS>
+ </VAR>
+ <VAR id="other" baseref="base"><NAME><TUV xml:lang="en-US">Other Variant</TUV></NAME><QUAL>Other</QUAL><DIAGCLASS><QUAL>Services</QUAL>
+  <DIAGINST id="otherNumber" tmplref="didClass"><QUAL>Number</QUAL><STATICVALUE shstaticref="didMap" v="61857"/><SIMPLECOMPCONT shproxyref="dataMap"><DATAOBJ dtref="littleWord"><QUAL>Number</QUAL></DATAOBJ></SIMPLECOMPCONT><SERVICE id="otherRead" tmplref="readTemplate"><QUAL>Read</QUAL></SERVICE></DIAGINST>
+ </DIAGCLASS></VAR>
+</ECU>
+</ECUDOC></CANDELA>

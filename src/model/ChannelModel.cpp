@@ -1,7 +1,10 @@
 #include "ChannelModel.h"
+#include "infrastructure/ChannelWorker.h"
 namespace host {
 ChannelModel::ChannelModel(ChannelSettings settings,QObject *parent):QObject(parent),m_worker(new ChannelWorker(settings)) {
     qRegisterMetaType<ChannelSettings>();qRegisterMetaType<FrameBatch>();qRegisterMetaType<TaskState>();
+    qRegisterMetaType<diag::Request>();
+    qRegisterMetaType<signal::TxPlan>();qRegisterMetaType<signal::PayloadUpdate>();qRegisterMetaType<signal::RunStatus>();qRegisterMetaType<signal::BusFrameEvents>();
     qRegisterMetaType<communication::HardwareChannels>();qRegisterMetaType<communication::ConnectionState>();qRegisterMetaType<communication::Health>();
     m_thread.setObjectName(settings.softwareId+"-worker");m_worker->moveToThread(&m_thread);
     connect(&m_thread,&QThread::started,m_worker,&ChannelWorker::initialize);
@@ -13,6 +16,17 @@ ChannelModel::ChannelModel(ChannelSettings settings,QObject *parent):QObject(par
     connect(this,&ChannelModel::previewRequested,m_worker,&ChannelWorker::startPreview);
     connect(this,&ChannelModel::cancelRequested,m_worker,&ChannelWorker::cancelTask);
     connect(this,&ChannelModel::scanRequested,m_worker,&ChannelWorker::startHeaderScan);
+    connect(this,&ChannelModel::diagnosticRequested,m_worker,&ChannelWorker::sendDiagnostic);
+    connect(this,&ChannelModel::resetDiagnosticRequested,m_worker,&ChannelWorker::resetDiagnostic);
+    connect(this,&ChannelModel::signalsRequested,m_worker,&ChannelWorker::startSignals);
+    connect(this,&ChannelModel::signalStopRequested,m_worker,&ChannelWorker::stopSignals);
+    connect(this,&ChannelModel::signalPayloadRequested,m_worker,&ChannelWorker::updateSignalPayload);
+    connect(this,&ChannelModel::signalScheduleRequested,m_worker,&ChannelWorker::switchSignalSchedule);
+    connect(m_worker,&ChannelWorker::signalStatus,this,&ChannelModel::signalStatus);
+    connect(m_worker,&ChannelWorker::busEvents,this,&ChannelModel::busEvents);
+    connect(m_worker,&ChannelWorker::connectionGenerationChanged,this,&ChannelModel::connectionGenerationChanged);
+    connect(m_worker,&ChannelWorker::diagnosticFinished,this,&ChannelModel::diagnosticFinished);
+    connect(m_worker,&ChannelWorker::diagnosticActivity,this,&ChannelModel::diagnosticActivity);
     connect(m_worker,&ChannelWorker::bindingChanged,this,&ChannelModel::bindingChanged);
     connect(m_worker,&ChannelWorker::ready,this,&ChannelModel::ready);
     connect(m_worker,&ChannelWorker::hardwareChanged,this,&ChannelModel::hardwareChanged);

@@ -26,11 +26,26 @@
 #include <QLabel>
 #include <QStatusBar>
 #include "views/MainWindow.h"
+#include "views/ChannelHardwareEditor.h"
+#include "views/ChannelTabs.h"
+#include <QWheelEvent>
+#include "infrastructure/SettingsStore.h"
+#include "infrastructure/ChannelWorker.h"
 using namespace host;
 using communication::Bus;
 class HostUiTest : public QObject {
     Q_OBJECT
     QTemporaryDir m_temp;
+    void openChannelAction(MainWindow&window,int index,const char*actionName){
+        auto*tabs=window.findChild<QTabWidget*>("channelTabs");QVERIFY(tabs);
+        QTimer::singleShot(10,&window,[&window,actionName]{
+            auto*menu=window.findChild<QMenu*>("channelContextMenu");QVERIFY(menu);
+            auto*action=menu->findChild<QAction*>(actionName);QVERIFY(action);QVERIFY(action->isEnabled());
+            QTest::mouseClick(menu,Qt::LeftButton,Qt::NoModifier,menu->actionGeometry(action).center());
+        });
+        if(index<0){auto*blank=tabs->findChild<QWidget*>("channelCreationSpace");QVERIFY(blank);QVERIFY(QMetaObject::invokeMethod(blank,"customContextMenuRequested",Qt::DirectConnection,Q_ARG(QPoint,blank->rect().center())));}
+        else QVERIFY(QMetaObject::invokeMethod(tabs->tabBar(),"customContextMenuRequested",Qt::DirectConnection,Q_ARG(QPoint,tabs->tabBar()->tabRect(index).center())));
+    }
     QString artifactDir() const {
         const QString path=qEnvironmentVariable("HOST_ARTIFACT_DIR",QCoreApplication::applicationDirPath()+"/artifacts");
         QDir().mkpath(path);return path;
@@ -109,6 +124,24 @@ private slots:
         QVERIFY(summary.contains(QFileInfo(candidates.first()).suffix().toUpper()));
         QVERIFY(!summary.contains(QFileInfo(candidates.first()).fileName()));
     }
+    void frameIntervalsAcrossBatchesAndClear() {
+        FrameTableModel model;FrameRecord record;record.timestamp="12:34:56.789";record.relativeTime="1000000";
+        model.append({record});QCOMPARE(model.columnCount(),9);
+        QCOMPARE(model.headerData(0,Qt::Horizontal).toString(),QString("时间"));
+        QCOMPARE(model.headerData(2,Qt::Horizontal).toString(),QString("绝对时间/ms"));
+        QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.000"));
+        record.relativeTime="1001250";model.append({record});
+        record.relativeTime="1003751";model.append({record});
+        QCOMPARE(model.data(model.index(1,2)).toString(),QString("1.250"));
+        QCOMPARE(model.data(model.index(2,1)).toString(),QString("3.751"));
+        QCOMPARE(model.data(model.index(2,2)).toString(),QString("2.501"));
+        QString error;const auto path=m_temp.path()+"/intervals.csv";QVERIFY(model.exportCsv(path,error));
+        QFile csv(path);QVERIFY(csv.open(QIODevice::ReadOnly));const auto bytes=csv.readAll();
+        QVERIFY(bytes.contains(QString("绝对时间/ms").toUtf8()));QVERIFY(bytes.contains("\"3.751\",\"2.501\""));
+        model.clear();model.append({record});
+        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.000"));
+        QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.000"));
+    }
     void boundedFramesLiteralFilterAndExport() {
         FrameTableModel firstFrame;FrameRecord first;
         first.timestamp="12:34:56.789";first.relativeTime="123456";firstFrame.append({first});
@@ -120,8 +153,9 @@ private slots:
         model.append(frames);QCOMPARE(model.rowCount(),FrameTableModel::Capacity);
         QVERIFY(QRegularExpression("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$").match(model.data(model.index(0,0)).toString()).hasMatch());
         QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.020"));
-        QCOMPARE(model.headerData(1,Qt::Horizontal).toString(),QString("相对时间 / ms"));
-        QCOMPARE(model.headerData(4,Qt::Horizontal).toString(),QString("ID"));
+        QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.001"));
+        QCOMPARE(model.headerData(1,Qt::Horizontal).toString(),QString("时刻/ms"));
+        QCOMPARE(model.headerData(5,Qt::Horizontal).toString(),QString("ID"));
         QCOMPARE(model.data(model.index(0,0),Qt::TextAlignmentRole).toInt(),int(Qt::AlignCenter));
         QSortFilterProxyModel proxy;proxy.setSourceModel(&model);proxy.setFilterKeyColumn(-1);proxy.setFilterFixedString("[");
         QCOMPARE(proxy.rowCount(),0);proxy.setFilterFixedString("0x20");QCOMPARE(proxy.rowCount(),model.rowCount());
@@ -134,7 +168,9 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(can.canConnect() && lin.canConnect(),3000);
         can.toggleConnection();lin.toggleConnection();
         QTRY_VERIFY_WITH_TIMEOUT(can.connected() && lin.connected() && !can.pending() && !lin.pending(),3000);
-        auto changed=can.settings();changed.p2Ms=1900;QVERIFY(!can.setSettings(changed));QCOMPARE(can.settings().p2Ms,30);
+        auto changed=can.settings();changed.p2Ms=1900;QVERIFY(can.setSettings(changed));QCOMPARE(can.settings().p2Ms,1900);
+        changed.bitrate=250000;QVERIFY(!can.setSettings(changed));QCOMPARE(can.settings().bitrate,500000);
+        changed=can.settings();changed.p2Ms=30;QVERIFY(can.setSettings(changed));
         QVERIFY(can.canStart());can.start();can.start();
         QTRY_COMPARE_WITH_TIMEOUT(can.taskState(),TaskState::Running,2000);
         QTRY_VERIFY_WITH_TIMEOUT(can.progress()>0,2000);QCOMPARE(lin.progress(),0);
@@ -150,7 +186,7 @@ private slots:
     void modeSwitchRetainsUsableSelection() {
         MainWindow window(m_temp.path()+"/mode.json",true);
         auto vm=window.canChannel();auto page=window.findChild<ChannelPage*>("canPage");
-        auto mode=page->findChild<QComboBox*>("modeCombo");
+        ChannelHardwareEditor editor(vm);auto mode=editor.findChild<QComboBox*>("modeCombo");
         QTRY_VERIFY(vm->canConnect());mode->setCurrentIndex(0);QTRY_VERIFY(!vm->pending());
         QTRY_VERIFY(vm->hardware().isEmpty() || !vm->hardware().first().key.startsWith("preview:"));
         mode->setCurrentIndex(1);QTRY_VERIFY(vm->canConnect());
@@ -169,7 +205,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(lin->canConnect(),3000);QVERIFY(lin->chooseImage(true,fixture("ui-driver.bin",64)));
         QVERIFY(lin->chooseImage(false,fixture("ui-cancel.bin",262144)));
         QTest::mouseClick(connectButton,Qt::LeftButton);QTRY_VERIFY(lin->connected() && !lin->pending());
-        QVERIFY(!page->findChild<QComboBox*>("hardwareCombo")->isEnabled());
+        QVERIFY(!page->findChild<QComboBox*>("hardwareCombo"));QVERIFY(lin->hardwareLocked());
         QVERIFY(page->findChild<QLineEdit*>("applicationPath")->isEnabled());QVERIFY(start->isEnabled());
         QTest::mouseClick(start,Qt::LeftButton);QTRY_COMPARE(lin->taskState(),TaskState::Running);
         QTRY_VERIFY(lin->progress()>0);QVERIFY(!start->isEnabled());QVERIFY(cancel->isEnabled());
@@ -236,8 +272,8 @@ private slots:
         QCOMPARE(vm->progress(),100);
         bool flow=false,consecutive=false,requestId=false,responseId=false;
         for(int row=0;row<vm->frames()->rowCount();++row){
-            const auto id=vm->frames()->data(vm->frames()->index(row,4)).toString();
-            const auto data=vm->frames()->data(vm->frames()->index(row,6)).toString();
+            const auto id=vm->frames()->data(vm->frames()->index(row,5)).toString();
+            const auto data=vm->frames()->data(vm->frames()->index(row,7)).toString();
             requestId|=id.contains("18DA10F1");responseId|=id.contains("18DAF110");
             flow|=data.startsWith("30 ");consecutive|=data.startsWith("21 ");
         }
@@ -255,27 +291,54 @@ private slots:
         QVERIFY2(window.width()<=available.width(),qPrintable(QString("width %1 > %2").arg(window.width()).arg(available.width())));
         QVERIFY2(window.height()<=available.height(),qPrintable(QString("height %1 > %2").arg(window.height()).arg(available.height())));
     }
+    void channelNavigationReservesBlankSpaceAndWheelDoesNotSelect(){
+        ChannelTabs tabs;tabs.resize(700,300);for(int i=0;i<64;++i)tabs.addTab(new QWidget,QString("CAN%1").arg(i));tabs.show();QTest::qWait(50);
+        auto*bar=tabs.tabBar();auto*blank=tabs.findChild<QWidget*>("channelCreationSpace");QVERIFY(blank);QVERIFY(blank->isVisible());
+        QVERIFY(blank->height()>=38);QVERIFY(bar->geometry().bottom()<blank->geometry().top());
+        const auto before=bar->tabRect(20);const int selected=tabs.currentIndex();
+        QWheelEvent down(QPointF(bar->rect().center()),QPointF(bar->mapToGlobal(bar->rect().center())),QPoint(),QPoint(0,-120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
+        QApplication::sendEvent(bar,&down);QCOMPARE(tabs.currentIndex(),selected);QVERIFY(bar->tabRect(20).top()<before.top());
+        while(tabs.count()){auto*page=tabs.widget(0);tabs.removeTab(0);delete page;}QVERIFY(blank->isVisible());
+    }
+    void channelEditIsTransactionalAndOnlyChangesTarget(){
+        MainWindow window(m_temp.path()+"/edit-channel.json",true);window.show();auto*vm=window.canChannel();QTRY_VERIFY(vm->canConnect());
+        const auto original=vm->settings().toJson();const auto peer=window.linChannel()->settings().toJson();
+        QVERIFY(!window.findChild<QPushButton*>("createChannel"));QVERIFY(!window.findChild<ChannelPage*>("canPage")->findChild<QComboBox*>("bitrateCombo"));
+        QTimer::singleShot(100,&window,[&]{auto*dialog=window.findChild<QDialog*>("editChannelDialog");QVERIFY(dialog);
+            dialog->findChild<QLineEdit*>("channelName")->setText("cancelled");auto*rate=dialog->findChild<QComboBox*>("bitrateCombo");QVERIFY(rate);rate->setCurrentIndex(rate->findData(250000));dialog->reject();});
+        openChannelAction(window,0,"editChannelAction");QCOMPARE(vm->settings().toJson(),original);
+        QTimer::singleShot(100,&window,[&]{auto*dialog=window.findChild<QDialog*>("editChannelDialog");QVERIFY(dialog);
+            dialog->findChild<QLineEdit*>("channelName")->setText("CAN renamed");auto*rate=dialog->findChild<QComboBox*>("bitrateCombo");rate->setCurrentIndex(rate->findData(250000));
+            QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok),Qt::LeftButton);});
+        openChannelAction(window,0,"editChannelAction");QCOMPARE(vm->settings().softwareId,QString("CAN renamed"));QCOMPARE(vm->settings().bitrate,250000);
+        QCOMPARE(window.channels().size(),2);QCOMPARE(window.linChannel()->settings().toJson(),peer);QCOMPARE(vm->settings().downloadProfile,original.value("downloadProfile").toObject());
+        QString error;auto duplicate=vm->settings();duplicate.softwareId=window.linChannel()->settings().softwareId;
+        ChannelConfigurationViewModel configuration(m_temp.filePath("unused.json"));QVERIFY(!configuration.update(vm,duplicate,window.channels(),error));QCOMPARE(vm->settings().softwareId,QString("CAN renamed"));
+        QVERIFY(window.removeChannel(vm));QVERIFY(window.removeChannel(window.linChannel()));
+        QTimer::singleShot(100,&window,[&]{auto*dialog=window.findChild<QDialog*>("createChannelDialog");QVERIFY(dialog);dialog->reject();});
+        openChannelAction(window,-1,"createChannelAction");QVERIFY(window.channels().isEmpty());
+    }
     void dynamicChannelDialogAndStartup() {
         MainWindow window(m_temp.path()+"/dynamic.json",true);
         window.setAttribute(Qt::WA_DontShowOnScreen);window.show();
         auto tabs=window.findChild<QTabWidget*>("channelTabs");
         QCOMPARE(tabs->count(),2);QCOMPARE(tabs->tabText(0),QString("CAN01"));QCOMPARE(tabs->tabText(1),QString("LIN01"));
         QVERIFY(window.linChannel()!=nullptr);
-        QTimer::singleShot(30,&window,[&](){
+        QTimer::singleShot(100,&window,[&](){
             auto dialog=window.findChild<QDialog*>("createChannelDialog");QVERIFY(dialog);
             QCOMPARE(dialog->findChild<QLineEdit*>("channelName")->text(),QString("CAN02"));
             dialog->reject();
         });
-        QTest::mouseClick(window.findChild<QPushButton*>("createChannel"),Qt::LeftButton);
+        openChannelAction(window,-1,"createChannelAction");
         QCOMPARE(tabs->count(),2);
-        QTimer::singleShot(30,&window,[&](){
+        QTimer::singleShot(100,&window,[&](){
             auto dialog=window.findChild<QDialog*>("createChannelDialog");QVERIFY(dialog);
             dialog->findChild<QComboBox*>("channelType")->setCurrentIndex(1);
             auto name=dialog->findChild<QLineEdit*>("channelName");QCOMPARE(name->text(),QString("LIN02"));
             name->setText("LIN 台架 A");
-            QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok),Qt::LeftButton);
+            QTimer::singleShot(150,dialog,[dialog]{QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok),Qt::LeftButton);});
         });
-        QTest::mouseClick(window.findChild<QPushButton*>("createChannel"),Qt::LeftButton);
+        openChannelAction(window,-1,"createChannelAction");
         QCOMPARE(tabs->count(),3);QCOMPARE(tabs->tabText(2),QString("LIN 台架 A"));
         QString error;auto duplicate=preview(Bus::Can);duplicate.softwareId="lin 台架 a";
         QVERIFY(!window.addChannel(duplicate,error));QCOMPARE(tabs->count(),3);
@@ -295,8 +358,8 @@ private slots:
         MainWindow window(m_temp.path()+"/ports.json",true);QString error;
         auto s=preview(Bus::Can);s.softwareId="CAN02";auto second=window.addChannel(s,error);QVERIFY(second);
         auto first=window.canChannel();auto tabs=window.findChild<QTabWidget*>("channelTabs");
-        auto firstPage=qobject_cast<ChannelPage*>(tabs->widget(0)),secondPage=qobject_cast<ChannelPage*>(tabs->widget(2));
-        auto ports=secondPage->findChild<QComboBox*>("softwareChannelCombo");
+        ChannelHardwareEditor firstEditor(first),secondEditor(second);
+        auto ports=secondEditor.findChild<QComboBox*>("softwareChannelCombo");QVERIFY(ports);
         QTRY_COMPARE(ports->count(),2);QTRY_VERIFY(first->canConnect());
         const auto firstHandle=first->settings().handle;first->toggleConnection();
         QTRY_VERIFY(first->connected() && !first->pending());
@@ -306,10 +369,11 @@ private slots:
         QCOMPARE(first->settings().handle,firstHandle);
         auto thirdSettings=preview(Bus::Can);thirdSettings.softwareId="CAN03";
         auto third=window.addChannel(thirdSettings,error);QVERIFY(third);
-        auto thirdPorts=qobject_cast<ChannelPage*>(tabs->widget(3))->findChild<QComboBox*>("softwareChannelCombo");
+        ChannelHardwareEditor thirdEditor(third);
+        auto thirdPorts=thirdEditor.findChild<QComboBox*>("softwareChannelCombo");QVERIFY(thirdPorts);
         QTRY_VERIFY(thirdPorts->currentData().toString().isEmpty());QVERIFY(!third->canConnect());
         QVERIFY(!window.restoreChannels(m_temp.path()+"/dynamic.json",error));QCOMPARE(window.channels().size(),4);QVERIFY(first->connected());
-        QVERIFY(!firstPage->findChild<QComboBox*>("softwareChannelCombo")->isEnabled());
+        QVERIFY(!firstEditor.isEnabled());
         second->toggleConnection();QTRY_VERIFY(!second->connected() && !second->pending());QVERIFY(first->connected());
         QTRY_COMPARE(ports->count(),1);QTRY_VERIFY(third->canConnect());
         first->toggleConnection();QTRY_VERIFY(!first->connected() && !first->pending());
@@ -338,7 +402,7 @@ private slots:
         model->stateChanged(communication::ConnectionState::Missing,"removed");
         auto ports=vm->hardware();auto other=ports.first();other.key="preview:SECOND:1";other.handle=0xff41;other.label="Second adapter";ports.append(other);
         model->hardwareChanged(ports);
-        auto devices=window.findChild<ChannelPage*>("canPage")->findChild<QComboBox*>("hardwareCombo");
+        ChannelHardwareEditor editor(vm);auto devices=editor.findChild<QComboBox*>("hardwareCombo");
         const int row=devices->findData(hardwareDeviceKey(other));QVERIFY(row>=0);
         devices->setCurrentIndex(row);QCOMPARE(vm->settings().hardwareKey,other.key);
         QCOMPARE(vm->communicationIndicator(),2); // Explicit selection is allowed; only a successful connection clears red.
@@ -348,23 +412,23 @@ private slots:
         auto vm=window.linChannel();QVERIFY(vm);
         auto page=window.findChild<ChannelPage*>("linPage");
         window.setAttribute(Qt::WA_DontShowOnScreen);window.show();QTRY_VERIFY(vm->canConnect());
-        QVERIFY(!page->findChild<QLineEdit*>("requestId"));QVERIFY(!page->findChild<QSpinBox*>("p2Ms"));
+        QVERIFY(!page->findChild<QLineEdit*>("requestId"));QVERIFY(!page->findChild<QLineEdit*>("uds_p2Ms"));
         QTimer::singleShot(30,&window,[&](){
-            auto dialog=page->findChild<QDialog*>("protocolDialog");QVERIFY(dialog);
-            auto enable=dialog->findChild<QCheckBox*>("testerPresentEnabled");auto period=dialog->findChild<QSpinBox*>("testerPresentMs");
+            auto dialog=page->findChild<QDialog*>("udsSettingsDialog");QVERIFY(dialog);
+            auto enable=dialog->findChild<QCheckBox*>("uds_testerPresentEnabled");auto period=dialog->findChild<QLineEdit*>("uds_testerPresentMs");
             QVERIFY(!enable->isChecked());QVERIFY(!period->isEnabled());enable->setChecked(true);QVERIFY(period->isEnabled());
-            period->setValue(1700);dialog->findChild<QSpinBox*>("p2Ms")->setValue(789);
+            period->setText("1700");dialog->findChild<QLineEdit*>("uds_p2Ms")->setText("789");
             QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok),Qt::LeftButton);
         });
-        QTest::mouseClick(page->findChild<QPushButton*>("protocolSettings"),Qt::LeftButton);
+        QTest::mouseClick(page->findChild<QPushButton*>("downloadParameters"),Qt::LeftButton);
         QVERIFY(vm->settings().testerPresentEnabled);QCOMPARE(vm->settings().testerPresentMs,1700);QCOMPARE(vm->settings().p2Ms,789);
         QCOMPARE(window.canChannel()->settings().p2Ms,1000);
         QTimer::singleShot(30,&window,[&](){
-            auto dialog=page->findChild<QDialog*>("protocolDialog");QVERIFY(dialog);
-            dialog->findChild<QCheckBox*>("testerPresentEnabled")->setChecked(false);
-            dialog->findChild<QSpinBox*>("p2Ms")->setValue(1);dialog->reject();
+            auto dialog=page->findChild<QDialog*>("udsSettingsDialog");QVERIFY(dialog);
+            dialog->findChild<QCheckBox*>("uds_testerPresentEnabled")->setChecked(false);
+            dialog->findChild<QLineEdit*>("uds_p2Ms")->setText("1");dialog->reject();
         });
-        QTest::mouseClick(page->findChild<QPushButton*>("protocolSettings"),Qt::LeftButton);
+        QTest::mouseClick(page->findChild<QPushButton*>("downloadParameters"),Qt::LeftButton);
         QVERIFY(vm->settings().testerPresentEnabled);QCOMPARE(vm->settings().p2Ms,789);
         auto disabled=vm->settings();disabled.testerPresentEnabled=false;QVERIFY(vm->setSettings(disabled));
         communication::SoftwareChannelConfiguration cfg;QVERIFY(disabled.toConfiguration(cfg,error));QCOMPARE(cfg.uds.testerPresentMs,0);QCOMPARE(disabled.testerPresentMs,1700);
@@ -386,8 +450,11 @@ private slots:
             QVERIFY2(window.rect().contains(rect),qPrintable(name+" outside window"));
             QVERIFY2(w->visibleRegion().contains(w->rect()),qPrintable(name+" clipped"));
         }
-        QVERIFY(page->findChild<QTableView*>("frameTable")->viewport()->height()>=24);
-        QVERIFY(!page->findChild<QScrollArea*>());
+        QVERIFY(window.grab().save(artifactDir()+"/bootloader-1366.png"));
+        QVERIFY2(page->findChild<QTableView*>("frameTable")->viewport()->height()>=24,
+            qPrintable(QString("frame table %1 / viewport %2 / download %3").arg(page->findChild<QTableView*>("frameTable")->height()).arg(page->findChild<QTableView*>("frameTable")->viewport()->height()).arg(page->findChild<QWidget*>("downloadPanel")->height())));
+        QVERIFY(!page->findChild<QWidget*>("downloadPanel")->findChild<QScrollArea*>());
+        QVERIFY(page->findChild<QScrollArea*>("udsScrollArea"));
         auto version=window.findChild<QLabel*>("versionBadge");QVERIFY(version);QVERIFY(version->parentWidget()==window.statusBar());
         const auto pos=version->mapTo(&window,QPoint());
         QVERIFY(pos.x()>window.width()/2);QVERIFY(pos.y()>window.height()-50);QCOMPARE(version->text(),QString("ReleaseVer: 1.0"));
@@ -409,6 +476,7 @@ private slots:
         auto tabs=window.findChild<QTabWidget*>("channelTabs");auto bar=tabs->tabBar();
         QTimer::singleShot(30,&window,[&](){
             auto menu=window.findChild<QMenu*>("channelContextMenu");QVERIFY(menu);
+            QCOMPARE(menu->actions().size(),2);QCOMPARE(menu->actions()[0]->text(),QString("修改通道"));QCOMPARE(menu->actions()[1]->text(),QString("删除通道"));
             auto action=menu->findChild<QAction*>("deleteChannelAction");QVERIFY(action);QCOMPARE(action->text(),QString("删除通道"));
             QTest::mouseClick(menu,Qt::LeftButton,Qt::NoModifier,menu->actionGeometry(action).center());
         });
@@ -502,7 +570,7 @@ private slots:
         QCOMPARE(vm->frames()->rowCount(),61);
         int valid=0;
         for(int i=0;i<vm->frames()->rowCount();++i){
-            const QString status=vm->frames()->data(vm->frames()->index(i,6)).toString();
+            const QString status=vm->frames()->data(vm->frames()->index(i,8)).toString();
             QVERIFY2(!status.contains("错误"),qPrintable(status));if(status=="有效响应")++valid;
         }
         qInfo()<<"Physical LIN responses:"<<valid;
@@ -511,9 +579,8 @@ private slots:
         QString error;QVERIFY(vm->frames()->exportCsv(artifactDir()+"/lin-page-frames.csv",error));
         QTest::mouseClick(page->findChild<QPushButton*>("connectButton"),Qt::LeftButton);
         QTRY_VERIFY(!vm->connected() && !vm->pending());
-        QVERIFY(page->findChild<QComboBox*>("hardwareCombo")->isEnabled());
+        QVERIFY(!page->findChild<QComboBox*>("hardwareCombo"));QVERIFY(!vm->hardwareLocked());
     }
 };
 QTEST_MAIN(HostUiTest)
 #include "test_host_ui.moc"
-

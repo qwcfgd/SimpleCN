@@ -4,18 +4,20 @@
 #include "viewmodels/ChannelViewModel.h"
 class QComboBox;class QLineEdit;class QCheckBox;class QLabel;
 class QPushButton;class QProgressBar;class QTableView;class QPlainTextEdit;
+class QSplitter;class QResizeEvent;class QTabWidget;
 namespace host {
 class ChannelPage : public QWidget {
     Q_OBJECT
 public:
     explicit ChannelPage(ChannelViewModel *,QWidget *parent=nullptr);
     ChannelViewModel *viewModel()const{return m_vm;}
+protected:
+    void resizeEvent(QResizeEvent *)override;
 private:
     void build();
+    void updateRegionSizes();
     void loadSettings();
     void applyForm();
-    void refreshHardware();
-    void refreshPorts(bool deviceChanged=false);
     void editProtocol();
     void editDownload();
     void render();
@@ -23,16 +25,18 @@ private:
     void exportFrames();
     void exportLogs();
     ChannelViewModel *m_vm;
-    bool m_loading=false,m_applying=false,m_refreshing=false;
-    QComboBox *m_mode,*m_hardware,*m_software,*m_bitrate;
+    bool m_loading=false,m_applying=false;
     QLineEdit *m_flashPath,*m_appPath,*m_flashAddress,*m_appAddress;
-    QCheckBox *m_reconnect,*m_follow,*m_rxdEnabled;
+    QCheckBox *m_follow,*m_rxdEnabled;
     QLabel *m_state,*m_busHealth,*m_device,*m_handle,*m_flashInfo,*m_appInfo,*m_hint,*m_task,*m_count,*m_elapsedText,*m_error;
-    QPushButton *m_connect,*m_refresh,*m_start,*m_cancel,*m_scan,*m_protocol,*m_downloadSettings,*m_browseFlash;
+    QPushButton *m_connect,*m_start,*m_cancel,*m_scan,*m_protocol,*m_downloadSettings,*m_browseFlash;
     QProgressBar *m_progress;
     QTableView *m_table;
     QPlainTextEdit *m_log;
-    QWidget *m_parameters,*m_images;
+    QWidget *m_images;
+    QSplitter *m_regions=nullptr,*m_outputs=nullptr;
+    QTabWidget *m_tasks=nullptr;
+    double m_downloadRatio=0.30,m_udsRatio=0.62,m_signalRatio=0.68;
     QElapsedTimer m_elapsed;
     TaskState m_lastTask=TaskState::Idle;
 };

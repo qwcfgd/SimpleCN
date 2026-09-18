@@ -20,7 +20,8 @@ def main():
     required = [build/"QtBootloader.exe", build/"tests/VerifyRelease.exe",
                 build/f"tests/Qt{args.qt_major}Test.dll", build/"platforms/qwindows.dll",
                 build/"dll/PLinApi.dll", build/"dll/PCANBasic.dll",
-                ROOT/"docs/User-Guide.md"]
+                ROOT/"docs/User-Guide.md", build/"libsignal_dbcppp.dll",
+                ROOT/"docs/licenses/dbcppp-MIT.txt", ROOT/"docs/licenses/Boost-1.0.txt"]
     for path in required:
         if not path.is_file():
             parser.error(f"Missing required file: {path}")
@@ -29,7 +30,7 @@ def main():
     shutil.copy2(required[1], output)
     shutil.copy2(required[2], output)
     for path in build.glob("*.dll"):
-        if path.name.startswith(("Qt5", "Qt6", "libgcc_", "libstdc++", "libwinpthread")):
+        if path.name.startswith(("Qt5", "Qt6", "libgcc_", "libstdc++", "libwinpthread", "libsignal_dbcppp")):
             shutil.copy2(path, output)
     for name in ("generic", "iconengines", "imageformats",
                  "networkinformation", "platforms", "styles", "tls"):
@@ -51,6 +52,7 @@ def main():
     (output/"docs").mkdir()
     for path in (ROOT/"docs").glob("*.md"):
         shutil.copy2(path, output/"docs"/path.name)
+    shutil.copytree(ROOT/"docs/licenses", output/"docs/licenses")
     (output/"README.txt").write_text(
         "GENERAL BOOTLOADER CONTROLLER - InternalVer 0.2\n\n"
         "启动 QtBootloader.exe。首次只有 CAN01，不自动连接。\n"
@@ -65,7 +67,8 @@ def main():
         "qtMajor": int(args.qt_major), "architecture": "Windows x64",
         "buildType": "Release", "physicalDownloadEnabled": False, "physicalDownloadBuses": [], "physicalECUValidated": False,
         "components": ["Qt runtime and plugins", "MinGW runtime",
-                       "PEAK PCANBasic and PLIN API x64", "simulation fixtures"],
+                       "PEAK PCANBasic and PLIN API x64", "simulation fixtures",
+                       "dbcppp 3.8.0 (MIT)", "Boost 1.84 headers (Boost Software License 1.0)"],
         "driverServicesIncluded": False,
     }
     (output/"release-info.json").write_text(

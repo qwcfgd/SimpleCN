@@ -8,7 +8,7 @@ public:
     static constexpr int Capacity=10000;
     explicit FrameTableModel(QObject *parent=nullptr):QAbstractTableModel(parent){}
     int rowCount(const QModelIndex &p={}) const override {return p.isValid()?0:m_rows.size();}
-    int columnCount(const QModelIndex &p={}) const override {return p.isValid()?0:8;}
+    int columnCount(const QModelIndex &p={}) const override {return p.isValid()?0:9;}
     QVariant data(const QModelIndex &,int role=Qt::DisplayRole) const override;
     QVariant headerData(int,Qt::Orientation,int role=Qt::DisplayRole) const override;
     bool exportCsv(const QString &,QString &error) const;
@@ -19,5 +19,7 @@ private:
     FrameBatch m_rows;
     qint64 m_relativeOriginUs=0;
     bool m_hasRelativeOrigin=false;
+    qint64 m_previousUs=0;
+    bool m_hasPrevious=false;
 };
 }

@@ -1,13 +1,17 @@
 #pragma once
 #include "model/ChannelModel.h"
 #include "model/FrameTableModel.h"
+#include "model/UdsServiceTableModel.h"
 #include <QSet>
+#include <QTimer>
+#include "SignalTransmitViewModel.h"
 namespace host {
 class ChannelViewModel : public QObject {
     Q_OBJECT
 public:
     explicit ChannelViewModel(ChannelSettings,QObject *parent=nullptr);
     const ChannelSettings &settings()const{return m_settings;}
+    ChannelSettings snapshotSettings()const;
     communication::HardwareChannels hardware()const;
     void setReservations(const QSet<quint32> &);
     // 0: idle, 1: healthy, 2: communication lost.
@@ -24,7 +28,9 @@ public:
     bool pending()const{return m_pending;}
     bool scanning()const{return m_scanning;}
     bool connected()const{return m_state==communication::ConnectionState::Connected;}
-    bool busy()const{return m_pending || m_scanning || m_task==TaskState::Running || m_state==communication::ConnectionState::Connecting || m_state==communication::ConnectionState::Disconnecting;}
+    bool otherTaskBusy()const{return m_protocolBusy || m_repeatActive || m_diagnosticBusy || m_pending || m_scanning || m_task==TaskState::Running || m_state==communication::ConnectionState::Connecting || m_state==communication::ConnectionState::Disconnecting;}
+    bool busy()const{return otherTaskBusy() || (m_signals && (m_signals->running()||m_signals->importing()));}
+    SignalTransmitViewModel *signalTransmission()const{return m_signals;}
     bool hardwareLocked()const{return connected() || busy();}
     bool canConnect()const;
     bool canStart()const;
@@ -36,6 +42,18 @@ public:
     bool chooseImage(bool flash,const QString &path);
     static QStringList imageCandidates(const QString &path);
     bool exportLogs(const QString &,QString &error)const;
+    const diag::Database &diagnosticDatabase()const{return m_database;}
+    UdsServiceTableModel *diagnosticServices(){return &m_services;}
+    bool loadCdd(const QString &,QString &error,bool applyCommunication=true);
+    bool applyDiagnosticConfiguration(const diag::Database &,const ChannelSettings &,QString &error);
+    bool selectDiagnosticTarget(const QString &ecu,const QString &variant,QString &error);
+    bool sendDiagnostic(int serviceRow,const QByteArray &,QString &error);
+    bool repeatDiagnostic(int serviceRow,const QByteArray &,QString &error);
+    bool diagnosticBusy()const{return m_protocolBusy||m_diagnosticBusy||m_repeatActive;}
+    bool diagnosticRepeating()const{return m_repeatActive;}
+    QString diagnosticRepeatStatus()const;
+    QString diagnosticResult()const{return m_diagnosticResult;}
+    QString diagnosticHint()const;
 public slots:
     void toggleConnection();
     void refresh();
@@ -50,9 +68,14 @@ signals:
     void settingsChanged();
     void logAdded(QString);
     void logsCleared();
+    void diagnosticDatabaseChanged();
+    void diagnosticFinished(bool,QByteArray,QString);
 private:
+    void selectAvailableHardware();
     ChannelSettings m_settings;
     ChannelModel *m_model;
+    SignalTransmitViewModel *m_signals=nullptr;
+    quint64 m_connectionGeneration=0;
     FrameTableModel m_frames;
     communication::HardwareChannels m_hardware;
     communication::ConnectionState m_state=communication::ConnectionState::Missing;
@@ -63,5 +86,15 @@ private:
     bool m_lost=false,m_wasConnected=false,m_manualDisconnect=false,m_connecting=false;
     bool m_pending=false,m_scanning=false,m_ready=false,m_backendSimulation=false;
     QStringList m_logs;
+    diag::Database m_database;
+    UdsServiceTableModel m_services;
+    diag::Request m_lastDiagnostic;
+    ChannelSettings m_diagnosticSettings;
+    QString m_diagnosticResult;
+    bool m_diagnosticBusy=false;
+    bool m_protocolBusy=false;
+    QTimer m_diagnosticRepeatTimer;
+    bool m_repeatActive=false;
+    int m_repeatRemaining=0,m_repeatCompleted=0,m_repeatTotal=0;
 };
 }

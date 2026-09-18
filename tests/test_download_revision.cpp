@@ -1,4 +1,5 @@
 #include <QtTest>
+#include "infrastructure/SettingsStore.h"
 #include <algorithm>
 #include <QApplication>
 #include <QTemporaryDir>
@@ -15,7 +16,10 @@
 #include <QLineEdit>
 #include <QSpinBox>
 #include "views/MainWindow.h"
+#include "views/ChannelHardwareEditor.h"
 #include "protocol/PluginKey.h"
+#include "protocol/SimulatedLinEcu.h"
+#include "protocol/LinTransport.h"
 using namespace boot;
 using namespace host;
 static QByteArray hex(const char *s){return QByteArray::fromHex(s);}
@@ -161,7 +165,9 @@ private slots:
         window.findChild<QTabWidget*>("channelTabs")->setCurrentIndex(1);QTest::qWait(20);
         auto rxd=linPage->findChild<QCheckBox*>("rxdEnabled");QVERIFY(rxd);QVERIFY(rxd->isVisible());QVERIFY(!rxd->isChecked());
         rxd->setChecked(true);QVERIFY(linVm->settings().rxdEnabled);QVERIFY(linVm->settings().toJson()["rxdEnabled"].toBool());
-        auto modes=page->findChild<QComboBox*>("modeCombo");QCOMPARE(modes->itemText(0),QString("online"));QCOMPARE(modes->itemText(1),QString("simulation"));
+        QVERIFY(!page->findChild<QComboBox*>("modeCombo"));
+        ChannelHardwareEditor hardwareEditor(vm);auto modes=hardwareEditor.findChild<QComboBox*>("modeCombo");QVERIFY(modes);
+        QCOMPARE(modes->itemText(0),QString("在线硬件"));QCOMPARE(modes->itemText(1),QString("模拟模式"));QCOMPARE(modes->currentIndex(),1);
         window.findChild<QTabWidget*>("channelTabs")->setCurrentIndex(0);
         auto quick=vm->settings();quick.p2Ms=30;quick.p2StarMs=60;QVERIFY(vm->setSettings(quick));
         QTimer::singleShot(30,&window,[&]{

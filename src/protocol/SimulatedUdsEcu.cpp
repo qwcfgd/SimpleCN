@@ -3,6 +3,7 @@ namespace boot {
 QList<QByteArray> SimulatedUdsEcu::handle(const QByteArray &pdu){
     QList<QByteArray> replies;if(pdu.isEmpty())return replies;
     requests.append(pdu);const int sid=quint8(pdu[0]);
+    if(diagnosticHandler)return diagnosticHandler(pdu);
     const bool canSuppress=sid==0x10||sid==0x11||sid==0x28||sid==0x3e||sid==0x85;
     const bool suppressPositive=canSuppress&&pdu.size()>1&&(quint8(pdu[1])&0x80);
     if(faults.dropService==sid)return replies;

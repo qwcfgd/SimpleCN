@@ -5,7 +5,7 @@
       "name": "qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/stage2-update/qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
@@ -19,7 +19,7 @@
       "name": "qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/stage2-update/qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
@@ -33,7 +33,7 @@
       "name": "stage3-qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/stage3/qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
@@ -47,7 +47,7 @@
       "name": "stage3-qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/stage3/qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
@@ -61,7 +61,7 @@
       "name": "stage4-qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/stage4/qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
@@ -75,7 +75,7 @@
       "name": "stage4-qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/stage4/qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
@@ -89,7 +89,7 @@
       "name": "release-qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/stage5/qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
@@ -103,7 +103,7 @@
       "name": "release-qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/stage5/qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
@@ -117,7 +117,7 @@
       "name": "stage6-qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "build/stage6/qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
@@ -131,7 +131,7 @@
       "name": "stage6-qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "build/stage6/qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
@@ -145,7 +145,7 @@
       "name": "stage7-qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "build/stage7/qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
@@ -159,7 +159,7 @@
       "name": "stage7-qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "build/stage7/qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",

@@ -5,7 +5,11 @@
 #include <QElapsedTimer>
 #include <functional>
 namespace boot {
-struct SessionOptions {int p2Ms=1000,p2StarMs=5500,maxPendingMs=60000,testerPresentMs=0;};
+struct SessionOptions {
+    int p2Ms=1000,p2StarMs=5500,maxPendingMs=60000,testerPresentMs=0;
+    int p3Ms=0,p2MarginMs=0,p2StarMarginMs=0;
+    QByteArray testerPresentRequest=QByteArray::fromHex("3e80");
+};
 class UdsSession final : public QObject {
     Q_OBJECT
 public:
@@ -18,6 +22,7 @@ public:
 signals:
     void trace(bool transmit,QByteArray pdu);
     void notice(QString);
+    void activityChanged(bool);
 private:
     struct Request {QByteArray bytes,expected;Reply reply;bool suppressed=false;};
     void pump();

@@ -28,6 +28,13 @@ bool ChannelSettings::toConfiguration(communication::SoftwareChannelConfiguratio
         error="请检查 UDS 时序、会话及安全级别；安全请求级别需为奇数。";
     if(error.isEmpty() && (repeatDownloadCount<1 || repeatDownloadCount>10000 || repeatDownloadIntervalMs<0 || repeatDownloadIntervalMs>86400000))
         error="重复下载次数应为 1–10000，等待间隔应为 0–86400000 ms。";
+    if(error.isEmpty() && (udsRepeatCount<1 || udsRepeatCount>10000 || udsRepeatDelayMs<0 || udsRepeatDelayMs>86400000))
+        error="UDS 重发次数应为 1–10000，重发延时应为 0–86400000 ms。";
+    auto tester=testerPresentRequest;tester.remove(' ');
+    if(error.isEmpty()&&(p3Ms<0||p3Ms>600000||p2ServerMs<0||p2ServerMs>60000||p2StarServerMs<0||p2StarServerMs>600000||
+        linSlotMs<0||linSlotMs>60000||linAsMs<1||linAsMs>60000||linCrMs<1||linCrMs>60000||
+        (tester.compare("3E00",Qt::CaseInsensitive)!=0&&tester.compare("3E80",Qt::CaseInsensitive)!=0)))
+        error="请检查会话/网络时序；TesterPresent 报文须为 3E 00 或 3E 80。";
     quint32 request=0,response=0,functional=0,nadValue=0,address=0;
     if(error.isEmpty() && bus==communication::Bus::Can) {
         const quint32 limit=extendedId?0x1fffffff:0x7ff;
@@ -59,13 +66,26 @@ QJsonObject ChannelSettings::toJson() const {
         {"testerPresentEnabled",testerPresentEnabled},{"testerPresentMs",testerPresentMs},{"maxPendingMs",maxPendingMs},{"programmingSession",programmingSession},
         {"securityLevel",securityLevel},{"flashPath",flashPath},{"applicationPath",applicationPath},
         {"flashAddress",flashAddress},{"applicationAddress",applicationAddress},{"flashRequired",flashRequired},{"rxdEnabled",rxdEnabled},{"repeatDownloadEnabled",repeatDownloadEnabled},
-        {"repeatDownloadCount",repeatDownloadCount},{"repeatDownloadIntervalMs",repeatDownloadIntervalMs}};
+        {"repeatDownloadCount",repeatDownloadCount},{"repeatDownloadIntervalMs",repeatDownloadIntervalMs},
+        {"cddPath",cddPath},{"cddEcu",cddEcu},{"cddVariant",cddVariant},{"signalConfiguration",signalConfiguration},
+        {"udsRepeatCount",udsRepeatCount},{"udsRepeatDelayMs",udsRepeatDelayMs},{"udsRepeatEnabled",udsRepeatEnabled},
+        {"p3Ms",p3Ms},{"p2ServerMs",p2ServerMs},{"p2StarServerMs",p2StarServerMs},{"testerPresentRequest",testerPresentRequest},
+        {"linSlotMs",linSlotMs},{"linAsMs",linAsMs},{"linCrMs",linCrMs}};
 }
 bool ChannelSettings::fromJson(const QJsonObject &o,ChannelSettings &result,QString &error) {
     if(o.value("bus")!="CAN" && o.value("bus")!="LIN"){error="配置中的总线类型无效。";return false;}
     ChannelSettings s=defaults(o.value("bus")=="CAN"?communication::Bus::Can:communication::Bus::Lin);
     const auto text=[&o](const char *key,const QString &fallback){return o.value(key).toString(fallback);};
     s.softwareId=text("softwareId",s.softwareId);s.profileId=text("profileId",s.profileId);
+    s.cddPath=text("cddPath",{});s.cddEcu=text("cddEcu",{});s.cddVariant=text("cddVariant",{});
+    if(o.contains("signalConfiguration")&&!o["signalConfiguration"].isObject()){error="signalConfiguration must be an object";return false;}
+    s.signalConfiguration=o["signalConfiguration"].toObject();
+    s.udsRepeatCount=o.value("udsRepeatCount").toInt(s.udsRepeatCount);
+    s.udsRepeatDelayMs=o.value("udsRepeatDelayMs").toInt(s.udsRepeatDelayMs);
+    s.udsRepeatEnabled=o.value("udsRepeatEnabled").toBool(false);
+    s.p3Ms=o.value("p3Ms").toInt(s.p3Ms);s.p2ServerMs=o.value("p2ServerMs").toInt(s.p2ServerMs);s.p2StarServerMs=o.value("p2StarServerMs").toInt(s.p2StarServerMs);
+    s.testerPresentRequest=text("testerPresentRequest",s.testerPresentRequest);
+    s.linSlotMs=o.value("linSlotMs").toInt(s.linSlotMs);s.linAsMs=o.value("linAsMs").toInt(s.linAsMs);s.linCrMs=o.value("linCrMs").toInt(s.linCrMs);
     if(o.contains("downloadProfile")&&!o.value("downloadProfile").isObject()){error="downloadProfile must be an object";return false;}
     if(o.contains("canNetwork")&&!o.value("canNetwork").isObject()){error="canNetwork must be an object";return false;}
     if(o.contains("canNetwork"))s.canNetwork=o.value("canNetwork").toObject();

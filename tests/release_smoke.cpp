@@ -1,4 +1,5 @@
 #include <QtTest>
+#include "infrastructure/SettingsStore.h"
 #include <QApplication>
 #include <QFile>
 #include <QJsonArray>
