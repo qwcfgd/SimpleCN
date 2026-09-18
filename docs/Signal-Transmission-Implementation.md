@@ -106,3 +106,31 @@ ctest --test-dir <构建目录> --output-on-failure
 - 修正两处 UI 回归用例仍从主页面查找硬件控件的问题，改由 `ChannelHardwareEditor` 验证端口占用、释放和模式选择，避免控件迁移后的空指针访问。
 - Qt 5.15.19 / Qt 6.8.4 均从 `C:/Documents/0_Qt/Qt-GeneralController` 完成 Release 编译，各 10 个 CTest 套件全部通过；每套仅真实 LIN 测试按条件跳过。日志为各构建目录内的 `main-sync-tests.log`，XML 报告位于 `tests/`。
 - MVVM 静态规则通过；两个新生成的 `QtBootloader.exe --version` 均成功返回 `GBoot 0.2.2`。
+
+## 本地 DBC / LDF 样本验证（2026-09-18）
+
+使用原工程 `testsrc/test.dbc` 和 `testsrc/test.ldf` 原件执行测试，未将样本加入版本控制，测试前后 SHA-256 一致。
+
+| 文件 | 导入结果 | 原生编解码探针 |
+|---|---|---|
+| `test.dbc` | 2 个节点、5 个报文、5 个信号 | 15 组 payload 向量 |
+| `test.ldf` | 8 个节点、58 个帧、283 个帧内信号、9 张调度表 | 156 组 payload 向量 |
+
+Qt 5/6 的解析及 payload 报告完全一致。两套 Release 重新编译成功，`signal_codec`、`signal_driver`、`signal_ui` 三个套件各自全部通过。新增本地样本用例覆盖后台导入、报文树/信号表/配置窗口显示、配置保存与恢复、CAN 单次及 LIN 默认调度模拟发送、停止和源文件保持不变；界面截图已核对。没有访问物理总线。
+
+本轮修正：
+
+- dbcppp 不支持的 `BA_DEF_REL_` / `BA_DEF_DEF_REL_` 关系属性声明经过独立语法检查后，从传给上游的内存副本中屏蔽，并在导入摘要中说明。文件原文、行号和信号精确十进制定义保持不变；畸形声明仍报错。
+- LDF 的不同命名帧可以共享 ID 并分别浏览；这类帧使用不同内部键保存，明确标记为暂不支持发送或按 ID 接收解码，防止工作副本覆盖或错误关联。重复名称和未知发布节点仍报错。
+- `10.000 ms` 等整数值十进制时延采用精确转换；仿真和硬件调度共用转换逻辑，避免字符串整数转换失败而得到 0。非整数时延仍拒绝、不舍入。
+
+该 LDF 有 4 张当前支持执行的调度表；另有 4 张包含诊断槽，以及 1 张涉及重复 ID，后 5 张可查看但当前信号发送功能不执行。文件能够打开不代表其所有调度语义都已实现。
+
+复现：
+
+```powershell
+cmake --build --preset release-qt6
+ctest --preset release-qt6 -R "^signal_" --output-on-failure
+```
+
+Qt 5 改用 `release-qt5`。测试默认从原工程 `testsrc` 读取，可用 `HOST_SIGNAL_SAMPLE_DIR` 指定其他样本目录；未提供原件时仅跳过这两个本地样本用例。各构建目录的 `tests/testsrc-dbc.json`、`tests/testsrc-ldf.json` 保存原生探针报告，`tests/artifacts/testsrc-*.png` 保存页面及配置窗口截图，`testsrc-tests.log` 保存本轮回归结果。

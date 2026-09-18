@@ -125,6 +125,10 @@ QString SignalCodec::validateFrame(const FrameDefinition&f){
     for(const auto&s:f.fields)if(s.multiplexed&&!selectors)return "复用分支缺少选择器";
     return {};
 }
+int SignalCodec::scheduleDelayMs(const QString&text){
+    Number delay;if(!parse(text,delay)||delay.n%delay.d!=0||delay.n<4*delay.d||delay.n>65535*delay.d)return -1;
+    return (delay.n/delay.d).convert_to<int>();
+}
 QString SignalCodec::validateSchedule(const Schedule&s,const QVector<FrameDefinition>&frames,int bitrate){
     if(!s.issue.isEmpty())return s.issue;
     if(s.entries.isEmpty()||s.entries.size()>256)return "硬件调度表需要 1–256 个槽";
@@ -132,9 +136,9 @@ QString SignalCodec::validateSchedule(const Schedule&s,const QVector<FrameDefini
     for(const auto&slot:s.entries){if(!slot.issue.isEmpty())return slot.issue;
         auto f=std::find_if(frames.begin(),frames.end(),[&](const auto&v){return v.key==slot.frame;});
         if(f==frames.end())return "调度引用未知帧："+slot.frame;if(!f->issue.isEmpty())return f->issue;
-        Number delay;if(!parse(slot.delayMs,delay)||delay.n%delay.d!=0||delay.n<4*delay.d||delay.n>65535*delay.d)return "PLIN delay 必须为 4–65535 整数 ms；不进行舍入";
+        const int delay=scheduleDelayMs(slot.delayMs);if(delay<0)return "PLIN delay 必须为 4–65535 整数 ms；不进行舍入";
         // LIN maximum frame time: 1.4 * (34 header bits + 10*(data bytes+checksum)).
-        if(delay.n*bitrate*10<delay.d*14000*(34+10*(f->length+1)))return "槽间隔不足以容纳当前波特率下的完整 LIN 帧";
+        if(qint64(delay)*bitrate*10<14000*(34+10*(f->length+1)))return "槽间隔不足以容纳当前波特率下的完整 LIN 帧";
     }return {};
 }
 quint8 SignalCodec::linPid(quint8 id){id&=0x3f;const int p0=((id>>0)^(id>>1)^(id>>2)^(id>>4))&1;const int p1=(~((id>>1)^(id>>3)^(id>>4)^(id>>5)))&1;return id|(p0<<6)|(p1<<7);}

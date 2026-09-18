@@ -81,13 +81,18 @@ class Parser {
         if(!header||!haveNodes||db.master.isEmpty()||db.version.isEmpty()||db.bitrate==0)fail("缺少 LDF 必需的文件头、版本、速度或节点");
         for(auto it=fields.begin();it!=fields.end();++it){auto &s=it.value();if(!s.publisher.isEmpty()&&!db.nodes.contains(s.publisher))fail("未知信号发布者："+s.publisher);for(const auto&r:s.receivers)if(!db.nodes.contains(r))fail("未知订阅者："+r);}
         for(auto it=representations.begin();it!=representations.end();++it){if(!fields.contains(it.key())||!encodings.contains(it.value()))fail("未知信号/编码引用："+it.key());auto &s=fields[it.key()];const auto &e=encodings[it.value()];s.conversion=e.conversion;s.ranges=e.ranges;s.labels=e.labels;s.issue=e.issue;}
-        QSet<QString> ids,names;QMap<QString,QString> keyByName;
-        for(auto &f:db.frames){if(ids.contains(f.key)||names.contains(f.name)||unsupportedFrames.contains(f.name))fail("重复帧 ID/名称："+f.name);ids.insert(f.key);names.insert(f.name);keyByName[f.name]=f.key;
-            if(f.issue.isEmpty()&&!db.nodes.contains(f.publisher))fail("未知帧发布者："+f.name);
+        QMap<quint32,int> idCounts;for(const auto&f:db.frames)++idCounts[f.id];
+        QSet<QString> names;QMap<QString,QString> keyByName;
+        for(auto &f:db.frames){if(names.contains(f.name)||unsupportedFrames.contains(f.name))fail("重复帧名称："+f.name);names.insert(f.name);
+            // Keep distinct descriptions visible without assigning ambiguous bus
+            // traffic to either one or silently overwriting its working copy.
+            if(idCounts.value(f.id)>1){f.key+=":"+f.name;f.issue=QString("LIN ID 0x%1 对应多个帧定义；可浏览，暂不支持发送或按 ID 解码").arg(f.id,2,16,QChar('0'));}
+            keyByName[f.name]=f.key;
+            if(f.id<60&&!db.nodes.contains(f.publisher))fail("未知帧发布者："+f.name);
             f.classicChecksum=db.version.startsWith("1.")||db.nodeAttributes.value(f.publisher).value("LIN_protocol").startsWith("1.")||f.id>=60;
             for(auto &s:f.fields){if(!fields.contains(s.name))fail("未知帧信号引用："+s.name);int offset=s.start;s=fields[s.name];s.start=offset;
-                if(f.issue.isEmpty()&&s.publisher!=f.publisher)fail("帧/信号发布者矛盾："+f.name+"/"+s.name);
-                if(!s.issue.isEmpty())f.issue=s.issue;
+                if(f.id<60&&s.publisher!=f.publisher)fail("帧/信号发布者矛盾："+f.name+"/"+s.name);
+                if(!s.issue.isEmpty())f.issue+=(f.issue.isEmpty()?QString():"；")+s.issue;
             }
             const auto issue=SignalCodec::validateFrame(f);if(!issue.isEmpty())fail(f.name+": "+issue);
             if(!f.issue.isEmpty())db.diagnostics.append(f.name+": "+f.issue);

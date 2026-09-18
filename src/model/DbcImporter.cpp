@@ -9,13 +9,49 @@ namespace host::signal {
 static QString qs(const std::string&s){return QString::fromUtf8(s.data(),int(s.size()));}
 static QString attribute(const dbcppp::IAttribute&a){return std::visit([](const auto &v)->QString{
     using T=std::decay_t<decltype(v)>;if constexpr(std::is_same_v<T,std::string>)return qs(v);else if constexpr(std::is_same_v<T,double>)return QString::number(v,'g',17);else return QString::number(qlonglong(v));},a.Value());}
+// dbcppp does not accept relation attribute declarations. Validate these metadata
+// records separately and mask only their parser input, preserving source and lines.
+static bool relationMetadata(QString &input,QStringList &notes,QString &error){
+    const QString quoted=R"rx("(?:[^"\\]|\\.)*")rx";
+    const QString number=R"rx([+-]?(?:0[xX][0-9A-Fa-f]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?))rx";
+    const QString type="(?:(?:INT|HEX|FLOAT)\\s+"+number+"\\s+"+number+"|STRING|ENUM\\s+"+quoted+"(?:\\s*,\\s*"+quoted+")*)";
+    const QRegularExpression declaration("^BA_DEF_REL_\\s+BU_(?:SG|EV|BO)_REL_\\s+"+quoted+"\\s+"+type+"\\s*;$");
+    const QRegularExpression defaultValue("^BA_DEF_DEF_REL_\\s+"+quoted+"\\s+(?:"+quoted+"|"+number+")\\s*;$");
+    bool inString=false,escaped=false;int count=0;
+    for(int i=0;i<input.size();++i){
+        const auto c=input[i];
+        if(inString){if(escaped)escaped=false;else if(c=='\\')escaped=true;else if(c=='"')inString=false;continue;}
+        if(c=='"'){inString=true;continue;}
+        if(input.mid(i,2)=="//"){while(i<input.size()&&input[i]!='\n')++i;continue;}
+        if(input.mid(i,2)=="/*"){const auto end=input.indexOf("*/",i+2);if(end<0)break;i=end+1;continue;}
+        if(c!='B')continue;
+        const auto lineStart=input.lastIndexOf('\n',i)+1;
+        if(!input.mid(lineStart,i-lineStart).trimmed().isEmpty())continue;
+        const QString token=input.mid(i,15).startsWith("BA_DEF_DEF_REL_")?"BA_DEF_DEF_REL_":"BA_DEF_REL_";
+        if(input.mid(i,token.size())!=token)continue;
+        int next=i+token.size();while(next<input.size()&&(input[next]==' '||input[next]=='\t'))++next;
+        // Bare keywords in NS_ are declarations of supported symbol names.
+        if(next>=input.size()||input[next]=='\r'||input[next]=='\n')continue;
+        bool quotedValue=false,escape=false;int end=next;
+        for(;end<input.size();++end){const auto ch=input[end];if(escape){escape=false;continue;}if(quotedValue&&ch=='\\'){escape=true;continue;}if(ch=='"')quotedValue=!quotedValue;if(ch==';'&&!quotedValue)break;}
+        const auto record=input.mid(i,end-i+1);
+        if(end==input.size()||!(token=="BA_DEF_REL_"?declaration:defaultValue).match(record).hasMatch()){
+            error=QString("第 %1 行：无效 DBC 关系属性声明").arg(input.left(i).count('\n')+1);return false;
+        }
+        for(int j=i;j<=end;++j)if(input[j]!='\n'&&input[j]!='\r')input[j]=' ';
+        ++count;i=end;
+    }
+    if(count)notes.append(QString("已识别 %1 条 DBC 关系属性声明；不参与信号编码").arg(count));
+    return true;
+}
 ImportResult DatabaseImporter::dbc(const QByteArray&bytes,const QString&path){
     auto db=QSharedPointer<DatabaseDefinition>::create();db->bus=Bus::Can;QString text,error;
     if(!prepare(bytes,path,*db,text,error))return {{},error};
+    auto parserText=text;if(!relationMetadata(parserText,db->diagnostics,error))return {{},error};
     // The upstream parser writes diagnostics to std::cerr. Serialize imports while capturing it.
     static std::mutex parserMutex;std::unique_ptr<dbcppp::INetwork> network;std::ostringstream diagnostics;
     {std::lock_guard<std::mutex> lock(parserMutex);auto previous=std::cerr.rdbuf(diagnostics.rdbuf());
-        try{std::istringstream input(text.toUtf8().toStdString());network=dbcppp::INetwork::LoadDBCFromIs(input);}
+        try{std::istringstream input(parserText.toUtf8().toStdString());network=dbcppp::INetwork::LoadDBCFromIs(input);}
         catch(const std::exception&e){error=QString::fromUtf8(e.what());}
         catch(...){error="DBC 解析异常";}std::cerr.rdbuf(previous);
     }

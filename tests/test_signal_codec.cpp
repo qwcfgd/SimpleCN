@@ -31,6 +31,36 @@ class SignalCodecTest:public QObject {
     TxPlan linPlan(LinRole role=LinRole::Master)const{const auto db=ldf();TxPlan plan;plan.bus=Bus::Lin;plan.role=role;plan.node=role==LinRole::Slave?"Sensor":"Tester";plan.schedules=db->schedules;plan.schedule="Main";plan.run=4;
         for(const auto&f:db->frames){TxDraft draft;QString e;SignalCodec::initialize(f,Bus::Lin,draft,e);plan.items.append({f.key,f.id,false,draft.applied.bytes,0,1,f.publisher,f.classicChecksum});}return plan;}
 private slots:
+    void dbcRelationDeclarationsDoNotChangePayload(){
+        auto source=bytes("dbc");
+        source+="\nBA_DEF_REL_ BU_SG_REL_ \"Timeout\" INT 0 65535;\nBA_DEF_DEF_REL_ \"Timeout\" 0;\n";
+        source+="BA_DEF_REL_ BU_BO_REL_ \"Label\" STRING;\nBA_DEF_DEF_REL_ \"Label\" \"text; with \\\"quotes\\\"\";\n";
+        const auto result=DatabaseImporter::dbc(source);QVERIFY2(result.database,qPrintable(result.error));QCOMPARE(result.database->frames.size(),dbc()->frames.size());
+        QVERIFY(result.database->diagnostics.join('\n').contains("4 条"));
+        TxDraft draft;QString error;QVERIFY(SignalCodec::initialize(find(result.database,"Packed"),Bus::Can,draft,error));QCOMPARE(draft.applied.bytes,QByteArray::fromHex("020cff0ffff00000"));
+        auto malformed=source;malformed.replace("INT 0 65535;","INT broken;");QVERIFY(!DatabaseImporter::dbc(malformed).database);
+        malformed=source;malformed+="BA_DEF_DEF_REL_ \"unfinished\" \"value;";QVERIFY(!DatabaseImporter::dbc(malformed).database);
+        source.replace("CM_ BO_ 291", "CM_ \"BA_DEF_REL_ inside a comment; remains text\";\n/*\nBA_DEF_REL_ not a declaration;\n*/\nCM_ BO_ 291");
+        const auto commented=DatabaseImporter::dbc(source);QVERIFY2(commented.database,qPrintable(commented.error));QVERIFY(commented.database->diagnostics.join('\n').contains("4 条"));
+    }
+    void duplicateLinIdsRemainDistinctAndNotTransmittable(){
+        auto source=bytes("ldf");source.replace("Frames {","Frames {\nAlias: 0x10, Tester, 2 { Command, 0; }\n");
+        const auto result=DatabaseImporter::ldf(source);QVERIFY2(result.database,qPrintable(result.error));
+        const auto&original=find(result.database,"Control");const auto&alias=find(result.database,"Alias");
+        QCOMPARE(original.id,alias.id);QVERIFY(original.key!=alias.key);QVERIFY(!original.issue.isEmpty());QVERIFY(!alias.issue.isEmpty());
+        QVERIFY(!SignalCodec::validateSchedule(result.database->schedules.first(),result.database->frames,19200).isEmpty());
+        QSet<QString> keys;for(const auto&f:result.database->frames){QVERIFY(!keys.contains(f.key));keys.insert(f.key);TxDraft d;QString e;QVERIFY(SignalCodec::initialize(f,Bus::Lin,d,e));}
+        source.replace("Alias: 0x10, Tester","Alias: 0x10, Unknown");QVERIFY(!DatabaseImporter::ldf(source).database);
+    }
+    void decimalMillisecondSlotsKeepTheirTiming(){
+        QCOMPARE(SignalCodec::scheduleDelayMs("10.000"),10);QCOMPARE(SignalCodec::scheduleDelayMs("1e1"),10);
+        QCOMPARE(SignalCodec::scheduleDelayMs("10.001"),-1);QCOMPARE(SignalCodec::scheduleDelayMs("65536"),-1);
+        auto plan=linPlan();for(auto&slot:plan.schedules[0].entries)slot.delayMs="10.000";
+        LinScheduleRunner runner;QString error;int events=0;runner.event=[&](const BusFrameEvent&){++events;};
+        QVERIFY(runner.start(plan,19200,0,error));QVERIFY(runner.tick(0,error));QCOMPARE(events,1);
+        QVERIFY(runner.tick(9999,error));QCOMPARE(events,1);QVERIFY(runner.tick(10000,error));QCOMPARE(events,2);
+        QVERIFY(runner.tick(19999,error));QCOMPARE(events,2);QVERIFY(runner.tick(20000,error));QCOMPARE(events,3);
+    }
     void dbcFullGrammarAndInitialization(){const auto result=DatabaseImporter::load(fixture("dbc"),Bus::Can);QVERIFY2(result.database,qPrintable(result.error));const auto db=result.database;
         QCOMPARE(db->frames.size(),5);QVERIFY(db->nodes.contains("Tester"));const auto&f=find(db,"Packed");QString error;TxDraft draft;QVERIFY2(SignalCodec::initialize(f,Bus::Can,draft,error),qPrintable(error));QCOMPARE(draft.applied.bytes,QByteArray::fromHex("020cff0ffff00000"));
         QCOMPARE(SignalCodec::defaults(f.fields[0]).bits,quint64(7));QCOMPARE(SignalCodec::rawText(f.fields[2],SignalCodec::defaults(f.fields[2])),QString("-1"));

@@ -8,8 +8,8 @@
 using namespace host::signal;
 int main(int argc,char**argv){
     QCoreApplication app(argc,argv);const auto args=app.arguments();if(args.size()!=3)return 2;
-    const auto bus=args[1].endsWith(".dbc")?Bus::Can:Bus::Lin;
-    const auto result=DatabaseImporter::load(args[1],bus);if(!result.database)return 3;
+    const auto bus=args[1].endsWith(".dbc",Qt::CaseInsensitive)?Bus::Can:Bus::Lin;
+    const auto result=DatabaseImporter::load(args[1],bus);if(!result.database){QFile output(args[2]);if(output.open(QIODevice::WriteOnly))output.write(QJsonDocument(QJsonObject{{"error",result.error}}).toJson());return 3;}
     QJsonArray frames;
     for(const auto&f:result.database->frames){
         QJsonArray fields,samples;for(const auto&s:f.fields)fields.append(QJsonObject{{"name",s.name},{"start",s.start},{"width",s.width},{"array",s.array},{"signed",s.isSigned},{"littleEndian",s.littleEndian},{"initial",s.initial}});
@@ -23,8 +23,11 @@ int main(int argc,char**argv){
             QJsonObject values;for(int i=0;i<f.fields.size();++i)values[f.fields[i].name]=SignalCodec::rawText(f.fields[i],draft.values[i]);
             samples.append(QJsonObject{{"values",values},{"payload",QString::fromLatin1(payload.toHex())}});
         }
-        frames.append(QJsonObject{{"name",f.name},{"id",int(f.id)},{"length",f.length},{"extended",f.extended},{"publisher",f.publisher},{"issue",f.issue},{"fields",fields},{"samples",samples}});
+        frames.append(QJsonObject{{"key",f.key},{"name",f.name},{"id",int(f.id)},{"length",f.length},{"extended",f.extended},{"publisher",f.publisher},{"issue",f.issue},{"fields",fields},{"samples",samples}});
     }
+    QJsonArray schedules;for(const auto&s:result.database->schedules){QJsonArray entries;for(const auto&slot:s.entries)entries.append(QJsonObject{{"frame",slot.frame},{"delayMs",slot.delayMs}});
+        schedules.append(QJsonObject{{"name",s.name},{"slots",entries},{"issue",SignalCodec::validateSchedule(s,result.database->frames,result.database->bitrate)}});}
     QFile output(args[2]);if(!output.open(QIODevice::WriteOnly))return 6;
-    output.write(QJsonDocument(QJsonObject{{"frames",frames},{"nodes",QJsonArray::fromStringList(result.database->nodes)}}).toJson());return 0;
+    output.write(QJsonDocument(QJsonObject{{"frames",frames},{"nodes",QJsonArray::fromStringList(result.database->nodes)},{"schedules",schedules},
+        {"sha256",result.database->sha256},{"diagnostics",QJsonArray::fromStringList(result.database->diagnostics)}}).toJson());return 0;
 }

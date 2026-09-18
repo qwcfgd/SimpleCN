@@ -19,6 +19,7 @@ public:
     static bool parseBytes(const QString &,int,QByteArray &,QString &);
     static QString validateFrame(const FrameDefinition &);
     static QString validateSchedule(const Schedule &,const QVector<FrameDefinition> &,int bitrate);
+    static int scheduleDelayMs(const QString &);
     static quint8 linPid(quint8 id);
 };
 }

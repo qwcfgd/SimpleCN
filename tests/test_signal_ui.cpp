@@ -2,6 +2,8 @@
 #include <QApplication>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QPushButton>
@@ -26,8 +28,39 @@ class SignalUiTest:public QObject {
     QString fixture(const char*ext="dbc")const{return QString(TEST_SOURCE_DIR)+"/fixtures/signals-synthetic."+ext;}
     QString key(quint32 id=291)const{return frameKey(Bus::Can,id);}
     ChannelSettings settings(bool lin=false,int port=1){auto s=ChannelSettings::defaults(lin?communication::Bus::Lin:communication::Bus::Can);s.simulation=true;s.hardwareKey=QString("preview:%1:%2").arg(lin?"LIN":"CAN").arg(port);s.handle=(lin?0xf200:0xf100)+port;return s;}
-    void connectChannel(ChannelViewModel &vm){QTRY_VERIFY_WITH_TIMEOUT(vm.canConnect(),3000);vm.toggleConnection();QTRY_VERIFY_WITH_TIMEOUT(vm.connected(),3000);}
+    void connectChannel(ChannelViewModel &vm){QTRY_VERIFY_WITH_TIMEOUT(vm.canConnect(),3000);vm.toggleConnection();QTRY_VERIFY_WITH_TIMEOUT(vm.connected()&&!vm.pending(),3000);}
 private slots:
+    void localDatabaseSamples_data(){QTest::addColumn<bool>("lin");QTest::newRow("test.dbc")<<false;QTest::newRow("test.ldf")<<true;}
+    void localDatabaseSamples(){
+        QFETCH(bool,lin);const auto ext=lin?QString("ldf"):QString("dbc");
+        const auto folder=qEnvironmentVariable("HOST_SIGNAL_SAMPLE_DIR",QString(TEST_SOURCE_DIR)+"/../testsrc");
+        const auto path=folder+"/test."+ext;if(!QFileInfo::exists(path))QSKIP("Optional local testsrc database not installed");
+        QFile source(path);QVERIFY(source.open(QIODevice::ReadOnly));const auto original=source.readAll();source.close();
+        ChannelViewModel vm(settings(lin));ChannelPage page(&vm);page.resize(1450,1000);page.show();
+        page.findChild<QTabWidget*>("taskPages")->setCurrentIndex(2);auto*s=vm.signalTransmission();s->importAsync(path);
+        QTRY_VERIFY_WITH_TIMEOUT(!s->importing(),10000);QVERIFY2(!s->database()->frames.isEmpty(),qPrintable(s->message()));
+        QCOMPARE(s->database()->sha256,QString::fromLatin1(QCryptographicHash::hash(original,QCryptographicHash::Sha256).toHex()));
+        QSet<QString> keys;int fields=0;for(const auto&f:s->definitions()){QVERIFY(!keys.contains(f.key));keys.insert(f.key);fields+=f.fields.size();}
+        QVERIFY(fields>0);QVERIFY(page.findChild<QTreeView*>("signalTree")->model()->rowCount()>0);
+        auto*plan=page.findChild<QTableView*>("signalPlanTable");QVERIFY(plan->model()->rowCount()>0);QVERIFY(plan->currentIndex().isValid());
+        QVERIFY(!page.findChild<QLineEdit*>("signalFrameRaw")->text().isEmpty());
+        QTest::qWait(60);const auto artifact=QCoreApplication::applicationDirPath()+"/artifacts/testsrc-"+ext;
+        QVERIFY(page.grab().save(artifact+".png"));
+        auto*dialog=page.findChild<QDialog*>("signalSettingsDialog");QVERIFY(dialog);bool captured=false;
+        QTimer::singleShot(50,&page,[&]{captured=dialog->isVisible()&&dialog->grab().save(artifact+"-settings.png");dialog->reject();});
+        QTest::mouseClick(page.findChild<QPushButton*>("signalSettings"),Qt::LeftButton);QVERIFY(captured);
+        QTemporaryDir temp;QString error;QVERIFY2(s->save(temp.filePath("sample.json"),error),qPrintable(error));
+        SignalTransmitViewModel restored(lin?Bus::Lin:Bus::Can);QVERIFY2(restored.read(temp.filePath("sample.json"),error),qPrintable(error));
+        QCOMPARE(restored.configuration(),s->configuration());QVERIFY(!restored.running());
+        connectChannel(vm);
+        if(!lin){const auto f=s->definitions().first();QVERIFY2(s->setCanOptions(f.key,true,10,error),qPrintable(error));}
+        QVERIFY2(s->start(lin,error),qPrintable(error));
+        if(lin){QTRY_VERIFY(s->running());QTRY_VERIFY_WITH_TIMEOUT(vm.frames()->rowCount()>1,2000);s->stop();}
+        QTRY_VERIFY_WITH_TIMEOUT(!s->running(),3000);QVERIFY(vm.frames()->rowCount()>0);
+        vm.toggleConnection();QTRY_VERIFY(!vm.connected()&&!vm.pending());
+        QVERIFY(source.open(QIODevice::ReadOnly));QCOMPARE(source.readAll(),original);
+        qInfo()<<ext<<"frames"<<s->definitions().size()<<"signals"<<fields<<"schedules"<<s->working().schedules.size();
+    }
     void initTestCase(){QApplication::setStyle("Fusion");QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf");QApplication::setFont(QFont("Microsoft YaHei",9));QDir().mkpath(QCoreApplication::applicationDirPath()+"/artifacts");}
     void draftsAreAtomicAndWarningsCanSend(){SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY2(vm.importFile(fixture(),error),qPrintable(error));auto before=vm.working().frames[key()].applied;
         QVERIFY(!vm.editSignal(key(),1,"300",false,error));QCOMPARE(vm.working().frames[key()].applied.bytes,before.bytes);QVERIFY(vm.hasInvalidDraft());

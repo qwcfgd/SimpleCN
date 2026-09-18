@@ -64,7 +64,7 @@ bool LinScheduleRunner::tick(qint64 now,QString&error){
     BusFrameEvent e;e.bus=Bus::Lin;e.id=item->id;e.arrivalUs=now;e.source=EventSource::Simulated;
     if(m_publish.contains(item->key)){e.bytes=item->payload;e.detail="SIM 主节点发布";++m_status.sent[item->key];}
     else{e.valid=false;e.source=EventSource::NoResponse;e.detail="SIM 帧头；未模拟外部从节点响应";}
-    if(event)event(e);m_lastOldFrameUs=now;m_due=now+entry.delayMs.toLongLong()*1000;return true;
+    if(event)event(e);m_lastOldFrameUs=now;m_due=now+qint64(SignalCodec::scheduleDelayMs(entry.delayMs))*1000;return true;
 }
 void LinScheduleRunner::observe(const BusFrameEvent&e){
     if(!m_device||!active(m_status.state)||e.bus!=Bus::Lin)return;

@@ -24,7 +24,7 @@ public:
     }
     bool start(const Schedule&s,const QVector<TxItem>&items,QString&e)override{
         QVector<TLINScheduleSlot> entries;for(const auto&slot:s.entries){auto item=std::find_if(items.begin(),items.end(),[&](const auto&i){return i.key==slot.frame;});if(item==items.end()){e="调度引用未知帧";return false;}
-            TLINScheduleSlot entry={};entry.Type=sltUnconditional;entry.FrameId[0]=BYTE(item->id);entry.Delay=WORD(slot.delayMs.toUInt());entries.append(entry);}
+            TLINScheduleSlot entry={};entry.Type=sltUnconditional;entry.FrameId[0]=BYTE(item->id);entry.Delay=WORD(SignalCodec::scheduleDelayMs(slot.delayMs));entries.append(entry);}
         return result(lin.signalStartSchedule(entries),e);
     }
     bool requestBoundary(QString&e)override{return result(lin.signalRequestRoundBoundary(),e);}
