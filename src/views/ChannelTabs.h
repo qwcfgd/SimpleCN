@@ -4,6 +4,7 @@
 #include <QToolButton>
 #include <QWheelEvent>
 #include <QResizeEvent>
+#include <QMouseEvent>
 #include <QStylePainter>
 #include <QStyleOptionTab>
 #include <algorithm>
@@ -16,6 +17,7 @@ public:
     QSize minimumSizeHint()const override{return QSize(104,rowHeight());}
 protected:
     QSize tabSizeHint(int index)const override {Q_UNUSED(index);return QSize(104,rowHeight());}
+    void mouseDoubleClickEvent(QMouseEvent*event)override{if(event->button()==Qt::LeftButton)QTabBar::mouseDoubleClickEvent(event);else event->ignore();}
     void wheelEvent(QWheelEvent*event)override{
         // Scroll the rail without changing the active channel or any connection.
         m_wheel+=event->angleDelta().y();int steps=m_wheel/120;m_wheel%=120;

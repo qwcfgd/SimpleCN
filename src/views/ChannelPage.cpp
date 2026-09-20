@@ -65,6 +65,7 @@ void ChannelPage::build() {
     auto hardwareLayout=new QVBoxLayout(hardwareCard);hardwareLayout->setContentsMargins(12,6,12,6);hardwareLayout->setSpacing(6);
     auto status=new QHBoxLayout;
     m_hardwareSummary=label("");m_hardwareSummary->setObjectName("hardwareSummary");m_hardwareSummary->setWordWrap(true);status->addWidget(m_hardwareSummary,1);
+    m_connectionStatus=label("");m_connectionStatus->setObjectName("connectionState");m_connectionStatus->setAlignment(Qt::AlignRight|Qt::AlignVCenter);status->addWidget(m_connectionStatus);
     hardwareLayout->addLayout(status);
     m_protocol=new QPushButton("参数配置…");m_protocol->setObjectName("downloadParameters");
     root->addWidget(hardwareCard);root->addWidget(m_regions,1);
@@ -323,6 +324,7 @@ void ChannelPage::render() {
     if(hardware=="未选择硬件"&&!s.hardwareKey.isEmpty())hardware="已选设备未连接";
     if(s.simulation)hardware.replace("模拟 CAN 双通道适配器","模拟CAN双通道适配器").replace("模拟 LIN 双通道适配器","模拟LIN双通道适配器");
     m_hardwareSummary->setText(QString("%1 · %2 · %3 · %4 bit/s").arg(s.simulation?"模拟模式":"在线硬件",hardware,port).arg(s.bitrate));
+    m_connectionStatus->setText(connectionText(m_vm->state()));m_connectionStatus->setToolTip(m_vm->healthDetail());
     m_protocol->setEnabled(!m_vm->busy());
     m_images->setEnabled(!m_vm->busy());m_flashPath->setEnabled(s.flashRequired);m_browseFlash->setEnabled(s.flashRequired);
     m_flashInfo->setEnabled(s.flashRequired);

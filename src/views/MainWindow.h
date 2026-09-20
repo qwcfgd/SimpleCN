@@ -21,7 +21,6 @@ public:
 private:
     void createChannelDialog(ChannelViewModel*target=nullptr);
     void channelContextMenu(int index,const QPoint&globalPosition);
-    void loadChannels();
     void updateChannels();
     Ui::MainWindow *ui;
     ChannelConfigurationViewModel m_configuration;

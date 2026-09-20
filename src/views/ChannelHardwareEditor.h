@@ -7,10 +7,12 @@ namespace host {
 class ChannelHardwareEditor final : public QWidget {
 public:
     explicit ChannelHardwareEditor(ChannelViewModel*,QWidget*parent=nullptr);
+    void setExternalLocked(bool locked){m_externalLocked=locked;render();}
+    void addConnectionControl(QPushButton*);
 private:
     void loadSettings();void applyForm();void refreshHardware();void refreshPorts(bool deviceChanged=false);void render();
     ChannelViewModel*m_vm;
-    bool m_loading=false,m_applying=false,m_refreshing=false;
+    bool m_externalLocked=false,m_loading=false,m_applying=false,m_refreshing=false;
     QComboBox *m_mode,*m_hardware,*m_software,*m_bitrate;
     QCheckBox*m_reconnect;QPushButton*m_refresh;
 };

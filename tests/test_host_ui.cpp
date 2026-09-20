@@ -1,6 +1,7 @@
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QPushButton>
@@ -37,14 +38,25 @@ class HostUiTest : public QObject {
     Q_OBJECT
     QTemporaryDir m_temp;
     void openChannelAction(MainWindow&window,int index,const char*actionName){
+        if(QString::fromLatin1(actionName)=="connectChannelAction"){
+            auto*vm=window.channels().value(index);QVERIFY(vm);const bool connected=vm->connected();
+            QTimer::singleShot(100,&window,[&window,vm,connected]{auto*dialog=window.findChild<QDialog*>("editChannelDialog");QVERIFY(dialog);auto*button=dialog->findChild<QPushButton*>("connectButton");QVERIFY(button);QTRY_VERIFY(button->isEnabled());button->click();QTRY_COMPARE(vm->connected(),!connected);QTRY_VERIFY(!vm->pending());dialog->reject();});
+            openChannelAction(window,index,"editChannelAction");return;
+        }
+
         auto*tabs=window.findChild<QTabWidget*>("channelTabs");QVERIFY(tabs);
         QTimer::singleShot(10,&window,[&window,actionName]{
             auto*menu=window.findChild<QMenu*>("channelContextMenu");QVERIFY(menu);
-            auto*action=menu->findChild<QAction*>(actionName);QVERIFY(action);QVERIFY(action->isEnabled());
+            auto*action=menu->findChild<QAction*>(actionName);QVERIFY(action);QVERIFY(action->isEnabled());if(QString::fromLatin1(actionName)=="editChannelAction"){QVERIFY(!menu->findChild<QAction*>("connectChannelAction"));const int current=window.findChild<QTabWidget*>("channelTabs")->currentIndex();QCOMPARE(action->text(),window.channels()[current]->connected()?QString("修改通道"):QString("连接通道"));}
             QTest::mouseClick(menu,Qt::LeftButton,Qt::NoModifier,menu->actionGeometry(action).center());
         });
         if(index<0){auto*blank=tabs->findChild<QWidget*>("channelCreationSpace");QVERIFY(blank);QVERIFY(QMetaObject::invokeMethod(blank,"customContextMenuRequested",Qt::DirectConnection,Q_ARG(QPoint,blank->rect().center())));}
         else QVERIFY(QMetaObject::invokeMethod(tabs->tabBar(),"customContextMenuRequested",Qt::DirectConnection,Q_ARG(QPoint,tabs->tabBar()->tabRect(index).center())));
+    }
+    void saveChannelsFromDialog(MainWindow&window){
+        const int index=window.channels().isEmpty()?-1:0;
+        QTimer::singleShot(100,&window,[&window,index]{auto*dialog=window.findChild<QDialog*>(index<0?"createChannelDialog":"editChannelDialog");QVERIFY(dialog);auto*save=dialog->findChild<QPushButton*>("saveSettings");QVERIFY(save);QTRY_VERIFY(save->isEnabled());save->click();dialog->reject();});
+        openChannelAction(window,index,index<0?"createChannelAction":"editChannelAction");
     }
     QString artifactDir() const {
         const QString path=qEnvironmentVariable("HOST_ARTIFACT_DIR",QCoreApplication::applicationDirPath()+"/artifacts");
@@ -226,7 +238,7 @@ private slots:
         openChannelAction(window,1,"connectChannelAction");QTRY_VERIFY(!lin->connected() && !lin->pending());
         auto profile=lin->settings();profile.profileId="LIN 验收配置";QVERIFY(lin->setSettings(profile));
         QCOMPARE(lin->settings().profileId,QString("LIN 验收配置"));QCOMPARE(can->settings().profileId,QString("CAN UDS"));
-        QTest::mouseClick(window.findChild<QPushButton*>("saveSettings"),Qt::LeftButton);
+        saveChannelsFromDialog(window);
         QVector<ChannelSettings> saved;QString error;SettingsStore store(m_temp.path()+"/ui-config.json");
         QVERIFY(store.load(saved,error));QCOMPARE(saved.size(),2);QCOMPARE(saved[1].profileId,QString("LIN 验收配置"));
     }
@@ -318,6 +330,18 @@ private slots:
         QTimer::singleShot(100,&window,[&]{auto*dialog=window.findChild<QDialog*>("createChannelDialog");QVERIFY(dialog);dialog->reject();});
         openChannelAction(window,-1,"createChannelAction");QVERIFY(window.channels().isEmpty());
     }
+    void doubleClickConnectionDialogAndConfigurationLoad(){
+        const auto path=m_temp.filePath("secondary-config.json");MainWindow window(path,true);window.resize(1200,850);window.show();QPointer<ChannelViewModel>original=window.canChannel();QTRY_VERIFY(original->canConnect());auto offline=original->settings();offline.simulation=false;offline.hardwareKey.clear();offline.handle=0;QVERIFY(original->setSettings(offline));QTRY_VERIFY(!original->pending());
+        QVERIFY(!window.findChild<QPushButton*>("loadSettings"));QVERIFY(!window.findChild<QPushButton*>("saveSettings"));
+        auto*page=window.findChild<ChannelPage*>("canPage");auto*summary=page->findChild<QLabel*>("hardwareSummary");auto*status=page->findChild<QLabel*>("connectionState");QVERIFY(summary);QVERIFY(status);QVERIFY(status->mapTo(page,QPoint()).x()>summary->mapTo(page,QPoint()).x()+summary->width());
+        QTimer::singleShot(120,&window,[&]{auto*dialog=window.findChild<QDialog*>("editChannelDialog");QVERIFY(dialog);auto*connection=dialog->findChild<QPushButton*>("connectButton");auto*refresh=dialog->findChild<QPushButton*>("refreshButton");QVERIFY(connection);QVERIFY(refresh);QVERIFY(connection->property("primary").toBool());QVERIFY(connection->mapTo(dialog,QPoint()).y()<refresh->mapTo(dialog,QPoint()).y());
+            dialog->findChild<QComboBox*>("modeCombo")->setCurrentIndex(1);QTRY_VERIFY(connection->isEnabled());auto*rate=dialog->findChild<QComboBox*>("bitrateCombo");rate->setCurrentIndex(rate->findData(250000));dialog->findChild<QLineEdit*>("channelName")->setText("CAN connected");QTRY_VERIFY(connection->isEnabled());connection->click();QTRY_VERIFY(original->connected()&&!original->pending());QCOMPARE(original->settings().bitrate,250000);QCOMPARE(status->text(),QString("已连接"));QVERIFY(!rate->isEnabled());QVERIFY(!refresh->isEnabled());QVERIFY(!dialog->findChild<QPushButton*>("loadSettings")->isEnabled());QVERIFY(connection->isEnabled());
+            dialog->findChild<QPushButton*>("saveSettings")->click();QVERIFY(QFile::exists(path));QVERIFY(dialog->grab().save(artifactDir()+"/channel-connection-settings.png"));connection->click();QTRY_VERIFY(!original->connected()&&!original->pending());QVERIFY(rate->isEnabled());dialog->reject();});
+        auto*bar=window.findChild<QTabWidget*>("channelTabs")->tabBar();QTest::mouseDClick(bar,Qt::LeftButton,Qt::NoModifier,bar->tabRect(0).center());QCOMPARE(original->settings().softwareId,QString("CAN connected"));
+        const bool nativeDisabled=QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);QApplication::setAttribute(Qt::AA_DontUseNativeDialogs,true);
+        QTimer::singleShot(120,&window,[&]{auto*dialog=window.findChild<QDialog*>("editChannelDialog");QVERIFY(dialog);QTimer::singleShot(100,dialog,[&]{auto*picker=window.findChild<QFileDialog*>();QVERIFY(picker);picker->setDirectory(QFileInfo(path).absolutePath());picker->selectFile(QFileInfo(path).fileName());auto*input=picker->findChild<QLineEdit*>("fileNameEdit");QVERIFY(input);input->setText(path);QTimer::singleShot(200,picker,[picker]{QVERIFY(QMetaObject::invokeMethod(picker,"accept",Qt::DirectConnection));});});dialog->findChild<QPushButton*>("loadSettings")->click();});
+        openChannelAction(window,0,"editChannelAction");QApplication::setAttribute(Qt::AA_DontUseNativeDialogs,nativeDisabled);QVERIFY(original.isNull());QCOMPARE(window.canChannel()->settings().softwareId,QString("CAN connected"));QCOMPARE(window.canChannel()->settings().bitrate,250000);QVERIFY(!window.canChannel()->connected());
+    }
     void dynamicChannelDialogAndStartup() {
         MainWindow window(m_temp.path()+"/dynamic.json",true);
         window.setAttribute(Qt::WA_DontShowOnScreen);window.show();
@@ -345,7 +369,7 @@ private slots:
         auto extra=preview(Bus::Can);extra.softwareId=window.nextChannelName(Bus::Can);
         QVERIFY(window.addChannel(extra,error));QCOMPARE(tabs->count(),4);QCOMPARE(tabs->tabText(3),QString("CAN02"));
         QTRY_VERIFY(!window.canChannel()->busy());
-        QTest::mouseClick(window.findChild<QPushButton*>("saveSettings"),Qt::LeftButton);
+        saveChannelsFromDialog(window);
         QVector<ChannelSettings> saved;QVERIFY(SettingsStore(m_temp.path()+"/dynamic.json").load(saved,error));QCOMPARE(saved.size(),4);
         MainWindow restarted(m_temp.path()+"/dynamic.json",true);
         QCOMPARE(restarted.channels().size(),2);QCOMPARE(restarted.canChannel()->settings().softwareId,QString("CAN01"));
@@ -373,7 +397,7 @@ private slots:
         auto thirdPorts=thirdEditor.findChild<QComboBox*>("softwareChannelCombo");QVERIFY(thirdPorts);
         QTRY_VERIFY(thirdPorts->currentData().toString().isEmpty());QVERIFY(!third->canConnect());
         QVERIFY(!window.restoreChannels(m_temp.path()+"/dynamic.json",error));QCOMPARE(window.channels().size(),4);QVERIFY(first->connected());
-        QVERIFY(!firstEditor.isEnabled());
+        for(const auto&control:{"modeCombo","hardwareCombo","softwareChannelCombo","bitrateCombo"}){auto*input=firstEditor.findChild<QComboBox*>(control);QVERIFY(input);QVERIFY(!input->isEnabled());}
         second->toggleConnection();QTRY_VERIFY(!second->connected() && !second->pending());QVERIFY(first->connected());
         QTRY_COMPARE(ports->count(),1);QTRY_VERIFY(third->canConnect());
         first->toggleConnection();QTRY_VERIFY(!first->connected() && !first->pending());
@@ -460,7 +484,7 @@ private slots:
         QVERIFY(page->findChild<QScrollArea*>("udsScrollArea"));
         auto version=window.findChild<QLabel*>("versionBadge");QVERIFY(version);QVERIFY(version->parentWidget()==window.statusBar());
         const auto pos=version->mapTo(&window,QPoint());
-        QVERIFY(pos.x()>window.width()/2);QVERIFY(pos.y()>window.height()-50);QCOMPARE(version->text(),QString("ReleaseVer: 1.1"));
+        QVERIFY(pos.x()>window.width()/2);QVERIFY(pos.y()>window.height()-50);QCOMPARE(version->text(),QString("ReleaseVer: 1.2"));
         QVERIFY(window.grab().save(artifactDir()+"/bootloader-1366.png"));
         QFile metadata(artifactDir()+"/display.json");QVERIFY(metadata.open(QIODevice::WriteOnly));
         metadata.write(QJsonDocument(QJsonObject{{"dpr",dpr},{"clientWidth",window.width()},{"clientHeight",window.height()},{"qt",qVersion()}}).toJson());
@@ -479,7 +503,7 @@ private slots:
         auto tabs=window.findChild<QTabWidget*>("channelTabs");auto bar=tabs->tabBar();
         QTimer::singleShot(30,&window,[&](){
             auto menu=window.findChild<QMenu*>("channelContextMenu");QVERIFY(menu);
-            QCOMPARE(menu->actions().size(),3);QCOMPARE(menu->actions()[0]->text(),QString("断开连接"));QCOMPARE(menu->actions()[1]->text(),QString("修改通道"));QCOMPARE(menu->actions()[2]->text(),QString("删除通道"));
+            QCOMPARE(menu->actions().size(),2);QCOMPARE(menu->actions()[0]->text(),QString("修改通道"));QCOMPARE(menu->actions()[1]->text(),QString("删除通道"));
             auto action=menu->findChild<QAction*>("deleteChannelAction");QVERIFY(action);QCOMPARE(action->text(),QString("删除通道"));
             QTest::mouseClick(menu,Qt::LeftButton,Qt::NoModifier,menu->actionGeometry(action).center());
         });
@@ -490,7 +514,7 @@ private slots:
         QTRY_VERIFY(replacement->canConnect());QCOMPARE(replacement->settings().handle,released);
         replacement->toggleConnection();QTRY_VERIFY(replacement->connected() && !replacement->pending());QVERIFY(second->connected());
         QVERIFY(window.removeChannel(replacement));QVERIFY(window.removeChannel(second));QCOMPARE(tabs->count(),0);
-        QTest::mouseClick(window.findChild<QPushButton*>("saveSettings"),Qt::LeftButton);
+        saveChannelsFromDialog(window);
         QVector<ChannelSettings> empty;QVERIFY(SettingsStore(m_temp.path()+"/delete.json").load(empty,error));QVERIFY(empty.isEmpty());
         QVERIFY(window.restoreChannels(m_temp.path()+"/delete.json",error));QCOMPARE(window.channels().size(),0);
         QCOMPARE(window.nextChannelName(Bus::Can),QString("CAN01"));
@@ -543,7 +567,7 @@ private slots:
             dialog->findChild<QSpinBox*>("repeatDownloadCount")->setValue(99);dialog->reject();
         });
         QTest::mouseClick(button,Qt::LeftButton);QCOMPARE(vm->settings().repeatDownloadCount,2);
-        QTest::mouseClick(window.findChild<QPushButton*>("saveSettings"),Qt::LeftButton);
+        saveChannelsFromDialog(window);
         QVector<ChannelSettings> saved;QString error;QVERIFY(SettingsStore(m_temp.path()+"/download.json").load(saved,error));
         QVERIFY(saved[0].repeatDownloadEnabled);QCOMPARE(saved[0].repeatDownloadCount,2);QCOMPARE(saved[0].repeatDownloadIntervalMs,500);
         QTest::mouseClick(page->findChild<QPushButton*>("startButton"),Qt::LeftButton);

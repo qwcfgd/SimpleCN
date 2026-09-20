@@ -31,12 +31,13 @@ void ChannelHardwareEditor::loadSettings(){
     int rate=m_bitrate->findData(s.bitrate);if(rate<0){m_bitrate->addItem(QString::number(s.bitrate)+" bit/s",s.bitrate);rate=m_bitrate->count()-1;}m_bitrate->setCurrentIndex(rate);m_reconnect->setChecked(s.autoReconnect);refreshHardware();
 }
 void ChannelHardwareEditor::applyForm(){
-    if(m_loading||m_applying||m_vm->busy())return;
+    if(m_loading||m_applying||m_externalLocked||m_vm->busy())return;
     auto s=m_vm->settings();s.simulation=m_mode->currentIndex()==1;s.bitrate=m_bitrate->currentData().toInt();
     s.hardwareKey=m_software->currentData().toString();s.handle=m_software->currentData(Qt::UserRole+1).toUInt();s.autoReconnect=m_reconnect->isChecked();
     QScopedValueRollback<bool>guard(m_applying,true);m_vm->setSettings(s);
 }
-void ChannelHardwareEditor::render(){setEnabled(!m_vm->hardwareLocked());}
+void ChannelHardwareEditor::addConnectionControl(QPushButton*button){auto*form=qobject_cast<QFormLayout*>(layout());form->insertRow(form->rowCount()-1,button);}
+void ChannelHardwareEditor::render(){const bool editable=!m_externalLocked&&!m_vm->hardwareLocked();for(auto*w:QList<QWidget*>{m_mode,m_hardware,m_software,m_bitrate,m_reconnect,m_refresh})w->setEnabled(editable);}
 void ChannelHardwareEditor::refreshHardware() {
     if(m_refreshing)return;QScopedValueRollback<bool> guard(m_refreshing,true);
     QSignalBlocker blocker(m_hardware);const auto &s=m_vm->settings();
@@ -68,7 +69,7 @@ void ChannelHardwareEditor::refreshPorts(bool deviceChanged) {
     m_software->clear();
     for(const auto &h:m_vm->hardware()) {
         if(hardwareDeviceKey(h)!=device)continue;
-        const bool own=(m_vm->hardwareLocked() || m_vm->communicationIndicator()==2) && h.key==s.hardwareKey;
+        const bool own=(m_externalLocked || m_vm->hardwareLocked() || m_vm->communicationIndicator()==2) && h.key==s.hardwareKey;
         if(!h.available && !own)continue;
         m_software->addItem(QString("通道 %1").arg(h.controller)+(own && !h.available && !m_vm->connected()?" · 已占用":""),h.key);
         const int row=m_software->count()-1;m_software->setItemData(row,h.handle,Qt::UserRole+1);
