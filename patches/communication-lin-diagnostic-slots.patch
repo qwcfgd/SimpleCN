@@ -1,0 +1,30 @@
+--- a/resource/communication/SignalLinExtensions.cpp
++++ b/resource/communication/SignalLinExtensions.cpp
+@@ -50,7 +50,8 @@
+     bool seen[64] = {};
+     // Install every entry with publisher response initially disabled.
+     for (auto frame : frames) {
+-        if (frame.FrameId > 63 || frame.Length < 1 || frame.Length > 8 || seen[frame.FrameId]) {
++        if (frame.FrameId > 61 || frame.Length < 1 || frame.Length > 8 || seen[frame.FrameId]
++            || (frame.FrameId >= 60 && (frame.Length != 8 || frame.ChecksumType != cstClassic))) {
+             t_LastLinErr = errIllegalFrameConfiguration; return false;
+         }
+         seen[frame.FrameId] = true;
+@@ -78,7 +79,7 @@
+         t_LastLinErr = t_pPLinApi->DeleteSchedule(t_hClient, t_hHw, number);
+         if (t_LastLinErr != errOK && t_LastLinErr != errIllegalSchedule) return false;
+     }
+-    for (const auto &slot : entries) if (slot.Type != sltUnconditional || slot.Delay < 4 || slot.FrameId[0] > 59) {
++    for (const auto &slot : entries) if (slot.Type != sltUnconditional || slot.Delay < 4 || slot.FrameId[0] > 61) {
+         t_LastLinErr = errIllegalFrameConfiguration; return false;
+     }
+     t_LastLinErr = t_pPLinApi->SetSchedule(t_hClient, t_hHw, 0, entries.data(), entries.size());
+@@ -118,7 +119,7 @@
+ 
+ bool tstPeakLin::signalUpdateFrame(BYTE id, const QByteArray &payload)
+ {
+-    if (!t_open || id > 59 || payload.isEmpty() || payload.size() > 8) {
++    if (!t_open || id > 61 || payload.isEmpty() || payload.size() > 8 || (id >= 60 && payload.size() != 8)) {
+         t_LastLinErr = errIllegalFrameConfiguration; return false;
+     }
+     BYTE bytes[8] = {};

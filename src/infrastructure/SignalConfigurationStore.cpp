@@ -9,6 +9,7 @@
 #include <QJsonDocument>
 #include <cmath>
 namespace host::signal {
+static bool legacyDiagnosticIssue(const QString&issue){return issue=="首版不执行 LIN 诊断帧/槽"||issue=="首版不执行诊断槽：MasterReq"||issue=="首版不执行诊断槽：SlaveResp";}
 static QVector<FrameDefinition> definitions(const Database&db,const WorkingSet&work){auto result=db->frames;result+=work.customFrames;return result;}
 QJsonObject SignalConfigurationStore::serialize(const Database&db,const WorkingSet&work,const QString&directory){
     QJsonObject root{{"schema","signal-communication"},{"version",1},{"bus",db->bus==Bus::Can?"CAN":"LIN"}};
@@ -62,12 +63,15 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
         // For CAN, enabled is persisted queue membership; unsupported entries remain visible, but start rejects them.
         if(bus==Bus::Lin&&d.enabled&&!f.issue.isEmpty())return reject("不支持的帧不能启用发送");
     }
-    if(seen.size()!=all.size())return reject("配置帧清单不完整");
+    for(const auto&f:all)if(!seen.contains(f.key)&&!(bus==Bus::Lin&&f.id>=60&&f.fields.isEmpty()))return reject("配置帧清单不完整");
     if(bus==Bus::Lin){
         QSet<QString> scheduleNames;for(const auto&v:root["schedules"].toArray()){
-            const auto o=v.toObject();Schedule s;s.name=o["name"].toString();s.issue=o["issue"].toString();if(s.name.trimmed().isEmpty()||scheduleNames.contains(s.name)||!o["slots"].isArray())return reject("调度表名称为空、重复或缺少槽数组");scheduleNames.insert(s.name);
+            const auto o=v.toObject();Schedule s;s.name=o["name"].toString();s.issue=o["issue"].toString();if(legacyDiagnosticIssue(s.issue))s.issue.clear();if(s.name.trimmed().isEmpty()||scheduleNames.contains(s.name)||!o["slots"].isArray())return reject("调度表名称为空、重复或缺少槽数组");scheduleNames.insert(s.name);
             for(const auto&sv:o["slots"].toArray()){const auto so=sv.toObject();ScheduleSlot entry{so["frame"].toString(),so["delayMs"].toString(),so["issue"].toString(),0};bool ok=false;const auto delay=entry.delayMs.toDouble(&ok);
                 if(!ok||!std::isfinite(delay)||delay<=0)return reject("无效 delay");
+                if(legacyDiagnosticIssue(entry.issue)){
+                    for(const auto&f:all)if(f.id>=60&&(f.key==entry.frame||f.name==entry.frame)&&f.issue.isEmpty()){entry.frame=f.key;entry.issue.clear();break;}
+                }
                 if(!byKey.contains(entry.frame)){
                     // Preserve only a recognized unsupported source slot; configuration
                     // files cannot invent frame definitions or runnable commands.

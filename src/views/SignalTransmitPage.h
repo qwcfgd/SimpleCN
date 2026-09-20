@@ -14,7 +14,7 @@ private:
     QLineEdit*m_path,*m_search;
     QDialog*m_configurationDialog;
     QLabel*m_configurationFeedback;
-    QLabel*m_summary,*m_frameInfo,*m_status,*m_validation;
+    QLabel*m_summary,*m_validation;
     QPushButton*m_import,*m_reload,*m_communication,*m_schedules,*m_once,*m_start,*m_stop,*m_back,*m_restore,*m_signalEdit;
     QComboBox*m_role,*m_node,*m_schedule,*m_canNode,*m_canDirection;
     QWidget*m_rolePanel,*m_editor,*m_canPanel;

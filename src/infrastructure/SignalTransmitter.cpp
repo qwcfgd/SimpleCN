@@ -24,6 +24,8 @@ public:
     }
     bool start(const Schedule&s,const QVector<TxItem>&items,QString&e)override{
         QVector<TLINScheduleSlot> entries;for(const auto&slot:s.entries){auto item=std::find_if(items.begin(),items.end(),[&](const auto&i){return i.key==slot.frame;});if(item==items.end()){e="调度引用未知帧";return false;}
+            // Diagnostic slot types suppress unchanged requests (PLIN API 3.7).
+            // Use unconditional slots for all IDs to honor every LDF slot on every round.
             TLINScheduleSlot entry={};entry.Type=sltUnconditional;entry.FrameId[0]=BYTE(item->id);entry.Delay=WORD(SignalCodec::scheduleDelayMs(slot.delayMs));entries.append(entry);}
         return result(lin.signalStartSchedule(entries),e);
     }
@@ -37,8 +39,8 @@ SignalTransmitter::~SignalTransmitter(){stop();}
 void SignalTransmitter::start(const TxPlan&plan,int bitrate,bool simulation,tstPeakCan*can,tstPeakLin*lin){
     if(running())return;m_plan=plan;m_status={};m_status.run=plan.run;m_status.state=RunState::Starting;m_can=can;m_simulation=simulation;m_once=0;m_events.clear();m_lin.reset();m_device.reset();
     QSet<QString> keys;QSet<quint32> linIds;QVector<FrameDefinition> definitions;
-    for(const auto&i:plan.items){if(keys.contains(i.key)||i.payload.size()>8||i.id>(plan.bus==Bus::Can?0x1fffffff:59)||
-            (plan.bus==Bus::Can&&!i.extended&&i.id>0x7ff)||(plan.bus==Bus::Lin&&(i.payload.isEmpty()||linIds.contains(i.id)))||
+    for(const auto&i:plan.items){if(keys.contains(i.key)||i.payload.size()>8||i.id>(plan.bus==Bus::Can?0x1fffffff:61)||
+            (plan.bus==Bus::Can&&!i.extended&&i.id>0x7ff)||(plan.bus==Bus::Lin&&(i.payload.isEmpty()||linIds.contains(i.id)||(i.id>=60&&(i.payload.size()!=8||!i.classicChecksum))))||
             (plan.bus==Bus::Can&&plan.periodic&&i.periodMs<1)){fail("发送计划未通过 worker 校验");return;}
         keys.insert(i.key);linIds.insert(i.id);FrameDefinition f;f.key=i.key;f.id=i.id;f.length=i.payload.size();definitions.append(f);}
     if(plan.bus==Bus::Can&&plan.items.isEmpty()){fail("发送计划为空");return;}

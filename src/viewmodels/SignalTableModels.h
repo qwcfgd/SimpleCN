@@ -2,10 +2,12 @@
 #include "viewmodels/SignalTransmitViewModel.h"
 #include <QAbstractTableModel>
 #include <QStandardItemModel>
+#include <QStyledItemDelegate>
 namespace host {
 class SignalValueTableModel : public QAbstractTableModel {
     Q_OBJECT
 public:
+    enum { EnumOptionsRole=Qt::UserRole+1, EnumValueRole, PhysicalEditableRole };
     SignalValueTableModel(SignalTransmitViewModel*,bool defaults=false,QObject*parent=nullptr);
     void setFrame(const QString&);
     QString frameKey()const{return m_key;}
@@ -17,6 +19,13 @@ public:
     bool setData(const QModelIndex&,const QVariant&,int role=Qt::EditRole)override;
 signals:void validation(QString);
 private:SignalTransmitViewModel*m_vm;QString m_key;bool m_defaults;
+};
+class SignalValueDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    QWidget *createEditor(QWidget*,const QStyleOptionViewItem&,const QModelIndex&)const override;
+    void setEditorData(QWidget*,const QModelIndex&)const override;
+    void setModelData(QWidget*,QAbstractItemModel*,const QModelIndex&)const override;
 };
 class CanTxTableModel : public QAbstractTableModel {
     Q_OBJECT

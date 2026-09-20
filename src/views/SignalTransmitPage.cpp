@@ -49,18 +49,18 @@ SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent
     m_search=new QLineEdit;m_search->setObjectName("signalSearch");m_search->setPlaceholderText("浏览节点 / 搜索报文，不改变发送选择");bl->addWidget(m_search);
     m_tree=new QTreeView;m_tree->setObjectName("signalTree");auto*treeModel=new SignalTreeModel(vm,this);auto*proxy=new QSortFilterProxyModel(this);proxy->setSourceModel(treeModel);proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);proxy->setFilterKeyColumn(-1);proxy->setRecursiveFilteringEnabled(true);m_tree->setModel(proxy);m_tree->setColumnWidth(0,165);bl->addWidget(m_tree);split->addWidget(browser);
     m_plan=new QTableView;m_plan->setObjectName("signalPlanTable");tableStyle(m_plan);
-    if(vm->database()->bus==Bus::Can){m_canModel=new CanTxTableModel(vm,this);m_plan->setModel(m_canModel);connect(m_canModel,&CanTxTableModel::validation,this,&SignalTransmitPage::feedback);m_plan->setColumnWidth(0,165);m_plan->setColumnWidth(1,90);m_plan->setColumnWidth(3,45);m_plan->setColumnWidth(4,80);m_plan->setColumnWidth(5,210);}
+    if(vm->database()->bus==Bus::Can){m_canModel=new CanTxTableModel(vm,this);m_plan->setModel(m_canModel);connect(m_canModel,&CanTxTableModel::validation,this,&SignalTransmitPage::feedback);m_plan->setColumnWidth(0,45);m_plan->setColumnWidth(1,165);m_plan->setColumnWidth(2,90);m_plan->setColumnWidth(4,45);m_plan->setColumnWidth(5,80);}
     else{m_linModel=new LinScheduleTableModel(vm,this);m_plan->setModel(m_linModel);connect(m_linModel,&LinScheduleTableModel::validation,this,&SignalTransmitPage::feedback);m_plan->setColumnWidth(4,210);m_plan->setColumnWidth(0,40);m_plan->setColumnWidth(1,150);}
     split->addWidget(m_plan);split->setSizes({280,720});root->addWidget(split,1);
-    m_editor=new QWidget;auto*editor=new QVBoxLayout(m_editor);editor->setContentsMargins(0,0,0,0);editor->setSpacing(4);m_frameInfo=plain("选择报文以编辑发送工作副本");m_frameInfo->setObjectName("signalFrameInfo");editor->addWidget(m_frameInfo);
+    m_editor=new QWidget;auto*editor=new QVBoxLayout(m_editor);editor->setContentsMargins(0,0,0,0);editor->setSpacing(4);
     auto*signalActions=new QHBoxLayout;signalActions->addStretch();m_signalEdit=button("信号值 / 枚举…","signalValueDialog");signalActions->addWidget(m_signalEdit);editor->addLayout(signalActions);
-    m_values=new QTableView;m_values->setObjectName("signalValues");m_valueModel=new SignalValueTableModel(vm,false,this);m_values->setModel(m_valueModel);tableStyle(m_values);m_values->setColumnWidth(0,150);m_values->setColumnWidth(1,130);m_values->setColumnWidth(2,130);m_values->setColumnWidth(3,145);editor->addWidget(m_values,1);root->addWidget(m_editor,1);
+    m_values=new QTableView;m_values->setObjectName("signalValues");m_valueModel=new SignalValueTableModel(vm,false,this);m_values->setModel(m_valueModel);m_values->setItemDelegateForColumn(3,new SignalValueDelegate(m_values));tableStyle(m_values);m_values->setColumnWidth(0,150);m_values->setColumnWidth(1,130);m_values->setColumnWidth(2,130);m_values->setColumnWidth(3,145);editor->addWidget(m_values,1);root->addWidget(m_editor,1);
     auto*actions=new QHBoxLayout;m_once=button("单次发送","signalSendOnce");m_start=button("周期发送","signalStart");m_start->setProperty("primary",true);m_stop=button("停止","signalStop");m_back=button("回退：上一步","signalBack");m_restore=button("撤销：恢复配置基准","signalRestore");
     auto*history=new QHBoxLayout;history->addWidget(m_back);history->addWidget(m_restore);history->addStretch();configuration->addLayout(history);
     m_configurationFeedback=plain("");m_configurationFeedback->setObjectName("signalConfigurationFeedback");configuration->addWidget(m_configurationFeedback);configuration->addStretch();
     auto*close=new QDialogButtonBox(QDialogButtonBox::Close);configuration->addWidget(close);connect(close,&QDialogButtonBox::rejected,m_configurationDialog,&QDialog::reject);
     actions->addStretch();for(auto*b:{m_once,m_start,m_stop})actions->addWidget(b);root->addLayout(actions);
-    m_status=plain("已停止");m_status->setObjectName("signalRunStatus");m_validation=plain("");m_validation->setObjectName("signalValidation");root->addWidget(m_status);root->addWidget(m_validation);
+    m_validation=plain("");m_validation->setObjectName("signalValidation");root->addWidget(m_validation);
     connect(m_search,&QLineEdit::textChanged,proxy,&QSortFilterProxyModel::setFilterFixedString);
     connect(m_tree->selectionModel(),&QItemSelectionModel::currentChanged,this,[this,proxy](const QModelIndex&i){const auto source=proxy->mapToSource(i.sibling(i.row(),0));const auto key=source.data(Qt::UserRole).toString();if(!key.isEmpty()){for(int row=0;row<m_plan->model()->rowCount();++row)if((m_canModel?m_canModel->key(row):m_linModel->key(row))==key){m_plan->selectRow(row);break;}}});
     connect(m_plan->selectionModel(),&QItemSelectionModel::currentRowChanged,this,[this](const QModelIndex&i){selectFrame(m_canModel?m_canModel->key(i.row()):m_linModel->key(i.row()));});
@@ -114,14 +114,10 @@ void SignalTransmitPage::render(){QScopedValueRollback<bool>guard(m_rendering,tr
     m_once->setEnabled(m_vm->canStart()&&m_plan->model()->rowCount()>0);m_start->setEnabled(m_vm->canStart()&&(!can||m_plan->model()->rowCount()>0));m_stop->setEnabled(m_vm->running()&&state!=RunState::Stopping);m_back->setEnabled(m_vm->canBack());m_restore->setEnabled(m_vm->canRestore());
     m_start->setText(can?"周期发送":m_vm->working().role==LinRole::Master?"启动主调度":m_vm->working().role==LinRole::Slave?"启动从节点响应":"开始监听");
     const auto db=m_vm->database();m_summary->setText(m_vm->importing()?m_vm->message():QString("%1 · %2 个节点 / %3 个帧 · %4%5").arg(can?"DBC":"LDF").arg(db->nodes.size()).arg(m_vm->definitions().size()).arg(db->version,db->diagnostics.isEmpty()?QString():QString(" · %1 条能力诊断（悬停查看）").arg(db->diagnostics.size())));m_summary->setToolTip(db->diagnostics.join('\n'));if(!db->diagnostics.isEmpty())m_summary->setText(m_summary->text()+"\n"+db->diagnostics.join('\n'));
-    quint64 sent=0,missed=0;for(auto n:m_vm->status().sent)sent+=n;for(auto n:m_vm->status().missed)missed+=n;
-    m_status->setText(QString("%1 · 已提交 %2 · 漏期 %3%4%5").arg(m_vm->status().detail.isEmpty()?"已停止":m_vm->status().detail).arg(sent).arg(missed).arg(missed?"（过载，不补发）":"",m_vm->status().pending.isEmpty()?QString():" · 当前 "+m_vm->status().current+" → 待切 "+m_vm->status().pending));
     if(!m_vm->message().isEmpty())m_configurationFeedback->setText(m_vm->message());renderFrame();
 }
 void SignalTransmitPage::renderFrame(){const auto*f=m_vm->frame(m_key);m_editor->setEnabled(m_vm->canData());m_signalEdit->setEnabled(f&&!f->fields.isEmpty()&&m_vm->canData());
-    if(!f){m_frameInfo->setText("选择报文以编辑发送工作副本");return;}const auto&d=m_vm->working().frames[m_key];
-    QStringList details;const auto hint=m_vm->publicationHint(m_key);if(!hint.isEmpty())details.append(hint);details.append(m_vm->protocolInfo(m_key));const auto permission=details.join(" · ");
-    m_frameInfo->setText(QString("%1 · ID 0x%2 · %3 B · 发布 %4 · 数据修订 %5%6%7\nRX：%8").arg(f->name,QString::number(f->id,16).toUpper()).arg(f->length).arg(f->publisher).arg(d.applied.revision).arg(permission.isEmpty()?QString():" · "+permission,f->custom?" · 无数据库信号定义":f->issue.isEmpty()?QString():" · "+f->issue).arg(!d.rx.received?"未接收":QString("%1 · 硬件时间 %2 us / 到达 %3 us").arg(d.rx.detail).arg(d.rx.hardwareUs).arg(d.rx.arrivalUs)));
+
 }
 void SignalTransmitPage::communication(){openSignalCommunicationDialog(m_vm,m_key,m_configurationDialog);}
 void SignalTransmitPage::editCustom(){

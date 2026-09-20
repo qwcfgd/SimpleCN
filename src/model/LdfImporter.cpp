@@ -11,6 +11,7 @@ class Parser {
     DatabaseDefinition &db;
     QMap<QString,SignalDefinition> fields,encodings;
     QMap<QString,QString> representations,unsupportedFrames;
+    QMap<int,QString> comments,leadingComments;
     bool header=false,haveNodes=false;
     const Token &peek()const{return tokens[qMin(at,int(tokens.size())-1)];}
     [[noreturn]] void fail(const QString&s)const{throw ParseError(QString("第 %1 行，第 %2 列：%3（%4）").arg(peek().line).arg(peek().column).arg(s,peek().text));}
@@ -42,12 +43,13 @@ class Parser {
         else {if(s.width>16)fail("LIN 标量宽度必须为 1–16；更宽值须声明为字节数组");s.initial=QString::number(natural());}
         s.initialSource=diagnostic?"LDF Diagnostic_signals":"LDF Signals";s.conversion=false;
         if(!diagnostic){expect(",");s.publisher=name();while(accept(","))s.receivers.append(name());}
+        s.comment=comments.value(peek().line);if(s.comment.isEmpty())s.comment=leadingComments.value(s.line-1);
         expect(";");if(!SignalCodec::parseRaw(s,s.initial).ok())fail("文件初始值位宽溢出："+s.name);fields.insert(s.name,s);
     }}
     void parseFrames(bool diagnostic){expect("{");while(!accept("}")){
         FrameDefinition f;f.line=peek().line;f.name=name();expect(":");f.id=quint32(small(63));
         if(!diagnostic){expect(",");f.publisher=name();if(accept(","))f.length=small(8);else f.length=f.id<32?2:(f.id<48?4:8);}
-        else {f.length=8;f.issue="首版不执行 LIN 诊断帧/槽";}
+        else {f.length=8;if(f.id!=60&&f.id!=61)fail("诊断帧 ID 必须为 60 或 61");}
         if(!diagnostic&&(f.id>59||f.length<1))fail("普通 LIN 帧 ID/长度无效");
         f.key=frameKey(Bus::Lin,f.id);expect("{");
         while(!accept("}")){SignalDefinition s;s.line=peek().line;s.name=name();expect(",");s.start=small(63);expect(";");f.fields.append(s);}
@@ -57,7 +59,6 @@ class Parser {
         Schedule s;s.name=name();if(names.contains(s.name))fail("重复调度表");names.insert(s.name);expect("{");
         while(!accept("}")){ScheduleSlot slot;slot.line=peek().line;slot.frame=name();
             if(peek().text=="{"){balanced();slot.issue="首版不执行配置/诊断命令槽："+slot.frame;}
-            if(slot.frame=="MasterReq"||slot.frame=="SlaveResp")slot.issue="首版不执行诊断槽："+slot.frame;
             expect("delay");slot.delayMs=number();expect("ms");expect(";");s.entries.append(slot);
         }db.schedules.append(s);
     }}
@@ -81,6 +82,12 @@ class Parser {
         if(!header||!haveNodes||db.master.isEmpty()||db.version.isEmpty()||db.bitrate==0)fail("缺少 LDF 必需的文件头、版本、速度或节点");
         for(auto it=fields.begin();it!=fields.end();++it){auto &s=it.value();if(!s.publisher.isEmpty()&&!db.nodes.contains(s.publisher))fail("未知信号发布者："+s.publisher);for(const auto&r:s.receivers)if(!db.nodes.contains(r))fail("未知订阅者："+r);}
         for(auto it=representations.begin();it!=representations.end();++it){if(!fields.contains(it.key())||!encodings.contains(it.value()))fail("未知信号/编码引用："+it.key());auto &s=fields[it.key()];const auto &e=encodings[it.value()];s.conversion=e.conversion;s.ranges=e.ranges;s.labels=e.labels;s.issue=e.issue;}
+        // Standard diagnostic schedule tokens are valid even without explicit signal layouts.
+        for(const auto&schedule:db.schedules)for(const auto&slot:schedule.entries){
+            if(slot.frame!="MasterReq"&&slot.frame!="SlaveResp")continue;
+            bool found=false;for(const auto&f:db.frames)if(f.name==slot.frame)found=true;
+            if(!found){FrameDefinition f;f.name=slot.frame;f.id=slot.frame=="MasterReq"?60:61;f.length=8;f.key=frameKey(Bus::Lin,f.id);db.frames.append(f);}
+        }
         QMap<quint32,int> idCounts;for(const auto&f:db.frames)++idCounts[f.id];
         QSet<QString> names;QMap<QString,QString> keyByName;
         for(auto &f:db.frames){if(names.contains(f.name)||unsupportedFrames.contains(f.name))fail("重复帧名称："+f.name);names.insert(f.name);
@@ -88,6 +95,7 @@ class Parser {
             // traffic to either one or silently overwriting its working copy.
             if(idCounts.value(f.id)>1){f.key+=":"+f.name;f.issue=QString("LIN ID 0x%1 对应多个帧定义；可浏览，暂不支持发送或按 ID 解码").arg(f.id,2,16,QChar('0'));}
             keyByName[f.name]=f.key;
+            if(f.id==60)f.publisher=db.master;
             if(f.id<60&&!db.nodes.contains(f.publisher))fail("未知帧发布者："+f.name);
             f.classicChecksum=db.version.startsWith("1.")||db.nodeAttributes.value(f.publisher).value("LIN_protocol").startsWith("1.")||f.id>=60;
             for(auto &s:f.fields){if(!fields.contains(s.name))fail("未知帧信号引用："+s.name);int offset=s.start;s=fields[s.name];s.start=offset;
@@ -112,8 +120,8 @@ public:
         auto step=[&](){if(text[i]=='\n'){++line;column=1;}else ++column;++i;};
         while(i<text.size()){
             if(text[i].isSpace()){step();continue;}
-            if(text.mid(i,2)=="//"){while(i<text.size()&&text[i]!='\n')step();continue;}
-            if(text.mid(i,2)=="/*"){step();step();while(i<text.size()&&text.mid(i,2)!="*/")step();if(i==text.size())throw ParseError("未闭合块注释");step();step();continue;}
+            if(text.mid(i,2)=="//"){const bool leading=text.mid(text.lastIndexOf('\n',i)+1,i-text.lastIndexOf('\n',i)-1).trimmed().isEmpty();step();step();const int start=i;while(i<text.size()&&text[i]!='\n')step();comments[line]=text.mid(start,i-start).trimmed();if(leading)leadingComments[line]=comments[line];continue;}
+            if(text.mid(i,2)=="/*"){const int startLine=line;const bool leading=text.mid(text.lastIndexOf('\n',i)+1,i-text.lastIndexOf('\n',i)-1).trimmed().isEmpty();step();step();const int start=i;while(i<text.size()&&text.mid(i,2)!="*/")step();if(i==text.size())throw ParseError("未闭合块注释");comments[startLine]=text.mid(start,i-start).trimmed();if(leading)leadingComments[line]=comments[startLine];step();step();continue;}
             Token token;token.line=line;token.column=column;const auto c=text[i];
             if(c=='"'){token.quoted=true;step();bool closed=false;while(i<text.size()){if(text[i]=='"'){step();closed=true;break;}if(text[i]=='\\'){step();if(i==text.size())break;const auto escaped=text[i];token.text+=escaped=='n'?QChar('\n'):escaped=='t'?QChar('\t'):escaped;step();}else{token.text+=text[i];step();}}if(!closed)throw ParseError(QString("第 %1 行：字符串未闭合").arg(line));}
             else if(c.isLetter()||c=='_'){while(i<text.size()&&(text[i].isLetterOrNumber()||text[i]=='_')){token.text+=text[i];step();}}

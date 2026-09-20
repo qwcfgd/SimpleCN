@@ -23,6 +23,7 @@
 #include "views/ChannelPage.h"
 #include "views/SignalTransmitPage.h"
 #include "infrastructure/SettingsStore.h"
+#include "infrastructure/SignalTransmitter.h"
 using namespace host;
 using namespace host::signal;
 class SignalUiTest:public QObject {
@@ -46,7 +47,7 @@ private slots:
         QVERIFY(fields>0);QVERIFY(page.findChild<QTreeView*>("signalTree")->model()->rowCount()>0);
         auto*plan=page.findChild<QTableView*>("signalPlanTable");if(!lin){QCOMPARE(plan->model()->rowCount(),0);auto*node=page.findChild<QComboBox*>("signalCanNode");node->setCurrentIndex(1);}
         QVERIFY(plan->model()->rowCount()>0);QVERIFY(plan->currentIndex().isValid());
-        QVERIFY(!page.findChild<QLineEdit*>("signalFrameRaw"));QVERIFY(!plan->model()->index(0,lin?4:5).data().toString().isEmpty());
+        QVERIFY(!page.findChild<QLineEdit*>("signalFrameRaw"));QVERIFY(!plan->model()->index(0,lin?4:6).data().toString().isEmpty());
         QTest::qWait(60);const auto artifact=QCoreApplication::applicationDirPath()+"/artifacts/testsrc-"+ext;
         QVERIFY(page.grab().save(artifact+".png"));
         auto*dialog=page.findChild<QDialog*>("signalSettingsDialog");QVERIFY(dialog);bool captured=false;
@@ -60,6 +61,12 @@ private slots:
         QVERIFY2(s->start(lin,error),qPrintable(error));
         if(lin){QTRY_VERIFY(s->running());QTRY_VERIFY_WITH_TIMEOUT(vm.frames()->rowCount()>1,2000);s->stop();}
         QTRY_VERIFY_WITH_TIMEOUT(!s->running(),3000);QVERIFY(vm.frames()->rowCount()>0);
+        if(lin){bool capturedDiagnostic=false;for(const auto&schedule:s->working().schedules){
+            bool diagnostic=false;for(const auto&slot:schedule.entries){const auto*f=s->frame(slot.frame);if(f&&f->id>=60)diagnostic=true;}
+            if(!diagnostic||!SignalCodec::validateSchedule(schedule,s->definitions(),s->database()->bitrate).isEmpty())continue;
+            QVERIFY(s->selectSchedule(schedule.name,error));const auto before=vm.frames()->rowCount();QVERIFY2(s->start(true,error),qPrintable(error));QTRY_VERIFY_WITH_TIMEOUT(vm.frames()->rowCount()>before,1000);s->stop();QTRY_VERIFY(!s->running());
+            if(!capturedDiagnostic){QVERIFY(page.grab().save(artifact+"-diagnostics.png"));capturedDiagnostic=true;}
+        }QVERIFY(capturedDiagnostic);}
         vm.toggleConnection();QTRY_VERIFY(!vm.connected()&&!vm.pending());
         QVERIFY(source.open(QIODevice::ReadOnly));QCOMPARE(source.readAll(),original);
         qInfo()<<ext<<"frames"<<s->definitions().size()<<"signals"<<fields<<"schedules"<<s->working().schedules.size();
@@ -96,13 +103,13 @@ private slots:
         for(bool lin:{false,true}){
             SignalTransmitViewModel vm(lin?Bus::Lin:Bus::Can);QString error;QVERIFY(vm.importFile(fixture(lin?"ldf":"dbc"),error));
             CanTxTableModel can(&vm);LinScheduleTableModel schedule(&vm);QAbstractItemModel*table=lin?static_cast<QAbstractItemModel*>(&schedule):&can;
-            if(!lin)QVERIFY(vm.setCanOptions(key(),true,10,error));const auto frame=lin?schedule.key(0):can.key(0);const auto cell=table->index(0,lin?4:5);
+            if(!lin)QVERIFY(vm.setCanOptions(key(),true,10,error));const auto frame=lin?schedule.key(0):can.key(0);const auto cell=table->index(0,lin?4:6);
             QCOMPARE(table->headerData(cell.column(),Qt::Horizontal).toString(),QString("报文"));
             const auto data=QByteArray(vm.frame(frame)->length,char(1));QVERIFY(table->setData(cell,QString::fromLatin1(data.toHex(' '))));QCOMPARE(vm.working().frames[frame].applied.bytes,data);
             QVERIFY(!table->setData(cell,"ZZ"));QCOMPARE(vm.working().frames[frame].applied.bytes,data);QCOMPARE(cell.data(Qt::EditRole).toString(),QString("ZZ"));
             QVERIFY(table->setData(cell,QString::fromLatin1(data.toHex(' '))));QVERIFY(vm.editSignal(frame,0,"2",false,error));QCOMPARE(cell.data().toString(),QString::fromLatin1(vm.working().frames[frame].applied.bytes.toHex(' ')).toUpper());
             vm.setAvailability(true,false,19200,1);QVERIFY(vm.start(true,error));QVERIFY(cell.flags()&Qt::ItemIsEditable);
-            if(!lin){QVERIFY(!vm.removeQueuedFrame(frame,error));QVERIFY(!vm.selectCanNode("Tester","Rx",error));QVERIFY(!(table->index(0,4).flags()&Qt::ItemIsEditable));}
+            if(!lin){QVERIFY(!vm.removeQueuedFrame(frame,error));QVERIFY(!vm.selectCanNode("Tester","Rx",error));QVERIFY(!(table->index(0,5).flags()&Qt::ItemIsEditable));}
         }
     }
     void canQueueContextMenu(){
@@ -119,6 +126,38 @@ private slots:
             menu->actions().first()->trigger();menu->close();});
         table->customContextMenuRequested(QPoint(5,table->viewport()->height()-5));QVERIFY(created);QCOMPARE(table->model()->rowCount(),initial);QVERIFY(vm.working().frames[key(0x600)].enabled);
         direction->setCurrentText("Rx");QVERIFY(vm.working().frames[key(0x600)].enabled);QVERIFY(vm.removeQueuedFrame(key(0x600),error));QVERIFY(!vm.frame(key(0x600)));
+    }
+    void legacyDiagnosticConfigurationUpgrades(){
+        SignalTransmitViewModel vm(Bus::Lin);QString error;QVERIFY(vm.importFile(fixture("ldf"),error));auto config=vm.configuration();auto schedules=config["schedules"].toArray();auto diag=schedules.last().toObject();auto entries=diag["slots"].toArray();auto slot=entries[0].toObject();slot["frame"]="MasterReq";slot["issue"]="首版不执行诊断槽：MasterReq";entries[0]=slot;diag["slots"]=entries;diag["issue"]="首版不执行诊断槽：MasterReq";schedules[schedules.size()-1]=diag;config["schedules"]=schedules;
+        auto frames=config["frames"].toArray();for(int i=frames.size()-1;i>=0;--i)if(frames[i].toObject()["key"]==frameKey(Bus::Lin,60))frames.removeAt(i);config["frames"]=frames;
+        QVERIFY2(vm.readConfiguration(config,{},error),qPrintable(error));QVERIFY(vm.selectSchedule("DiagnosticOnly",error));vm.setAvailability(true,false,19200,1);QVERIFY2(vm.start(true,error),qPrintable(error));
+    }
+    void signalPresentationEnumsAndSorting(){
+        for(bool lin:{false,true}){
+            SignalTransmitViewModel vm(lin?Bus::Lin:Bus::Can);QString error;QVERIFY(vm.importFile(fixture(lin?"ldf":"dbc"),error));SignalTransmitPage page(&vm);page.resize(1200,750);page.show();
+            if(!lin)QVERIFY(vm.selectCanNode("Tester","Tx",error));
+            QVERIFY(!page.findChild<QLabel*>("signalFrameInfo"));QVERIFY(!page.findChild<QLabel*>("signalRunStatus"));
+            auto*values=page.findChild<QTableView*>("signalValues");auto*model=values->model();QCOMPARE(model->headerData(1,Qt::Horizontal).toString(),lin?QString("ldf初始raw"):QString("dbc初始raw"));
+            QCOMPARE(model->headerData(3,Qt::Horizontal).toString(),QString("发送物理值"));QCOMPARE(model->headerData(5,Qt::Horizontal).toString(),QString("注释"));QCOMPARE(model->headerData(6,Qt::Horizontal).toString(),QString("校验"));
+            QVERIFY(model->index(0,1).data(Qt::ForegroundRole).isValid());QVERIFY(!model->index(0,2).data(Qt::ForegroundRole).isValid());
+            const auto cell=model->index(0,3);QVERIFY(cell.flags()&Qt::ItemIsEditable);values->setCurrentIndex(cell);values->edit(cell);QTRY_VERIFY(values->findChild<QComboBox*>("signalEnumEditor"));auto*combo=values->findChild<QComboBox*>("signalEnumEditor");
+            combo->setCurrentIndex(combo->findData("0x0"));QMetaObject::invokeMethod(combo,"activated",Qt::DirectConnection,Q_ARG(int,combo->currentIndex()));QCOMPARE(model->index(0,2).data().toString(),QString("0"));QCOMPARE(cell.data().toString(),QString("Off"));
+            if(!lin){QVERIFY(vm.putCustom({},"Low",1,1,10,error));auto*plan=page.findChild<QTableView*>("signalPlanTable");QCOMPARE(plan->model()->index(0,1).data().toString(),QString("Low"));
+                for(int i=0;i<plan->model()->rowCount();++i)QCOMPARE(plan->model()->index(i,0).data().toInt(),i+1);QCOMPARE(plan->model()->headerData(6,Qt::Horizontal).toString(),QString("报文"));}
+        }
+    }
+    void linDirectionsAndDiagnosticSchedule(){
+        QFile source(fixture("ldf"));QVERIFY(source.open(QIODevice::ReadOnly));auto bytes=source.readAll();bytes.replace("DiagnosticOnly { MasterReq delay 10 ms; }","DiagnosticOnly { MasterReq delay 10 ms; SlaveResp delay 15 ms; MasterReq delay 20 ms; }");
+        QTemporaryDir dir;QFile file(dir.filePath("diag.ldf"));QVERIFY(file.open(QIODevice::WriteOnly));file.write(bytes);file.close();
+        for(auto role:{LinRole::Master,LinRole::Slave,LinRole::Monitor}){
+            SignalTransmitViewModel vm(Bus::Lin);QString error;QVERIFY2(vm.importFile(file.fileName(),error),qPrintable(error));QVERIFY(vm.setRole(role,role==LinRole::Slave?"Sensor":"Tester",error));LinScheduleTableModel table(&vm);
+            QCOMPARE(table.index(0,5).data().toString(),role==LinRole::Master?QString("Tx · Tx"):QString("Rx · Rx"));
+            QCOMPARE(table.index(1,5).data().toString(),role==LinRole::Master?QString("Tx · Rx"):role==LinRole::Slave?QString("Rx · Tx"):QString("Rx · Rx"));
+            QVERIFY(vm.selectSchedule("DiagnosticOnly",error));QCOMPARE(table.index(1,5).data().toString(),role==LinRole::Slave?QString("Rx · Tx"):role==LinRole::Master?QString("Tx · Rx"):QString("Rx · Rx"));
+            vm.setAvailability(true,false,19200,1);QSignalSpy starts(&vm,&SignalTransmitViewModel::startRequested);QVERIFY2(vm.start(true,error),qPrintable(error));const auto plan=qvariant_cast<TxPlan>(starts.first().first());
+            for(const auto&i:plan.items)if(i.id>=60){QVERIFY(i.classicChecksum);QCOMPARE(i.payload.size(),8);}
+            if(role==LinRole::Master){SignalTransmitter worker;QSignalSpy events(&worker,&SignalTransmitter::events);worker.start(plan,19200,true,nullptr,nullptr);QTRY_VERIFY_WITH_TIMEOUT(events.count()>1,1000);worker.stop();QVector<BusFrameEvent> frames;for(const auto&args:events)frames+=qvariant_cast<BusFrameEvents>(args.first());QVERIFY(frames.size()>=3);QCOMPARE(frames[0].id,quint32(60));QCOMPARE(frames[1].id,quint32(61));QCOMPARE(frames[2].id,quint32(60));QCOMPARE(frames[1].source,EventSource::NoResponse);QVERIFY(frames[1].arrivalUs-frames[0].arrivalUs>=10000);QVERIFY(frames[2].arrivalUs-frames[1].arrivalUs>=15000);}
+        }
     }
     void draftsAreAtomicAndWarningsCanSend(){SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY2(vm.importFile(fixture(),error),qPrintable(error));auto before=vm.working().frames[key()].applied;
         QVERIFY(!vm.editSignal(key(),1,"300",false,error));QCOMPARE(vm.working().frames[key()].applied.bytes,before.bytes);QVERIFY(vm.hasInvalidDraft());
@@ -160,11 +199,11 @@ private slots:
     }
     void asyncImportDoesNotPublishHalfDatabase(){SignalTransmitViewModel vm(Bus::Can);vm.importAsync(fixture());QVERIFY(vm.importing());QVERIFY(!vm.canStructure());QTRY_VERIFY_WITH_TIMEOUT(!vm.importing(),5000);QCOMPARE(vm.definitions().size(),5);const auto digest=vm.database()->sha256;vm.importAsync("not-found.dbc");QTRY_VERIFY_WITH_TIMEOUT(!vm.importing(),3000);QCOMPARE(vm.database()->sha256,digest);}
     void scheduleEditsKeepUnsupportedSourceTablesInert(){SignalTransmitViewModel vm(Bus::Lin);QString error;QVERIFY(vm.importFile(fixture("ldf"),error));auto tables=vm.working().schedules;tables[0].entries[0].delayMs="20";
-        QVERIFY2(vm.replaceSchedules(tables,"Main",error),qPrintable(error));QVERIFY(!vm.working().schedules.last().issue.isEmpty());vm.setAvailability(true,false,19200,1);QVERIFY(vm.selectSchedule("DiagnosticOnly",error));QVERIFY(!vm.start(true,error));QVERIFY(vm.selectSchedule("Main",error));
+        QVERIFY2(vm.replaceSchedules(tables,"Main",error),qPrintable(error));QVERIFY(vm.working().schedules.last().issue.isEmpty());vm.setAvailability(true,false,19200,1);QVERIFY(vm.selectSchedule("Fractional",error));QVERIFY(!vm.start(true,error));QVERIFY(vm.selectSchedule("Main",error));
         tables[0].entries[0].frame="invented";QVERIFY(!vm.replaceSchedules(tables,"Main",error));QCOMPARE(vm.working().schedules[0].entries[0].delayMs,QString("20"));
     }
     void pageOrderAndOfflineEditing(){ChannelViewModel vm(settings());ChannelPage page(&vm);page.resize(1300,950);page.show();auto*tabs=page.findChild<QTabWidget*>("taskPages");QVERIFY(tabs);QCOMPARE(tabs->count(),3);QCOMPARE(tabs->tabText(0),QString("下载"));QCOMPARE(tabs->tabText(1),QString("UDS 诊断"));QCOMPARE(tabs->tabText(2),QString("信号发送"));tabs->setCurrentIndex(2);
-        QString error;QVERIFY(vm.signalTransmission()->importFile(fixture(),error));QVERIFY(vm.signalTransmission()->selectCanNode("Tester","Tx",error));QVERIFY(page.findChild<QTableView*>("signalPlanTable")->model()->index(0,5).flags()&Qt::ItemIsEditable);QVERIFY(!page.findChild<QPushButton*>("signalStart")->isEnabled());
+        QString error;QVERIFY(vm.signalTransmission()->importFile(fixture(),error));QVERIFY(vm.signalTransmission()->selectCanNode("Tester","Tx",error));QVERIFY(page.findChild<QTableView*>("signalPlanTable")->model()->index(0,6).flags()&Qt::ItemIsEditable);QVERIFY(!page.findChild<QPushButton*>("signalStart")->isEnabled());
         QTest::qWait(50);QDir().mkpath(QCoreApplication::applicationDirPath()+"/artifacts");QVERIFY(page.grab().save(QCoreApplication::applicationDirPath()+"/artifacts/signal-can.png"));
     }
     void configurationControlsOnlyAppearInSecondaryDialog(){

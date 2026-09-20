@@ -87,7 +87,7 @@ private slots:
         d.values[0].bits=1;QVERIFY(SignalCodec::encode(f,d.values,d.applied.bytes,error));QCOMPARE(d.applied.bytes,QByteArray::fromHex("013412"));QCOMPARE(d.values[1].bits,quint64(18));
         auto values=d.values;QVERIFY(SignalCodec::decode(f,QByteArray::fromHex("014455"),values,error));QCOMPARE(values[1].bits,quint64(18));QCOMPARE(values[2].bits,quint64(0x5544));
     }
-    void ldfScalarArraysSegmentsAndChecksum(){auto result=DatabaseImporter::load(fixture("ldf"),Bus::Lin);QVERIFY2(result.database,qPrintable(result.error));const auto db=result.database;QCOMPARE(db->frames.size(),4);QCOMPARE(db->bitrate,19200);
+    void ldfScalarArraysSegmentsAndChecksum(){auto result=DatabaseImporter::load(fixture("ldf"),Bus::Lin);QVERIFY2(result.database,qPrintable(result.error));const auto db=result.database;QCOMPARE(db->frames.size(),5);QCOMPARE(db->bitrate,19200);
         QString error;TxDraft draft;QVERIFY(SignalCodec::initialize(find(db,"Control"),Bus::Lin,draft,error));QCOMPARE(draft.applied.bytes,QByteArray::fromHex("faff"));
         const auto&blob=find(db,"Blob");QVERIFY(blob.classicChecksum);QVERIFY(SignalCodec::initialize(blob,Bus::Lin,draft,error));QCOMPARE(draft.applied.bytes,QByteArray::fromHex("1234ff"));QCOMPARE(SignalCodec::defaults(blob.fields[0]).bytes,QByteArray::fromHex("ffff"));
         const auto&s=find(db,"Measurement").fields[0];QVERIFY(!SignalCodec::parsePhysical(s,"1.2").ok());auto inverse=SignalCodec::parsePhysical(s,"1.2",0);QVERIFY(inverse.ok());QCOMPARE(inverse.raw.bits,quint64(12));
@@ -95,13 +95,18 @@ private slots:
         QCOMPARE(SignalCodec::linPid(0x3c),quint8(0x3c));QCOMPARE(SignalCodec::linPid(0x3d),quint8(0x7d));
     }
     void ldfUnsupportedAndMalformedAreExplicit(){auto text=bytes("ldf");auto result=DatabaseImporter::ldf(text);QVERIFY(result.database);
-        const auto&db=result.database;QVERIFY(SignalCodec::validateSchedule(db->schedules[0],db->frames,19200).isEmpty());QVERIFY(!SignalCodec::validateSchedule(db->schedules[2],db->frames,19200).isEmpty());QVERIFY(!db->schedules[3].issue.isEmpty());
+        const auto&db=result.database;QVERIFY(SignalCodec::validateSchedule(db->schedules[0],db->frames,19200).isEmpty());QVERIFY(!SignalCodec::validateSchedule(db->schedules[2],db->frames,19200).isEmpty());QVERIFY(SignalCodec::validateSchedule(db->schedules[3],db->frames,19200).isEmpty());
         QVERIFY(!SignalCodec::validateSchedule(db->schedules[0],db->frames,1000).isEmpty());
         text.replace("Position, 0;","Missing, 0;");QVERIFY(!DatabaseImporter::ldf(text).database);
         text=bytes("ldf");text.replace("Command: 3, 2,","Command: 3, 8,");QVERIFY(!DatabaseImporter::ldf(text).database);
         text=bytes("ldf");text+="Unknown_semantics { a; }";result=DatabaseImporter::ldf(text);QVERIFY(!result.database);QVERIFY(result.error.contains("行"));
         text=bytes("ldf");text.chop(5);QVERIFY(!DatabaseImporter::ldf(text).database);
         text=bytes("ldf");text.replace("logical_value, 0, \"Off\";","ascii_value;");result=DatabaseImporter::ldf(text);QVERIFY(result.database);QVERIFY(!find(result.database,"Control").issue.isEmpty());
+    }
+    void sourceSignalCommentsAndDiagnosticValidation(){
+        auto text=bytes("ldf");text.replace("Command: 3, 2, Tester, Sensor, Actuator;","Command: 3, 2, Tester, Sensor, Actuator; // Command annotation");auto result=DatabaseImporter::ldf(text);QVERIFY(result.database);QCOMPARE(find(result.database,"Control").fields.first().comment,QString("Command annotation"));QVERIFY(find(result.database,"Measurement").fields.first().comment.isEmpty());
+        text=bytes("dbc");text.replace("BA_DEF_ SG_", "CM_ SG_ 291 Small \"Small annotation\";\nBA_DEF_ SG_");result=DatabaseImporter::dbc(text);QVERIFY2(result.database,qPrintable(result.error));QCOMPARE(find(result.database,"Packed").fields.first().comment,QString("Small annotation"));
+        text=bytes("ldf");text+="\nDiagnostic_frames { Bad: 62 {} }";QVERIFY(!DatabaseImporter::ldf(text).database);
     }
     void sourceUtf8AndMalformedDbc(){QVERIFY(!DatabaseImporter::dbc("BO_ invalid").database);QByteArray bad=bytes("dbc");bad.append(char(0xff));QVERIFY(!DatabaseImporter::dbc(bad).database);
         const auto source=bytes("dbc");const auto digest=QCryptographicHash::hash(source,QCryptographicHash::Sha256);auto db=dbc();QVERIFY(db);QCOMPARE(db->sha256,QString::fromLatin1(digest.toHex()));QCOMPARE(bytes("dbc"),source);

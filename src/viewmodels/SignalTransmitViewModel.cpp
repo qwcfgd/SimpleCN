@@ -23,7 +23,7 @@ SignalTransmitViewModel::SignalTransmitViewModel(Bus bus,QObject*parent):QObject
 }
 QVector<FrameDefinition> SignalTransmitViewModel::definitions()const{auto list=m_database->frames;list+=m_work.customFrames;return list;}
 QVector<FrameDefinition> SignalTransmitViewModel::queuedDefinitions()const{
-    QVector<FrameDefinition> result;for(const auto&f:definitions())if(m_work.frames.value(f.key).enabled)result.append(f);return result;
+    QVector<FrameDefinition> result;for(const auto&f:definitions())if(m_work.frames.value(f.key).enabled)result.append(f);std::stable_sort(result.begin(),result.end(),[](const auto&a,const auto&b){return a.id!=b.id?a.id<b.id:a.extended<b.extended;});return result;
 }
 bool SignalTransmitViewModel::selectCanNode(const QString&node,const QString&direction,QString&error){
     if(!canStructure()||m_bus!=Bus::Can||(!node.isEmpty()&&!m_database->nodes.contains(node))||
@@ -157,7 +157,7 @@ bool SignalTransmitViewModel::start(bool periodic,QString&error){
     for(const auto&f:definitions()){const auto &draft=m_work.frames[f.key];if(m_bus==Bus::Can&&!draft.enabled)continue;
         if(m_bus==Bus::Can&&(!f.issue.isEmpty()||(periodic&&draft.cycleMs<1))){error=f.issue.isEmpty()?"周期发送的每一项必须设置至少 1 ms":f.issue;return false;}
         if(m_bus==Bus::Lin&&!f.issue.isEmpty())continue;
-        plan.items.append({f.key,f.id,f.extended,draft.applied.bytes,draft.cycleMs,draft.applied.revision,f.publisher,f.classicChecksum});
+        plan.items.append({f.key,f.id,f.extended,draft.applied.bytes,draft.cycleMs,draft.applied.revision,m_bus==Bus::Lin&&f.id==61&&m_work.role==LinRole::Slave?m_work.node:f.publisher,f.classicChecksum});
     }
     if(m_bus==Bus::Can&&plan.items.isEmpty()){error="请先选择节点报文或右键自建报文";return false;}
     plan.run=++m_nextRun;m_status={};m_status.state=RunState::Starting;m_status.run=plan.run;m_status.detail="启动中";emit startRequested(plan);emit changed();return true;
