@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QTemporaryDir>
 #include <QTabWidget>
 #include "views/MainWindow.h"
@@ -12,16 +13,23 @@ using namespace host;
 class ReleaseSmoke : public QObject {
     Q_OBJECT
     QString root() const{return QCoreApplication::applicationDirPath();}
+    QString runtime() const{return qEnvironmentVariable("HOST_RELEASE_DIR",QStringLiteral(HOST_APP_RUNTIME_DIR));}
     QString output() const{return qEnvironmentVariable("HOST_VERIFY_OUTPUT",root()+"/verification");}
 private slots:
     void initTestCase(){
         QApplication::setStyle("Fusion");QApplication::setFont(QFont("Microsoft YaHei UI",9));
         QVERIFY(QDir().mkpath(output()));
-        QVERIFY2(QFile::exists(root()+"/profiles/simulation.json"),"Run this verifier from the packaged release directory.");
+        QVERIFY2(QFile::exists(root()+"/profiles/simulation.json"),"Simulation fixtures belong beside the verifier in qttemp.");
     }
     void shippedExecutableStarts(){
         QProcess executable;executable.setWorkingDirectory(QDir::tempPath());
-        executable.start(root()+"/QtBootloader.exe",{"--version"});
+        auto environment=QProcessEnvironment::systemEnvironment();
+        for(const auto &key:{"QT_PLUGIN_PATH","QT_QPA_PLATFORM_PLUGIN_PATH","QML2_IMPORT_PATH"})environment.remove(key);
+        environment.insert("QT_QPA_PLATFORM","windows");
+        const auto windows=environment.value("SystemRoot","C:/Windows");
+        environment.insert("PATH",windows+"/System32;"+windows);
+        executable.setProcessEnvironment(environment);
+        executable.start(runtime()+"/QtBootloader.exe",{"--version"});
         QVERIFY(executable.waitForStarted(5000));
         const bool completed=executable.waitForFinished(10000);
         if(!completed){executable.kill();executable.waitForFinished();}

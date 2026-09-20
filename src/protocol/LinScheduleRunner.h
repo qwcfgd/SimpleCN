@@ -26,6 +26,7 @@ public:
     // SIM only: an external master header. No autonomous slave/monitor traffic.
     QByteArray simulatedHeader(quint32 id)const;
     RunStatus status()const{return m_status;}
+    bool publishes(quint32 id)const{for(const auto &i:m_plan.items)if(i.id==id&&m_publish.contains(i.key))return true;return false;}
     const QSet<QString>&publishers()const{return m_publish;}
     std::function<void(const BusFrameEvent&)> event;
     std::function<void(const QString&)> notice;
@@ -45,7 +46,7 @@ private:
     qint64 m_frameEnd=0;int m_observedSlot=0;
     int m_slot=0;int m_bitrate=19200;qint64 m_due=0,m_switchBegan=0,m_lastOldFrameUs=0;
     BusFrameEvent m_lastObserved,m_gapAnchor;
-    bool m_observed=false,m_gapPending=false;
+    bool m_observed=false,m_gapPending=false;int m_roundsRemaining=0;
     quint32 m_gapFirstId=0;QString m_gapFrom,m_gapTo;
 };
 }

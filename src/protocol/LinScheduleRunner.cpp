@@ -17,14 +17,16 @@ bool LinScheduleRunner::activate(const QString&name,qint64 now,QString&error){
     const auto*s=schedule(name);if(!s){error="调度表不存在";return fault(error);}
     m_effective=effective(name);error=m_plan.role==LinRole::Monitor?QString():validate(m_effective);if(!error.isEmpty())return fault(error);
     m_publish=responseSet(m_effective);
-    if(m_device&&(!m_device->install(m_plan.items,m_publish,error)||(m_plan.role==LinRole::Master&&!m_effective.entries.isEmpty()&&!m_device->start(m_effective,m_plan.items,error))))return fault(error);
-    m_status.current=name;m_status.pending.clear();m_status.state=RunState::Running;m_status.detail=m_device?"LIN 硬件运行":"SIM LIN 运行";m_slot=0;m_observedSlot=0;m_due=now;m_frameEnd=now;return true;
+    QVector<TxItem> selected;QSet<quint32> ids;for(const auto &slot:m_effective.entries)for(const auto &item:m_plan.items)if(item.key==slot.frame&&!ids.contains(item.id)){selected.append(item);ids.insert(item.id);}
+    if(m_device&&(!m_device->install(selected,m_publish,error)||(m_plan.role==LinRole::Master&&!m_effective.entries.isEmpty()&&!m_device->start(m_effective,selected,error))))return fault(error);
+    m_status.current=name;m_status.pending.clear();m_status.state=RunState::Running;m_status.detail=m_device?"LIN 硬件运行":"SIM LIN 运行";m_slot=0;m_observedSlot=0;m_due=now;m_frameEnd=now;
+    if(m_device&&m_plan.role==LinRole::Master&&m_roundsRemaining>0&&!m_effective.entries.isEmpty()&&!m_device->requestBoundary(error,true))return fault(error);return true;
 }
 bool LinScheduleRunner::start(const TxPlan&plan,int bitrate,qint64 now,QString&error){
-    if(active(m_status.state)){error="LIN 任务已在运行";return false;}m_plan=plan;m_bitrate=bitrate;m_status={};m_status.run=plan.run;
+    if(active(m_status.state)){error="LIN 任务已在运行";return false;}m_plan=plan;m_roundsRemaining=plan.periodic?0:qBound(1,plan.repeatCount,1000000);m_bitrate=bitrate;m_status={};m_status.run=plan.run;
     m_publish.clear();m_slot=0;m_due=now;m_frameEnd=now;m_pendingEnabled.clear();m_enableBoundary=false;m_slaveBoundary=false;m_observed=false;m_gapPending=false;
     if(m_device&&(!m_device->configure(plan.role,bitrate,error)||!m_device->stop(error)))return fault(error);
-    if(plan.role==LinRole::Monitor){m_effective=effective(plan.schedule);m_status.current=plan.schedule;if(m_device&&!m_device->install(plan.items,{},error))return fault(error);m_status.state=RunState::Running;return true;}
+    if(plan.role==LinRole::Monitor){m_effective=effective(plan.schedule);m_status.current=plan.schedule;QVector<TxItem> monitorItems;QSet<quint32> monitorIds;for(const auto &i:plan.items)if(!monitorIds.contains(i.id)){monitorItems.append(i);monitorIds.insert(i.id);}if(m_device&&!m_device->install(monitorItems,{},error))return fault(error);m_status.state=RunState::Running;return true;}
     return activate(plan.schedule,now,error);
 }
 bool LinScheduleRunner::switchTo(const QString&name,qint64 now,QString&error){
@@ -46,6 +48,12 @@ bool LinScheduleRunner::setEnabled(const QString&key,bool enabled,qint64,QString
 }
 bool LinScheduleRunner::tick(qint64 now,QString&error){
     if(!active(m_status.state))return true;
+    if(m_roundsRemaining>0&&m_plan.role==LinRole::Master&&m_status.state==RunState::Running){
+        bool ended=!m_device&&m_slot>=m_effective.entries.size()&&now>=m_due;
+        if(m_device&&!m_device->boundary(ended,error,true))return fault(error);
+        if(ended){if(--m_roundsRemaining==0){if(!stop(error))return false;m_status.detail="多次调度已完成";return true;}
+            if(m_device&&!activate(m_status.current,now,error))return false;else if(!m_device)m_slot=0;}
+    }
     const bool switching=m_status.state==RunState::SwitchPending;
     bool boundary=false;
     if(switching){
@@ -71,7 +79,7 @@ bool LinScheduleRunner::tick(qint64 now,QString&error){
     if(m_slot>=m_effective.entries.size())m_slot=0;
     const auto&entry=m_effective.entries[m_slot++];auto item=std::find_if(m_plan.items.begin(),m_plan.items.end(),[&](const auto&i){return i.key==entry.frame;});
     if(item==m_plan.items.end()){error="SIM 调度帧不存在";return fault(error);}
-    BusFrameEvent e;e.bus=Bus::Lin;e.id=item->id;e.arrivalUs=now;e.source=EventSource::Simulated;
+    BusFrameEvent e;e.bus=Bus::Lin;e.id=item->id;e.arrivalUs=now;e.source=EventSource::Simulated;e.classicChecksum=item->classicChecksum;
     if(m_publish.contains(item->key)){e.bytes=item->payload;e.detail="SIM 主节点发布";++m_status.sent[item->key];}
     else{e.valid=false;e.source=EventSource::NoResponse;e.detail="SIM 帧头；未模拟外部从节点响应";}
     if(event)event(e);m_lastOldFrameUs=now;m_due=now+qint64(SignalCodec::scheduleDelayMs(entry.delayMs))*1000;
@@ -80,7 +88,7 @@ bool LinScheduleRunner::tick(qint64 now,QString&error){
 void LinScheduleRunner::observe(const BusFrameEvent&e){
     if(!active(m_status.state)||e.bus!=Bus::Lin)return;
     if(!e.valid&&e.source!=EventSource::NoResponse)return;
-    const auto key=frameKey(Bus::Lin,e.id);
+    auto key=frameKey(Bus::Lin,e.id);for(const auto &slot:m_effective.entries)for(const auto &item:m_plan.items)if(item.key==slot.frame&&item.id==e.id){key=item.key;break;}
     if(e.valid&&e.source==EventSource::HardwareEcho&&m_publish.contains(key))++m_status.sent[key];
     if(m_gapPending&&e.id==m_gapFirstId){
         QString measured;

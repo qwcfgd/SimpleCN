@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(QtController VERSION 1.2.0 LANGUAGES CXX)
+project(QtController VERSION 1.3.0 LANGUAGES CXX)
 if(MINGW)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
 endif()
@@ -9,8 +9,14 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/src/views")
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets Test)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets Test Concurrent)
+include(CTest)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets Concurrent)
+if(BUILD_TESTING)
+    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
+endif()
+set(HOST_RUNTIME_OUTPUT_DIR "C:/Documents/0_Qt/build/Qt-GeneralController-qt${QT_VERSION_MAJOR}"
+    CACHE PATH "Application and required runtime files only")
 include(cmake/SignalDependencies.cmake)
 add_library(signal_database STATIC
     src/domain/SignalTypes.h src/model/SignalCodec.h src/model/SignalCodec.cpp
@@ -70,6 +76,16 @@ add_library(bootloader_protocol STATIC
 target_include_directories(bootloader_protocol PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(bootloader_protocol PUBLIC Qt${QT_VERSION_MAJOR}::Core)
 add_library(bootloader_ui STATIC
+    src/infrastructure/BusHardware.h src/infrastructure/BusHardware.cpp
+    src/infrastructure/TosunRuntime.h src/infrastructure/TosunRuntime.cpp
+    src/infrastructure/TosunHardware.h src/infrastructure/TosunHardware.cpp
+    src/infrastructure/TraceExporter.h src/infrastructure/TraceExporter.cpp
+    src/infrastructure/TraceReader.h src/infrastructure/TraceReader.cpp
+    src/views/FrameDataDelegate.h
+    src/viewmodels/ReplayViewModel.h src/viewmodels/ReplayViewModel.cpp
+    src/viewmodels/SignalPlotModel.h src/viewmodels/SignalPlotModel.cpp
+    src/views/SignalPlotCanvas.h src/views/SignalPlotCanvas.cpp
+    src/views/SignalPlotDialog.h src/views/SignalPlotDialog.cpp
     src/domain/HostTypes.h src/domain/HostTypes.cpp
     src/infrastructure/SettingsStore.h src/infrastructure/SettingsStore.cpp
     src/infrastructure/ChannelWorker.h src/infrastructure/ChannelWorker.cpp
@@ -116,6 +132,11 @@ function(host_deploy target)
     if(BUILD_SEEDKEY_BRIDGE)
         add_dependencies(${target} seedkey_bridge)
     endif()
+    if(BUILD_SEEDKEY_BRIDGE)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${target}>/seedkey"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SEEDKEY_BRIDGE}" "$<TARGET_FILE_DIR:${target}>/seedkey/SeedkeyBridge32.exe")
+    endif()
     peak_deploy(${target})
     if(WINDEPLOYQT_EXECUTABLE)
         add_custom_command(TARGET ${target} POST_BUILD
@@ -126,13 +147,15 @@ if(WIN32)
     enable_language(RC)
 endif()
 add_executable(QtBootloader WIN32 src/main.cpp)
+set_target_properties(QtBootloader PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${HOST_RUNTIME_OUTPUT_DIR}")
 if(WIN32)
     target_sources(QtBootloader PRIVATE resources/app.rc)
 endif()
 target_link_libraries(QtBootloader PRIVATE bootloader_ui)
 host_deploy(QtBootloader)
-enable_testing()
-add_subdirectory(tests)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 # Publish runtime files only; the build tree also contains sources and test binaries.
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -141,8 +164,8 @@ if(Python3_Interpreter_FOUND)
         CACHE PATH "New directory for the distributable release (existing output is never overwritten)")
     add_custom_target(package_release
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/package_release.py"
-            --build "${CMAKE_BINARY_DIR}" --output "${HOST_RELEASE_OUTPUT}" --qt-major "${QT_VERSION_MAJOR}"
-        DEPENDS QtBootloader VerifyRelease
+            --build "${HOST_RUNTIME_OUTPUT_DIR}" --output "${HOST_RELEASE_OUTPUT}" --qt-major "${QT_VERSION_MAJOR}"
+        DEPENDS QtBootloader
         COMMENT "Packaging runtime files without build caches or regression binaries"
         VERBATIM)
 endif()

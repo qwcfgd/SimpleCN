@@ -17,8 +17,7 @@ def main():
     archive = output.parent/(output.name+".zip")
     if output.exists() or archive.exists():
         parser.error("Output directory or archive already exists; choose a new output name.")
-    required = [build/"QtBootloader.exe", build/"tests/VerifyRelease.exe",
-                build/f"tests/Qt{args.qt_major}Test.dll", build/"platforms/qwindows.dll",
+    required = [build/"QtBootloader.exe", build/"platforms/qwindows.dll",
                 build/"dll/PLinApi.dll", build/"dll/PCANBasic.dll",
                 ROOT/"docs/User-Guide.md", build/"libsignal_dbcppp.dll",
                 ROOT/"docs/licenses/dbcppp-MIT.txt", ROOT/"docs/licenses/Boost-1.0.txt"]
@@ -27,10 +26,8 @@ def main():
             parser.error(f"Missing required file: {path}")
     output.mkdir(parents=True)
     shutil.copy2(required[0], output)
-    shutil.copy2(required[1], output)
-    shutil.copy2(required[2], output)
     for path in build.glob("*.dll"):
-        if path.name.startswith((f"Qt{args.qt_major}", "libgcc_", "libstdc++", "libwinpthread", "libsignal_dbcppp")) or path.name.lower() in {"d3dcompiler_47.dll", "opengl32sw.dll", "dxcompiler.dll", "dxil.dll"}:
+        if path.name != f"Qt{args.qt_major}Test.dll" and (path.name.startswith((f"Qt{args.qt_major}", "libgcc_", "libstdc++", "libwinpthread", "libsignal_dbcppp")) or path.name.lower() in {"d3dcompiler_47.dll", "opengl32sw.dll", "dxcompiler.dll", "dxil.dll"}):
             shutil.copy2(path, output)
     for name in ("generic", "iconengines", "imageformats",
                  "networkinformation", "platforms", "styles", "tls"):
@@ -40,39 +37,25 @@ def main():
     for name in ("PLinApi.dll", "PCANBasic.dll"):
         shutil.copy2(build/"dll"/name, output/"dll"/name)
     (output/"qt.conf").write_text("[Paths]\nPrefix=.\nPlugins=.\n", encoding="utf-8")
-    (output/"profiles").mkdir()
-    shutil.copytree(ROOT/"profiles/fixtures", output/"profiles/fixtures")
-    profile = json.loads((ROOT/"profiles/stage6-can-lin-simulation.json").read_text(encoding="utf-8"))
-    ports = {"CAN": 0, "LIN": 0}
-    for channel in profile["channels"]:
-        channel["flashPath"] = "fixtures/flash-driver.bin"
-        channel["applicationPath"] = "fixtures/application.bin"
-        channel["simulation"] = True
-        bus = channel["bus"]
-        ports[bus] += 1
-        channel["hardwareKey"] = f"preview:{bus}:{ports[bus]}"
-        channel["handle"] = (0xf100 if bus == "CAN" else 0xf200) + ports[bus]
-    (output/"profiles/simulation.json").write_text(
-        json.dumps(profile, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
     (output/"docs").mkdir()
-    for path in (ROOT/"docs").glob("*.md"):
-        shutil.copy2(path, output/"docs"/path.name)
+    for name in ("User-Guide.md", "Release-1.3.md", "Tosun-Hardware.md", "Trace-and-Graphics.md", "Signal-Workbench-Replay.md",
+                 "CDD-UDS.md", "Default-Configuration.md", "Signal-Transmission-Implementation.md", "Logic-Review-Fixes.md"):
+        shutil.copy2(ROOT/"docs"/name, output/"docs"/name)
     shutil.copytree(ROOT/"docs/licenses", output/"docs/licenses")
     (output/"README.txt").write_text(
-        "GENERAL BOOTLOADER CONTROLLER - ReleaseVer: 1.2\n\n"
+        "Qt-GeneralController V1.3\n\n"
         "启动 QtBootloader.exe。首次包含 CAN01 和 LIN01，不自动连接。\n"
         "完整说明：docs/User-Guide.md\n"
-        "模拟验证：载入 profiles/simulation.json，连接所需通道后开始模拟下载。\n"
-        "自动自检：运行 VerifyRelease.exe；不会连接或发送到物理总线。\n"
+        "发布包仅包含应用及运行依赖；测试、调试与模拟素材保存在 build/qttemp。\n"
         "公开包不含安全访问算法；实机使用需另行配置已授权 DLL 和桥接程序。\n"
         "请保留整个目录；不要只复制 exe。保存配置需要目录可写。\n",
         encoding="utf-8-sig")
     inventory = {
-        "applicationVersion": "1.2.0", "uiVersion": "ReleaseVer: 1.2",
+        "applicationVersion": "1.3.0", "uiVersion": "Qt-GeneralController V1.3",
         "qtMajor": int(args.qt_major), "architecture": "Windows x64",
         "buildType": "Release", "physicalDownloadEnabled": False, "physicalDownloadBuses": [], "physicalECUValidated": False,
         "components": ["Qt runtime and plugins", "MinGW runtime",
-                       "PEAK PCANBasic and PLIN API x64", "simulation fixtures",
+                       "PEAK PCANBasic and PLIN API x64", "TOSUN SDK adapter (SDK installed separately)",
                        "dbcppp 3.8.0 (MIT)", "Boost 1.84 headers (Boost Software License 1.0)"],
         "driverServicesIncluded": False,
     }

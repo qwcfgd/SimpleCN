@@ -32,8 +32,11 @@ void ChannelHardwareEditor::loadSettings(){
 }
 void ChannelHardwareEditor::applyForm(){
     if(m_loading||m_applying||m_externalLocked||m_vm->busy())return;
-    auto s=m_vm->settings();s.simulation=m_mode->currentIndex()==1;s.bitrate=m_bitrate->currentData().toInt();
-    s.hardwareKey=m_software->currentData().toString();s.handle=m_software->currentData(Qt::UserRole+1).toUInt();s.autoReconnect=m_reconnect->isChecked();
+    auto s=m_vm->settings();const bool simulation=m_mode->currentIndex()==1;
+    // The port combo still contains the previous backend until enumeration returns.
+    if(s.simulation!=simulation){s.hardwareKey.clear();s.handle=0;}
+    else{s.hardwareKey=m_software->currentData().toString();s.handle=m_software->currentData(Qt::UserRole+1).toUInt();}
+    s.simulation=simulation;s.bitrate=m_bitrate->currentData().toInt();s.autoReconnect=m_reconnect->isChecked();
     QScopedValueRollback<bool>guard(m_applying,true);m_vm->setSettings(s);
 }
 void ChannelHardwareEditor::addConnectionControl(QPushButton*button){auto*form=qobject_cast<QFormLayout*>(layout());form->insertRow(form->rowCount()-1,button);}

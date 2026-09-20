@@ -9,6 +9,9 @@ RawValue SignalCodec::defaults(const SignalDefinition &s){return s.array?RawValu
 static Int integer(const SignalDefinition&s,const RawValue &r){Int n=r.bits;if(s.isSigned&&s.width>0&&s.width<=64&&(r.bits&(quint64(1)<<(s.width-1))))n-=(Int(1)<<s.width);return n;}
 QString SignalCodec::rawText(const SignalDefinition&s,const RawValue &r){return s.array?QString::fromLatin1(r.bytes.toHex(' ')).toUpper():decimal::text(integer(s,r));}
 static const PhysicalRange *rangeFor(const SignalDefinition&s,quint64 bits){for(const auto &r:s.ranges)if(bits>=r.first&&bits<=r.last)return &r;return nullptr;}
+QString SignalCodec::differenceText(const QString&a,const QString&b){
+    try{return decimal::text(decimal::require(a)-decimal::require(b));}catch(...){return "—";}
+}
 QString SignalCodec::physicalText(const SignalDefinition&s,const RawValue&r){
     if(s.array||!s.conversion)return s.labels.contains(r.bits)?s.labels.value(r.bits):QStringLiteral("无换算定义");
     try {QString factor=s.factor,offset=s.offset;if(!s.ranges.isEmpty()){const auto p=rangeFor(s,r.bits);if(!p)return s.labels.value(r.bits,"无换算定义");factor=p->factor;offset=p->offset;}
@@ -106,7 +109,7 @@ bool SignalCodec::decode(const FrameDefinition&f,const QByteArray &bytes,QVector
     error.clear();return true;
 }
 bool SignalCodec::initialize(const FrameDefinition&f,Bus bus,TxDraft&draft,QString&error){
-    TxDraft out;out.cycleMs=f.cycleMs;out.applied.bytes.fill(bus==Bus::Can?0:char(0xff),f.length);
+    TxDraft out;out.cycleMs=f.cycleMs>0?f.cycleMs:100;out.applied.bytes.fill(bus==Bus::Can?0:char(0xff),f.length);
     for(const auto &s:f.fields){auto value=defaults(s);if(!s.initial.isEmpty()){const auto parsed=parseRaw(s,s.initial);if(!parsed.ok()){error=s.name+": 文件初始值无效："+parsed.error;return false;}value=parsed.raw;}out.values.append(value);}
     if(f.issue.isEmpty()&&!encode(f,out.values,out.applied.bytes,error))return false;
     for(int i=0;i<f.fields.size();++i)out.warnings[i]=rangeWarning(f.fields[i],out.values[i]);

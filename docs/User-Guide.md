@@ -21,9 +21,15 @@
 
 同一软件通道的信号发送与下载、UDS、扫描互斥；不同通道可独立运行。仿真不访问物理总线，也不会伪造外部 ECU 响应。首版支持范围与未验收事项见 [实施记录](Signal-Transmission-Implementation.md)。
 
+## 报文监视与图像观测
+
+报文监视中的 t / rt / dt 分别控制系统时间、从 0 ms 起算的时刻和相邻记录时间差，初始仅显示 rt。“滚动显示”默认关闭；开启后相同 ID 原位更新，数据按半字节比较，连续相同 10 帧渐变为灰色。已导入数据库的报文可展开查看信号值。导出支持 ASC、BLF、CSV，范围为当前保留的最近 10,000 条历史记录。
+
+在信号发送页点击“图像…”打开观测窗口，右键添加当前通道数据库信号。支持 Shift 多选、Delete 删除、手动改色、All / Marked / GrayNoMarked 展示，以及 Fit / arrange / All 坐标布局。两个光标对每个信号独立计算 y(C2) − y(C1)；超过 5 s 的采样空档断线且不插值。详细操作与验证范围见 [报文监视与图像观测](Trace-and-Graphics.md)。
+
 ## 模拟下载
 
-源码示例配置位于 profiles/，发布包使用 profiles/simulation.json。镜像相对路径以配置文件目录解析。测试固件只用于模拟，不能写入实际设备。
+源码示例配置位于 profiles/；编译后的测试素材位于 ../build/qttemp/Qt-GeneralController-qtN/tests/profiles/，发布包不携带模拟测试素材。镜像相对路径以配置文件目录解析。测试固件只用于模拟，不能写入实际设备。
 
 下载镜像与下载任务上下排列，开始下载、取消和进度条位于同一行。APP / Boot 流程、步骤反馈、超时、镜像基址和 RID / DID 可在下载设置中配置。公开默认值是示例值；真实目标参数需要单独填写并保存至本地配置。
 
@@ -37,16 +43,20 @@
 
 ## 发布自检
 
-使用清洁构建生成公开包。在解压目录运行：
+使用清洁构建生成公开包。自检程序留在 qttemp，使用 CTest 运行：
 
 ```powershell
-.\VerifyRelease.exe -o verification-results.xml,xml
+ctest --preset qt6 -R release_runtime
+# Qt 5 使用 qt5；自检结果在 qttemp 下的 tests 目录。
 ```
 
-自检只验证启动、模拟下载和配置保存，不调用私有算法或物理总线。输出中可能包含本机路径，不应直接上传。
+设置 HOST_RELEASE_DIR 环境变量可指定另一份发布目录。自检只验证启动、模拟下载和配置保存，不调用私有算法或物理总线。输出中可能包含本机路径，不应直接上传。
 
 ## 硬件模式
 
-硬件通信还需要匹配的 PEAK 驱动及授权通信模块。online LIN 下载前需配置实际 NAD、会话、安全级别、时序、例程和镜像地址。CAN 下载目前仅支持 simulation。默认值和模拟通过结果不能替代实机适配与验证。
+硬件通信需要匹配的 PEAK 驱动或同星 TSMaster 运行库。同星 TC1016/TC1016P 的使用与验证范围见 [同星硬件适配](Tosun-Hardware.md)。online LIN 下载前需配置实际 NAD、会话、安全级别、时序、例程和镜像地址。CAN 下载目前仅支持 simulation。默认值和模拟通过结果不能替代实机适配与验证。
 
 配置初值位置见 [默认配置](Default-Configuration.md)。
+
+
+信号发送、日志回放和项目配置的新操作见 [信号工作台与日志回放](Signal-Workbench-Replay.md)。

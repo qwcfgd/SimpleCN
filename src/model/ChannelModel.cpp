@@ -33,6 +33,7 @@ ChannelModel::ChannelModel(ChannelSettings settings,QObject *parent):QObject(par
     connect(m_worker,&ChannelWorker::stateChanged,this,&ChannelModel::stateChanged);
     connect(m_worker,&ChannelWorker::healthChanged,this,&ChannelModel::healthChanged);
     connect(m_worker,&ChannelWorker::framesReceived,this,&ChannelModel::framesReceived);
+    connect(m_worker,&ChannelWorker::observedFrames,this,&ChannelModel::observedFrames);
     connect(m_worker,&ChannelWorker::logMessage,this,&ChannelModel::logMessage);
     connect(m_worker,&ChannelWorker::taskChanged,this,&ChannelModel::taskChanged);
     connect(m_worker,&ChannelWorker::scanChanged,this,&ChannelModel::scanChanged);

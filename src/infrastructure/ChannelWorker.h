@@ -9,6 +9,7 @@
 #include <QPointer>
 #include "communication/SoftwareChannel.h"
 #include "SignalTransmitter.h"
+#include "BusHardware.h"
 #include "protocol/OperationCoordinator.h"
 namespace host {
 class ChannelWorker : public QObject {
@@ -38,6 +39,7 @@ signals:
     void stateChanged(communication::ConnectionState,QString);
     void healthChanged(communication::Health,QString);
     void framesReceived(host::FrameBatch);
+    void observedFrames(host::FrameBatch);
     void logMessage(QString);
     void taskChanged(host::TaskState,int,QString);
     void scanChanged(bool,QString);
@@ -61,10 +63,10 @@ private:
     void stopScan(const QString &);
     bool diagnosticMaster(QString &error);
     void projectSignalEvents(const host::signal::BusFrameEvents &);
+    void publishFrames(host::FrameBatch);
     ChannelSettings m_settings;
-    std::unique_ptr<PCANBasicClass> m_canApi;
-    std::unique_ptr<tstPeakCan> m_can;
-    std::unique_ptr<tstPeakLin> m_lin;
+    std::unique_ptr<CanHardware> m_can;
+    std::unique_ptr<LinHardware> m_lin;
     std::unique_ptr<communication::SoftwareChannel> m_session;
     std::unique_ptr<boot::SimulatedLinEcu> m_ecu;
     std::unique_ptr<boot::LinTransport> m_transport;
@@ -73,7 +75,7 @@ private:
     std::unique_ptr<boot::UdsSession> m_uds;
     std::unique_ptr<boot::FlashJob> m_job;
     QTimer *m_receive=nullptr,*m_scan=nullptr,*m_repeat=nullptr;
-    QElapsedTimer m_traceClock;
+    QElapsedTimer m_traceClock;qint64 m_traceOffsetUs=0,m_lastCaptureUs=0;
     bool m_running=false,m_scanning=false,m_waiting=false;
     int m_round=0,m_totalRounds=1;
     int m_progress=0,m_scanId=0,m_scanSent=0,m_scanEvents=0,m_scanResponses=0,m_scanErrors=0;

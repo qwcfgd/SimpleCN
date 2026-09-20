@@ -11,9 +11,10 @@ static QVector<FrameDefinition> definitions(const Database&db,const WorkingSet&w
 QJsonObject SignalConfigurationStore::serialize(const Database&db,const WorkingSet&work,const QString&directory){
     QJsonObject root{{"schema","signal-communication"},{"version",1},{"bus",db->bus==Bus::Can?"CAN":"LIN"}};
     auto path=db->path;if(!directory.isEmpty()&&!path.isEmpty())path=QDir(directory).relativeFilePath(path);root["source"]=path;root["sha256"]=db->sha256;
+    root["repeatCount"]=work.repeatCount;root["uiSettings"]=work.uiSettings;root["replaySettings"]=work.replaySettings;
     root["role"]=int(work.role);root["node"]=work.node;root["schedule"]=work.schedule;
     if(db->bus==Bus::Can){root["canNode"]=work.canNode;root["canDirection"]=work.canDirection;}
-    QJsonArray custom;for(const auto&f:work.customFrames)custom.append(QJsonObject{{"name",f.name},{"id",QString::number(f.id)},{"length",f.length}});root["custom"]=custom;
+    QJsonArray custom;for(const auto&f:work.customFrames)custom.append(QJsonObject{{"name",f.name},{"id",QString::number(f.id)},{"length",f.length},{"publisher",f.publisher},{"classicChecksum",f.classicChecksum},{"key",f.key},{"source",f.custom?QString():frameKey(db->bus,f.id,f.extended)}});root["custom"]=custom;
     QJsonArray frames;for(const auto&f:definitions(db,work)){const auto d=work.frames.value(f.key);QJsonArray values;for(int i=0;i<f.fields.size();++i)values.append(SignalCodec::rawText(f.fields[i],d.appliedValues.value(i)));
         frames.append(QJsonObject{{"key",f.key},{"payload",QString::fromLatin1(d.applied.bytes.toHex())},{"values",values},{"enabled",d.enabled},{"sendEnabled",d.sendEnabled},{"cycleMs",d.cycleMs}});}root["frames"]=frames;
     QJsonArray schedules;for(const auto&s:work.schedules){QJsonArray entries;for(const auto&slot:s.entries)entries.append(QJsonObject{{"frame",slot.frame},{"delayMs",slot.delayMs},{"issue",slot.issue}});schedules.append(QJsonObject{{"name",s.name},{"issue",s.issue},{"slots",entries}});}root["schedules"]=schedules;return root;
@@ -28,14 +29,15 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
         if(QDir::isRelativePath(source))source=QDir(directory).absoluteFilePath(source);const auto loaded=DatabaseImporter::load(source,bus);
         if(!loaded.database)return reject(loaded.error);next.database=loaded.database;
         if(loaded.database->sha256!=root["sha256"].toString())return reject("源数据库摘要已变化；未应用配置。原摘要 "+root["sha256"].toString()+"；当前 "+loaded.database->sha256+"。请重新导入并核对布局差异。");
-    }else if(bus==Bus::Lin||!root["sha256"].toString().isEmpty())return reject("配置缺少关联数据库路径");
-    auto&work=next.working;QSet<QString> keys,names;QSet<quint32> ids;
+    }else if(!root["sha256"].toString().isEmpty())return reject("配置缺少关联数据库路径");
+    auto&work=next.working;work.repeatCount=root.value("repeatCount").toInt(1);if(work.repeatCount<1||work.repeatCount>1000000)return reject("无效发送次数");work.uiSettings=root.value("uiSettings").toObject();work.replaySettings=root.value("replaySettings").toObject();QSet<QString> keys,names;QSet<quint32> ids;
     for(const auto&f:next.database->frames){TxDraft d;if(!SignalCodec::initialize(f,bus,d,error))return false;work.frames[f.key]=d;keys.insert(f.key);names.insert(f.name);ids.insert(f.id);}
     for(const auto&value:root["custom"].toArray()){
-        if(bus!=Bus::Can)return reject("LIN 配置不允许自建 CAN 帧");const auto o=value.toObject();bool ok=false;const auto id=o["id"].toString().toULongLong(&ok);const auto name=o["name"].toString();
-        const auto length=o["length"];
-        if(!ok||id>0x1fffffff||!length.isDouble()||length.toDouble()!=length.toInt(-1)||length.toInt(-1)<0||length.toInt()>8||name.trimmed().isEmpty()||ids.contains(quint32(id))||names.contains(name))return reject("自建帧 ID/名称重复或结构无效");
-        FrameDefinition f;f.custom=true;f.id=quint32(id);f.extended=id>0x7ff;f.key=frameKey(Bus::Can,f.id,f.extended);f.name=name;f.length=length.toInt();
+        const auto o=value.toObject();bool ok=false;const auto id=o["id"].toString().toULongLong(&ok);const auto name=o["name"].toString();
+        const auto length=o["length"];const QString savedKey=o["key"].toString(frameKey(bus,quint32(id),id>0x7ff));const bool scoped=bus==Bus::Lin&&savedKey.startsWith(frameKey(bus,quint32(id))+"@");
+        if(!ok||id>(bus==Bus::Can?0x1fffffff:61)||!length.isDouble()||length.toDouble()!=length.toInt(-1)||length.toInt(-1)<0||length.toInt()>8||name.trimmed().isEmpty()||(!scoped&&(ids.contains(quint32(id))||names.contains(name)))||keys.contains(savedKey))return reject("自建帧 ID/名称重复或结构无效");
+        FrameDefinition f;f.custom=true;f.id=quint32(id);f.extended=id>0x7ff;f.key=frameKey(bus,f.id,f.extended);f.name=name;f.length=length.toInt();f.publisher=o["publisher"].toString();f.classicChecksum=o["classicChecksum"].toBool(bus==Bus::Lin&&id>=60);if(bus==Bus::Lin&&(f.length<1||(id>=60&&(f.length!=8||!f.classicChecksum))))return reject("LIN 帧长度或校验无效");
+        if(!o["source"].toString().isEmpty()){bool found=false;for(const auto &definition:next.database->frames)if(definition.key==o["source"].toString()&&definition.id==f.id){f=definition;found=true;break;}if(!found)return reject("调度帧的源定义不存在");}f.key=savedKey;
         TxDraft d;if(!SignalCodec::initialize(f,bus,d,error))return false;work.customFrames.append(f);work.frames[f.key]=d;keys.insert(f.key);ids.insert(f.id);names.insert(name);
     }
     const auto all=definitions(next.database,work);QMap<QString,FrameDefinition> byKey;for(const auto&f:all)byKey[f.key]=f;
@@ -72,7 +74,7 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
         work.schedule=root["schedule"].toString();if(!work.schedule.isEmpty()&&!scheduleNames.contains(work.schedule))return reject("所选调度表不存在");
         if(!root["role"].isDouble()||root["role"].toDouble()!=root["role"].toInt(-1)||root["role"].toInt(-1)<0||root["role"].toInt()>2)return reject("未知 LIN 角色");
         work.role=LinRole(root["role"].toInt());work.node=root["node"].toString();
-        if((work.role==LinRole::Master&&work.node!=next.database->master)||(work.role==LinRole::Slave&&(!next.database->nodes.contains(work.node)||work.node==next.database->master)))return reject("角色与实际节点不匹配");
+        if(!next.database->path.isEmpty()&&((work.role==LinRole::Master&&work.node!=next.database->master)||(work.role==LinRole::Slave&&(!next.database->nodes.contains(work.node)||work.node==next.database->master))))return reject("角色与实际节点不匹配");
     }else if(!root["schedules"].toArray().isEmpty())return reject("CAN 配置不能包含 LIN 调度表");
     if(bus==Bus::Can){
         if(root.contains("canNode")&&!root["canNode"].isString())return reject("无效 DBC 节点");

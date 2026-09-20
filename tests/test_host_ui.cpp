@@ -10,6 +10,7 @@
 #include <QLineEdit>
 #include <QTabWidget>
 #include <QTableView>
+#include <QTreeView>
 #include <QSortFilterProxyModel>
 #include <QToolButton>
 #include <QScrollArea>
@@ -145,30 +146,30 @@ private slots:
         record.relativeTime="1001250";model.append({record});
         record.relativeTime="1003751";model.append({record});
         QCOMPARE(model.data(model.index(1,2)).toString(),QString("1.250"));
-        QCOMPARE(model.data(model.index(2,1)).toString(),QString("3.751"));
+        QCOMPARE(model.data(model.index(2,1)).toString(),QString("3.751000"));
         QCOMPARE(model.data(model.index(2,2)).toString(),QString("2.501"));
         QString error;const auto path=m_temp.path()+"/intervals.csv";QVERIFY(model.exportCsv(path,error));
         QFile csv(path);QVERIFY(csv.open(QIODevice::ReadOnly));const auto bytes=csv.readAll();
-        QVERIFY(bytes.contains(QString("绝对时间/ms").toUtf8()));QVERIFY(bytes.contains("\"3.751\",\"2.501\""));
+        QVERIFY(bytes.contains(QString("绝对时间/ms").toUtf8()));QVERIFY(bytes.contains("\"3.751000\",\"2.501\""));
         model.clear();model.append({record});
-        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.000"));
+        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.000000"));
         QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.000"));
     }
     void boundedFramesLiteralFilterAndExport() {
         FrameTableModel firstFrame;FrameRecord first;
         first.timestamp="12:34:56.789";first.relativeTime="123456";firstFrame.append({first});
         QCOMPARE(firstFrame.data(firstFrame.index(0,0)).toString(),QString("12:34:56.789"));
-        QCOMPARE(firstFrame.data(firstFrame.index(0,1)).toString(),QString("0.000"));
+        QCOMPARE(firstFrame.data(firstFrame.index(0,1)).toString(),QString("0.000000"));
         FrameTableModel model;FrameBatch frames;
         for(int i=0;i<FrameTableModel::Capacity+20;++i)
             frames.append({QString::number(i),"=SUM(A1)","RX","0x20","12 34","有效响应",2});
         model.append(frames);QCOMPARE(model.rowCount(),FrameTableModel::Capacity);
         QVERIFY(QRegularExpression("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$").match(model.data(model.index(0,0)).toString()).hasMatch());
-        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.020"));
+        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.020000"));
         QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.001"));
         QCOMPARE(model.headerData(1,Qt::Horizontal).toString(),QString("时刻/ms"));
         QCOMPARE(model.headerData(5,Qt::Horizontal).toString(),QString("ID"));
-        QCOMPARE(model.data(model.index(0,0),Qt::TextAlignmentRole).toInt(),int(Qt::AlignCenter));
+        QCOMPARE(model.data(model.index(0,0),Qt::TextAlignmentRole).toInt(),int(Qt::AlignLeft|Qt::AlignVCenter));
         QSortFilterProxyModel proxy;proxy.setSourceModel(&model);proxy.setFilterKeyColumn(-1);proxy.setFilterFixedString("[");
         QCOMPARE(proxy.rowCount(),0);proxy.setFilterFixedString("0x20");QCOMPARE(proxy.rowCount(),model.rowCount());
         QString error;const auto path=m_temp.path()+"/frames.csv";QVERIFY(model.exportCsv(path,error));
@@ -335,7 +336,12 @@ private slots:
         QVERIFY(!window.findChild<QPushButton*>("loadSettings"));QVERIFY(!window.findChild<QPushButton*>("saveSettings"));
         auto*page=window.findChild<ChannelPage*>("canPage");auto*summary=page->findChild<QLabel*>("hardwareSummary");auto*status=page->findChild<QLabel*>("connectionState");QVERIFY(summary);QVERIFY(status);QVERIFY(status->mapTo(page,QPoint()).x()>summary->mapTo(page,QPoint()).x()+summary->width());
         QTimer::singleShot(120,&window,[&]{auto*dialog=window.findChild<QDialog*>("editChannelDialog");QVERIFY(dialog);auto*connection=dialog->findChild<QPushButton*>("connectButton");auto*refresh=dialog->findChild<QPushButton*>("refreshButton");QVERIFY(connection);QVERIFY(refresh);QVERIFY(connection->property("primary").toBool());QVERIFY(connection->mapTo(dialog,QPoint()).y()<refresh->mapTo(dialog,QPoint()).y());
-            dialog->findChild<QComboBox*>("modeCombo")->setCurrentIndex(1);QTRY_VERIFY(connection->isEnabled());auto*rate=dialog->findChild<QComboBox*>("bitrateCombo");rate->setCurrentIndex(rate->findData(250000));dialog->findChild<QLineEdit*>("channelName")->setText("CAN connected");QTRY_VERIFY(connection->isEnabled());connection->click();QTRY_VERIFY(original->connected()&&!original->pending());QCOMPARE(original->settings().bitrate,250000);QCOMPARE(status->text(),QString("已连接"));QVERIFY(!rate->isEnabled());QVERIFY(!refresh->isEnabled());QVERIFY(!dialog->findChild<QPushButton*>("loadSettings")->isEnabled());QVERIFY(connection->isEnabled());
+            auto closeOnFailure=std::shared_ptr<QDialog>(dialog,[](QDialog*d){d->reject();});
+            dialog->findChild<QComboBox*>("modeCombo")->setCurrentIndex(1);
+            QTRY_VERIFY2(connection->isEnabled(), "Connect disabled after switching mode");
+            auto*rate=dialog->findChild<QComboBox*>("bitrateCombo");rate->setCurrentIndex(rate->findData(250000));dialog->findChild<QLineEdit*>("channelName")->setText("CAN connected");
+            QTRY_VERIFY2(connection->isEnabled(), "Connect disabled after changing bitrate");
+            connection->click();QTRY_VERIFY(original->connected()&&!original->pending());QCOMPARE(original->settings().bitrate,250000);QCOMPARE(status->text(),QString("已连接"));QVERIFY(!rate->isEnabled());QVERIFY(!refresh->isEnabled());QVERIFY(!dialog->findChild<QPushButton*>("loadSettings")->isEnabled());QVERIFY2(connection->isEnabled(), "Disconnect disabled after connection");
             dialog->findChild<QPushButton*>("saveSettings")->click();QVERIFY(QFile::exists(path));QVERIFY(dialog->grab().save(artifactDir()+"/channel-connection-settings.png"));connection->click();QTRY_VERIFY(!original->connected()&&!original->pending());QVERIFY(rate->isEnabled());dialog->reject();});
         auto*bar=window.findChild<QTabWidget*>("channelTabs")->tabBar();QTest::mouseDClick(bar,Qt::LeftButton,Qt::NoModifier,bar->tabRect(0).center());QCOMPARE(original->settings().softwareId,QString("CAN connected"));
         const bool nativeDisabled=QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);QApplication::setAttribute(Qt::AA_DontUseNativeDialogs,true);
@@ -478,13 +484,12 @@ private slots:
         QVERIFY(images->mapTo(page,QPoint()).y()+images->height()<=task->mapTo(page,QPoint()).y());
         const auto*progress=page->findChild<QWidget*>("downloadProgress");for(const auto*name:{"startButton","cancelButton"}){const auto*button=page->findChild<QWidget*>(name);QVERIFY(qAbs(button->mapTo(page,button->rect().center()).y()-progress->mapTo(page,progress->rect().center()).y())<=2);}
         QVERIFY(window.grab().save(artifactDir()+"/bootloader-1366.png"));
-        QVERIFY2(page->findChild<QTableView*>("frameTable")->viewport()->height()>=24,
-            qPrintable(QString("frame table %1 / viewport %2 / download %3").arg(page->findChild<QTableView*>("frameTable")->height()).arg(page->findChild<QTableView*>("frameTable")->viewport()->height()).arg(page->findChild<QWidget*>("downloadPanel")->height())));
+        QVERIFY2(page->findChild<QTreeView*>("frameTable")->viewport()->height()>=24,
+            qPrintable(QString("frame table %1 / viewport %2 / download %3").arg(page->findChild<QTreeView*>("frameTable")->height()).arg(page->findChild<QTreeView*>("frameTable")->viewport()->height()).arg(page->findChild<QWidget*>("downloadPanel")->height())));
         QVERIFY(!page->findChild<QWidget*>("downloadPanel")->findChild<QScrollArea*>());
         QVERIFY(page->findChild<QScrollArea*>("udsScrollArea"));
-        auto version=window.findChild<QLabel*>("versionBadge");QVERIFY(version);QVERIFY(version->parentWidget()==window.statusBar());
-        const auto pos=version->mapTo(&window,QPoint());
-        QVERIFY(pos.x()>window.width()/2);QVERIFY(pos.y()>window.height()-50);QCOMPARE(version->text(),QString("ReleaseVer: 1.2"));
+        auto version=window.findChild<QLabel*>("versionBadge");QVERIFY(version);QVERIFY(!version->isVisible());
+        QCOMPARE(window.windowTitle(),QString("Qt-GeneralController V1.3"));
         QVERIFY(window.grab().save(artifactDir()+"/bootloader-1366.png"));
         QFile metadata(artifactDir()+"/display.json");QVERIFY(metadata.open(QIODevice::WriteOnly));
         metadata.write(QJsonDocument(QJsonObject{{"dpr",dpr},{"clientWidth",window.width()},{"clientHeight",window.height()},{"qt",qVersion()}}).toJson());

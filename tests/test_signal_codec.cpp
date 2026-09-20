@@ -28,7 +28,7 @@ class SignalCodecTest:public QObject {
     Database dbc()const{return DatabaseImporter::load(fixture("dbc"),Bus::Can).database;}
     Database ldf()const{return DatabaseImporter::load(fixture("ldf"),Bus::Lin).database;}
     static const FrameDefinition&find(const Database&db,const QString&name){for(const auto&f:db->frames)if(f.name==name)return f;return db->frames.first();}
-    TxPlan linPlan(LinRole role=LinRole::Master)const{const auto db=ldf();TxPlan plan;plan.bus=Bus::Lin;plan.role=role;plan.node=role==LinRole::Slave?"Sensor":"Tester";plan.schedules=db->schedules;plan.schedule="Main";plan.run=4;
+    TxPlan linPlan(LinRole role=LinRole::Master)const{const auto db=ldf();TxPlan plan;plan.bus=Bus::Lin;plan.periodic=true;plan.role=role;plan.node=role==LinRole::Slave?"Sensor":"Tester";plan.schedules=db->schedules;plan.schedule="Main";plan.run=4;
         for(const auto&f:db->frames){TxDraft draft;QString e;SignalCodec::initialize(f,Bus::Lin,draft,e);plan.items.append({f.key,f.id,false,draft.applied.bytes,0,1,f.publisher,f.classicChecksum});}return plan;}
 private slots:
     void dbcRelationDeclarationsDoNotChangePayload(){

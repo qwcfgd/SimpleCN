@@ -4,7 +4,7 @@
 #include "viewmodels/ChannelViewModel.h"
 class QComboBox;class QLineEdit;class QCheckBox;class QLabel;
 class QPushButton;class QProgressBar;class QTableView;class QPlainTextEdit;
-class QSplitter;class QResizeEvent;class QTabWidget;
+class QTreeView;class QSplitter;class QResizeEvent;class QTabWidget;
 namespace host {
 class ChannelPage : public QWidget {
     Q_OBJECT
@@ -31,7 +31,7 @@ private:
     QLabel *m_hardwareSummary,*m_connectionStatus,*m_flashInfo,*m_appInfo,*m_hint,*m_task,*m_count,*m_elapsedText,*m_error;
     QPushButton *m_start,*m_cancel,*m_scan,*m_protocol,*m_downloadSettings,*m_browseFlash;
     QProgressBar *m_progress;
-    QTableView *m_table;
+    QTreeView *m_table;
     QPlainTextEdit *m_log;
     QWidget *m_images;
     QSplitter *m_regions=nullptr,*m_outputs=nullptr;

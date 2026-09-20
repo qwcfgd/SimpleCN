@@ -16,6 +16,9 @@
 #include <QToolButton>
 #include <QProgressBar>
 #include <QTableView>
+#include <QTreeView>
+#include <memory>
+#include "FrameDataDelegate.h"
 #include <QPlainTextEdit>
 #include <QSplitter>
 #include <QScrollArea>
@@ -35,6 +38,19 @@
 #include <QtMath>
 #include "protocol/FlashJob.h"
 namespace host {
+class FrameFilterProxy : public QSortFilterProxyModel {
+public:
+    using QSortFilterProxyModel::QSortFilterProxyModel;
+protected:
+    bool filterAcceptsRow(int row,const QModelIndex &parent) const override {
+        if(parent.isValid()){
+            if(QSortFilterProxyModel::filterAcceptsRow(parent.row(),parent.parent()))return true;
+            if(row==0)for(int n=1;n<sourceModel()->rowCount(parent);++n)
+                if(QSortFilterProxyModel::filterAcceptsRow(n,parent))return true;
+        }
+        return QSortFilterProxyModel::filterAcceptsRow(row,parent);
+    }
+};
 static QLabel *label(const QString &text,QWidget *parent=nullptr){auto w=new QLabel(text,parent);w->setTextFormat(Qt::PlainText);return w;}
 static QFrame *card(const QString &title,QVBoxLayout *&layout) {
     auto frame=new QFrame;frame->setProperty("card",true);
@@ -136,12 +152,35 @@ void ChannelPage::build() {
     m_scan=new QPushButton("扫描帧头");m_scan->setObjectName("scanHeaders");m_scan->setVisible(lin);
     frameActions->addWidget(filter,1);frameActions->addWidget(m_count);frameActions->addWidget(m_rxdEnabled);frameActions->addWidget(m_follow);
     frameActions->addWidget(m_scan);frameActions->addWidget(clear);frameActions->addWidget(exportButton);frameLayout->addLayout(frameActions);
-    m_table=new QTableView;m_table->setObjectName("frameTable");m_table->setAlternatingRowColors(true);
+    m_table=new QTreeView;m_table->setObjectName("frameTable");m_table->setAlternatingRowColors(true);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_table->verticalHeader()->hide();m_table->verticalHeader()->setDefaultSectionSize(27);
-    auto proxy=new QSortFilterProxyModel(this);proxy->setSourceModel(m_vm->frames());proxy->setFilterKeyColumn(-1);proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
-    m_table->setModel(proxy);m_table->setShowGrid(false);m_table->horizontalHeader()->setStretchLastSection(true);
-    const QList<int> widths={90,75,95,65,45,90,36,205,120};for(int i=0;i<widths.size();++i)m_table->setColumnWidth(i,widths[i]);
+    m_table->setUniformRowHeights(true);m_table->setItemDelegate(new FrameDataDelegate(m_table));m_table->setIndentation(16);
+    auto proxy=new FrameFilterProxy(this);proxy->setRecursiveFilteringEnabled(true);proxy->setSourceModel(m_vm->frames());proxy->setFilterKeyColumn(-1);proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    m_table->setModel(proxy);m_table->header()->setStretchLastSection(true);
+    const QList<int> widths={110,95,95,65,45,150,80,205,120};for(int i=0;i<widths.size();++i)m_table->setColumnWidth(i,widths[i]);
+    auto displayActions=new QHBoxLayout;
+    auto t=new QCheckBox("t"),rt=new QCheckBox("rt"),dt=new QCheckBox("dt"),rolling=new QCheckBox("滚动显示");
+    t->setObjectName("frameTimeT");rt->setObjectName("frameTimeRt");dt->setObjectName("frameTimeDt");rolling->setObjectName("frameRolling");
+    t->setToolTip("当前系统时间");rt->setToolTip("从记录开始为 0 ms 的时刻");dt->setToolTip("相邻记录时间差 / ms");
+    rolling->setToolTip("同一软件通道、总线类型和 ID 原位更新；半字节连续不变 10 帧后变灰");rt->setChecked(true);
+    for(auto box:{t,rt,dt,rolling})displayActions->addWidget(box);displayActions->addStretch();
+    exportButton->setToolTip("导出最近 10,000 条历史缓存，不受同 ID 合并和列显隐影响");
+    auto titleItem=frameLayout->takeAt(0);displayActions->insertWidget(0,titleItem->widget());delete titleItem;frameLayout->insertLayout(0,displayActions);
+    auto timeColumns=[this,t,rt,dt]{m_table->setColumnHidden(0,!t->isChecked());m_table->setColumnHidden(1,!rt->isChecked());m_table->setColumnHidden(2,!dt->isChecked());m_table->setTreePosition(t->isChecked()?0:rt->isChecked()?1:dt->isChecked()?2:3);};
+    for(auto box:{t,rt,dt})connect(box,&QCheckBox::toggled,this,timeColumns);timeColumns();
+    connect(rolling,&QCheckBox::toggled,this,[this](bool on){m_vm->frames()->setRolling(on);m_follow->setEnabled(!on);});
+    auto savingDisplay=std::make_shared<bool>(false);
+    auto saveDisplay=[this,t,rt,dt,rolling,filter,savingDisplay]{if(*savingDisplay)return;auto ui=m_vm->signalTransmission()->working().uiSettings;ui["monitor"]=QJsonObject{{"t",t->isChecked()},{"rt",rt->isChecked()},{"dt",dt->isChecked()},{"rolling",rolling->isChecked()},{"follow",m_follow->isChecked()},{"filter",filter->text()}};m_vm->signalTransmission()->setUiSettings(ui);};
+    for(auto *box:{t,rt,dt,rolling,m_follow})connect(box,&QCheckBox::toggled,this,saveDisplay);connect(filter,&QLineEdit::textChanged,this,saveDisplay);
+    auto restoreDisplay=[this,t,rt,dt,rolling,filter,timeColumns,savingDisplay]{const auto config=m_vm->signalTransmission()->working().uiSettings.value("monitor").toObject();if(config.isEmpty())return;*savingDisplay=true;
+        t->setChecked(config["t"].toBool());rt->setChecked(config.value("rt").toBool(true));dt->setChecked(config["dt"].toBool());rolling->setChecked(config["rolling"].toBool());m_follow->setChecked(config.value("follow").toBool(true));filter->setText(config["filter"].toString());timeColumns();*savingDisplay=false;};
+    connect(m_vm->signalTransmission(),&SignalTransmitViewModel::structureChanged,this,restoreDisplay);restoreDisplay();
+    auto expanded=std::make_shared<QSet<QString>>();
+    connect(m_table,&QTreeView::expanded,this,[expanded](const QModelIndex &i){expanded->insert(i.data(Qt::UserRole+2).toString());});
+    connect(m_table,&QTreeView::collapsed,this,[expanded](const QModelIndex &i){expanded->remove(i.data(Qt::UserRole+2).toString());});
+    connect(m_vm->frames(),&QAbstractItemModel::modelReset,this,[this,proxy,expanded]{
+        for(int row=0;row<m_vm->frames()->rowCount();++row){auto source=m_vm->frames()->index(row,0);if(expanded->contains(source.data(Qt::UserRole+2).toString()))m_table->setExpanded(proxy->mapFromSource(source),true);}
+    });
     frameLayout->addWidget(m_table,1);
     auto logActions=new QHBoxLayout;auto clearLog=new QPushButton("清空");auto exportLog=new QPushButton("导出");
     logActions->addWidget(label(QString("最近 %1 条事件").arg(ChannelPageInitialValues::logCapacity)),1);logActions->addWidget(clearLog);logActions->addWidget(exportLog);logLayout->addLayout(logActions);
@@ -162,7 +201,7 @@ void ChannelPage::build() {
     connect(clearLog,&QPushButton::clicked,m_vm,&ChannelViewModel::clearLogs);
     connect(exportLog,&QPushButton::clicked,this,&ChannelPage::exportLogs);
     const auto count=[this,proxy](){m_count->setText(QString("%1 / %2 条").arg(proxy->rowCount()).arg(m_vm->frames()->rowCount()));};
-    connect(proxy,&QAbstractItemModel::rowsInserted,this,[this,count](){count();if(m_follow->isChecked())m_table->scrollToBottom();});
+    connect(proxy,&QAbstractItemModel::rowsInserted,this,[this,count](){count();if(m_follow->isChecked()&&!m_vm->frames()->rolling())m_table->scrollToBottom();});
     connect(proxy,&QAbstractItemModel::rowsRemoved,this,count);connect(proxy,&QAbstractItemModel::modelReset,this,count);
     for(auto e:{m_flashPath,m_appPath,m_flashAddress,m_appAddress})
         connect(e,&QLineEdit::textChanged,this,&ChannelPage::applyForm);
@@ -352,9 +391,13 @@ void ChannelPage::browseImage(bool flash) {
     if(!path.isEmpty())m_vm->chooseImage(flash,path);
 }
 void ChannelPage::exportFrames(){
-    const auto file=QFileDialog::getSaveFileName(this,"导出当前缓存报文",m_vm->settings().softwareId+"-frames.csv","CSV (*.csv)");
-    if(file.isEmpty())return;QString error;
-    m_vm->log(m_vm->frames()->exportCsv(file,error)?"已导出报文："+file:error);
+    QString filter="BLF (*.blf)";
+    auto user=qEnvironmentVariable("USERNAME");if(user.isEmpty())user=qEnvironmentVariable("USER");if(user.isEmpty())user="user";
+    const auto epoch=m_vm->frames()->startedEpochMs();const auto stamp=QDateTime::fromMSecsSinceEpoch(epoch?epoch:QDateTime::currentMSecsSinceEpoch()).toString("yyyyMMdd_HHmmss_zzz");
+    QString name="Qt-GeneralController_"+m_vm->settings().softwareId+"_"+user+"_"+stamp;name.replace(QRegularExpression("[<>:\"/\\\\|?*]"),"_");
+    auto file=QFileDialog::getSaveFileName(this,"导出当前缓存报文",name,"BLF (*.blf);;ASC (*.asc);;CSV (*.csv)",&filter);
+    if(file.isEmpty())return;if(QFileInfo(file).suffix().isEmpty())file+=filter.startsWith("BLF")?".blf":filter.startsWith("CSV")?".csv":".asc";QString error;
+    m_vm->log(m_vm->frames()->exportTrace(file,error)?"已导出报文："+file:error);
 }
 void ChannelPage::exportLogs(){
     const auto file=QFileDialog::getSaveFileName(this,"导出运行日志",m_vm->settings().softwareId+"-log.txt","Text (*.txt)");

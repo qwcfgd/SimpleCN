@@ -38,9 +38,14 @@ host_deploy(test_can_protocol)
 add_test(NAME can_protocol COMMAND test_can_protocol -o "${CMAKE_CURRENT_BINARY_DIR}/can-protocol-results.xml,xml")
 set_tests_properties(can_protocol PROPERTIES TIMEOUT 90)
 
-# Runs only after deployment; exercises the files in the release directory.
+# Verifier and simulation fixtures remain in qttemp; the application stays clean.
+file(COPY "${CMAKE_SOURCE_DIR}/profiles/fixtures" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/profiles")
+configure_file("${CMAKE_SOURCE_DIR}/profiles/stage6-can-lin-simulation.json" "${CMAKE_CURRENT_BINARY_DIR}/profiles/simulation.json" COPYONLY)
 add_executable(VerifyRelease release_smoke.cpp)
 target_link_libraries(VerifyRelease PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
+target_compile_definitions(VerifyRelease PRIVATE HOST_APP_RUNTIME_DIR="${HOST_RUNTIME_OUTPUT_DIR}")
+add_test(NAME release_runtime COMMAND VerifyRelease -o "${CMAKE_CURRENT_BINARY_DIR}/release-runtime-results.xml,xml")
+set_tests_properties(release_runtime PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 60)
 host_deploy(VerifyRelease)
 
 add_executable(test_download_revision test_download_revision.cpp)
@@ -88,7 +93,33 @@ add_executable(signal_fixture_probe signal_fixture_probe.cpp)
 target_link_libraries(signal_fixture_probe PRIVATE signal_database)
 host_deploy(signal_fixture_probe)
 
+# Trace, export and graphics regression tests; no physical bus access.
+add_executable(test_trace_plot test_trace_plot.cpp)
+target_link_libraries(test_trace_plot PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
+target_compile_definitions(test_trace_plot PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+host_deploy(test_trace_plot)
+add_test(NAME trace_plot COMMAND test_trace_plot -o "${CMAKE_CURRENT_BINARY_DIR}/trace-plot-results.xml,xml")
+set_tests_properties(trace_plot PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+
 # Manual, explicitly requested hardware debugging only; never part of CTest.
 add_executable(lin_download_debug lin_download_debug.cpp)
 target_link_libraries(lin_download_debug PRIVATE bootloader_ui)
 host_deploy(lin_download_debug)
+
+add_executable(test_workbench test_workbench.cpp)
+target_link_libraries(test_workbench PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
+target_compile_definitions(test_workbench PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+host_deploy(test_workbench)
+add_test(NAME workbench COMMAND test_workbench -o "${CMAKE_CURRENT_BINARY_DIR}/workbench-results.xml,xml")
+set_tests_properties(workbench PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+
+# Mock SDK regression; does not load a DLL or access physical devices.
+add_executable(test_tosun test_tosun.cpp)
+target_link_libraries(test_tosun PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
+host_deploy(test_tosun)
+add_test(NAME tosun COMMAND test_tosun -o "${CMAKE_CURRENT_BINARY_DIR}/tosun-results.xml,xml")
+set_tests_properties(tosun PROPERTIES TIMEOUT 30)
+# Explicit operator-controlled hardware probe, never part of CTest.
+add_executable(tosun_probe tosun_probe.cpp)
+target_link_libraries(tosun_probe PRIVATE bootloader_ui)
+host_deploy(tosun_probe)

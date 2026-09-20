@@ -1,8 +1,10 @@
 #pragma once
 #include <QMainWindow>
+#include <QPointer>
 #include "ChannelPage.h"
 #include "MainWindowDefaults.h"
 #include "viewmodels/ChannelConfigurationViewModel.h"
+#include "viewmodels/ReplayViewModel.h"
 namespace Ui {class MainWindow;}
 namespace host {
 class MainWindow : public QMainWindow {
@@ -18,7 +20,10 @@ public:
     bool restoreChannels(const QString &path,QString &error);
     QString nextChannelName(communication::Bus)const;
     static QString styleSheetText();
+protected:
+    void closeEvent(QCloseEvent*)override;
 private:
+    ReplayViewModel m_replay;
     void createChannelDialog(ChannelViewModel*target=nullptr);
     void channelContextMenu(int index,const QPoint&globalPosition);
     void updateChannels();

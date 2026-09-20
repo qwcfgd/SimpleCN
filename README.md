@@ -1,4 +1,4 @@
-# General Bootloader Controller
+# Qt-GeneralController V1.3
 
 基于 Qt 的 CAN / LIN 诊断工作台，支持通道管理、报文显示、UDS 模拟下载、CDD 诊断，以及 DBC / LDF 信号编辑和发送。
 
@@ -16,7 +16,12 @@ ctest --preset stage6-qt6
 
 Qt 5 使用 `stage6-qt5`。本机工具链位置在 CMakePresets.json 中配置。
 
-所有构建预设以用户指定的原工程 `C:/Documents/0_Qt/Qt-GeneralController` 为路径基准，固定输出到 `C:/Documents/0_Qt/build/Qt-GeneralController-qt5` 或 `C:/Documents/0_Qt/build/Qt-GeneralController-qt6`，可执行文件为目录中的 `QtBootloader.exe`。这些绝对路径在 Codex worktree 中也保持不变，不在仓库根目录创建 `build`。同一 Qt 版本的预设共用该目录，切换构建类型时先重新配置；原工程与 worktree 不可同时使用同一构建目录，切换源码位置前须清理旧 CMake 缓存并重新配置。
+所有预设以原工程 `C:/Documents/0_Qt/Qt-GeneralController` 为固定路径基准，worktree 不改变输出位置：
+
+- `../build/Qt-GeneralController-qt5`、`../build/Qt-GeneralController-qt6`：仅主程序 `QtBootloader.exe` 和必要运行库、插件、硬件 API。
+- `../build/qttemp/Qt-GeneralController-qt5`、`../build/qttemp/Qt-GeneralController-qt6`：CMake 缓存、依赖源码、中间文件、测试/调试工具、测试素材、截图与日志。
+
+默认构建类型为 Release。Qt 5 / Qt 6 完全分离，不在仓库根目录创建 build。原工程与 worktree 不应同时使用同一 CMake 目录；切换源码位置需重新配置。通过 `-DBUILD_TESTING=OFF` 可只构建主程序。自定义配置时使用 `HOST_RUNTIME_OUTPUT_DIR` 指定程序目录，并把 CMake `-B` 指向 `../build/qttemp` 内的独立目录。
 
 信号发送依赖固定版本的 dbcppp / Boost；首次配置需要下载依赖，也可指定本地源码目录。共享通信模块须包含本次 LIN 扩展补丁。安装、离线构建与验证命令见 [信号发送实施记录](docs/Signal-Transmission-Implementation.md)。应用运行时不依赖 Python。
 
@@ -36,22 +41,27 @@ Qt 5 使用 `stage6-qt5`。本机工具链位置在 CMakePresets.json 中配置�
 `private/`、`build/` 和 `dist/` 是本地目录，不应上传或直接整体分享。
 
 
-## 发布目录与构建目录
-
-`build/Qt-GeneralController-qt5` 和 `build/Qt-GeneralController-qt6` 是开发构建目录，包含依赖源码缓存（`_deps`）、目标文件以及测试程序，不应作为程序安装包整体分发。Qt 6 构建目录中缓存较多并不代表应用运行所需空间。
-
-配置对应 Release 预设后，执行：
+## 发布与验证
 
 ```powershell
+cmake --preset release-qt6
+cmake --build --preset release-qt6
+ctest --preset release-qt6
 cmake --build --preset release-qt6 --target package_release
 # Qt 5 使用 release-qt5
 ```
 
-发布目录位于对应构建目录的 `release/QtBootloader-1.2.0-qt6`（Qt 5 为 `qt5`），同级生成 ZIP 和 SHA256 校验文件。只分发该目录或 ZIP；其中包含所需运行库、硬件 API、模拟配置、说明及 `VerifyRelease.exe` 自检程序，不包含构建缓存和整套回归测试。
+`package_release` 在相应 `qttemp/Qt-GeneralController-qtN/release/QtBootloader-1.3.0-qtN` 中生成发布副本，并在同级生成 ZIP 和 SHA256。发布包包含应用、运行依赖、使用说明和许可证；不含测试 EXE、Qt Test、模拟测试素材、缓存或内部日志。已有发布包不会被覆盖，需用 `-DHOST_RELEASE_OUTPUT=<新目录>` 选择新路径。
 
-脚本拒绝覆盖已有发布包，以免覆盖用户配置。需要生成另一份时，在 CMake 配置时用 `-DHOST_RELEASE_OUTPUT=<新发布目录>` 指定构建目录下的新路径，也可直接使用 `scripts/package_release.py --build <构建目录> --output <新发布目录> --qt-major 6`。在发布目录运行 `VerifyRelease.exe` 验证可启动和模拟下载。
+`VerifyRelease.exe` 位于 `qttemp/Qt-GeneralController-qtN/tests`，由 CTest 的 `release_runtime` 项调用，测试输出也留在该目录。可通过 `HOST_RELEASE_DIR` 环境变量选择另一份发布目录进行启动验证；模拟下载素材和测试配置始终由测试目录提供。
 
+## 1.3 主要更新
 
-2026-09-20 排查实测：原 Qt 6 开发构建目录约 540.93 MiB，其中 `_deps` 378.89 MiB、`tests` 86.94 MiB；Qt 5 开发构建目录约 92.71 MiB，未存放同一份依赖源码缓存。独立发布包 Qt 6 为 **64.01 MiB**（ZIP 22.21 MiB），Qt 5 为 **31.37 MiB**（ZIP 13.39 MiB）。缓存保留用于后续离线编译，发布包不收集它。
+- 报文监视增加 t / rt / dt 显隐、按 ID 更新、半字节变化着色及数据库信号展开。
+- 支持 ASC / BLF 导出、通道映射回放、报文覆盖及日志外报文追加发送。
+- 信号发送支持自定义 CAN 报文、LIN 调度与帧、ID 编辑、次数发送/调度和项目配置保存。
+- 图像观测支持多轴、分组、光标差值、枚举刻度、缩放与保形抽样。
+- 适配同星 TC1016 / TC1016P 经典 CAN 和 LIN；修复停止失败、日志重复、撤销与配置恢复等问题。
+- 运行文件与全部测试、调试、构建内容分离。
 
-两套发布包均在仅保留 Windows 系统 PATH、清空 Qt 插件环境变量、使用外部工作目录的条件下通过 `VerifyRelease.exe`（程序启动、三通道模拟下载、配置往返及截图）；SHA256 清单核验和 `host_ui` 回归通过。同步修复了旧配置读取时向空信号配置写入 `source` 空值的问题，避免随包模拟配置触发错误导入。
+详细变更与验证范围见 [1.3 发布说明](docs/Release-1.3.md)。

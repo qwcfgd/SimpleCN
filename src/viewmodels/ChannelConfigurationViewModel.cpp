@@ -2,6 +2,8 @@
 #include "ChannelViewModel.h"
 #include "infrastructure/SettingsStore.h"
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
 namespace host {
 bool ChannelConfigurationViewModel::update(ChannelViewModel*target,ChannelSettings settings,const QVector<ChannelViewModel*>&channels,QString&error)const{
     error.clear();if(!target || !channels.contains(target)){error="通道已删除。";return false;}
@@ -15,11 +17,20 @@ bool ChannelConfigurationViewModel::update(ChannelViewModel*target,ChannelSettin
     return true;
 }
 bool ChannelConfigurationViewModel::save(const QVector<ChannelViewModel*>&channels,QString&error)const{
-    QVector<ChannelSettings> snapshots;for(const auto*vm:channels){if(vm->busy()){error="通道正在执行操作";return false;}snapshots.append(vm->snapshotSettings());}
+    QVector<ChannelSettings> snapshots;for(const auto*vm:channels){if(vm->signalTransmission()->importing()){error="数据库正在导入，请稍后保存";return false;}snapshots.append(vm->snapshotSettings());}
     return SettingsStore(m_path).save(snapshots,error);
 }
 bool ChannelConfigurationViewModel::load(const QString&path,const QVector<ChannelViewModel*>&channels,QVector<ChannelSettings>&settings,QString&error)const{
     for(const auto*vm:channels)if(vm->hardwareLocked()){error="请先断开所有通道并等待操作结束。";return false;}
     if(!QFileInfo::exists(path)){error="未找到通道配置。";return false;}return SettingsStore(path).load(settings,error);
 }
+}
+
+namespace host {
+QByteArray ChannelConfigurationViewModel::snapshot(const QVector<ChannelViewModel*> &channels){
+    QJsonArray data;for(const auto *vm:channels)data.append(vm->snapshotSettings().toJson());
+    return QJsonDocument(data).toJson(QJsonDocument::Compact);
+}
+void ChannelConfigurationViewModel::markSaved(const QVector<ChannelViewModel*>&channels){m_savedProject=snapshot(channels);}
+bool ChannelConfigurationViewModel::isDirty(const QVector<ChannelViewModel*>&channels)const{return m_savedProject!=snapshot(channels);}
 }

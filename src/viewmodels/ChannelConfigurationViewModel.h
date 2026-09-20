@@ -10,6 +10,11 @@ public:
     bool save(const QVector<ChannelViewModel*>&,QString&error)const;
     bool load(const QString&,const QVector<ChannelViewModel*>&,QVector<ChannelSettings>&,QString&error)const;
     bool update(ChannelViewModel*,ChannelSettings,const QVector<ChannelViewModel*>&,QString&error)const;
-private:QString m_path;
+    void markSaved(const QVector<ChannelViewModel*>&);
+    bool isDirty(const QVector<ChannelViewModel*>&)const;
+private:
+    static QByteArray snapshot(const QVector<ChannelViewModel*>&);
+    QByteArray m_savedProject;
+    QString m_path;
 };
 }

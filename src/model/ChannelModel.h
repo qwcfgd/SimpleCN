@@ -35,6 +35,7 @@ signals:
     void stateChanged(communication::ConnectionState,QString);
     void healthChanged(communication::Health,QString);
     void framesReceived(host::FrameBatch);
+    void observedFrames(host::FrameBatch);
     void logMessage(QString);
     void taskChanged(host::TaskState,int,QString);
     void scanChanged(bool,QString);

@@ -2,6 +2,7 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QMap>
+#include <QJsonObject>
 #include <QMetaType>
 #include <QSet>
 #include <QSharedPointer>
@@ -38,7 +39,7 @@ struct FrameDefinition {
     QVector<SignalDefinition> fields;
     QMap<QString,QString> attributes;
 };
-struct ScheduleSlot { QString frame,delayMs="10",issue;int line=0; };
+struct ScheduleSlot { QString frame,delayMs="100",issue;int line=0; };
 struct Schedule { QString name,issue;QVector<ScheduleSlot> entries; };
 struct DatabaseDefinition {
     Bus bus=Bus::Can;
@@ -77,6 +78,8 @@ struct TxDraft {
     bool enabled=false,sendEnabled=true;int cycleMs=0;
 };
 struct WorkingSet {
+    int repeatCount=1;
+    QJsonObject uiSettings,replaySettings;
     QString canNode,canDirection="Tx";
     QVector<FrameDefinition> customFrames;
     QMap<QString,TxDraft> frames;
@@ -90,9 +93,11 @@ struct TxItem {
     QByteArray payload;int periodMs=0;quint64 revision=0;
     QString publisher;bool classicChecksum=false;bool enabled=true;
 };
+struct ReplayRecord {quint32 id=0;QByteArray payload;qint64 timeUs=0;int length=0;bool rx=false,extended=false,fd=false,brs=false,esi=false,rtr=false,classicChecksum=false,publish=false;};
 struct TxPlan {
+    bool replay=false;QVector<ReplayRecord> replayFrames;qint64 replayStartUs=0,replayDurationUs=0,replayStampOffsetUs=0;
     Bus bus=Bus::Can;LinRole role=LinRole::Master;
-    QString node,schedule;bool periodic=false;
+    QString node,schedule;bool periodic=false;int repeatCount=1;
     quint64 run=0,connection=0;QString databaseRevision;
     QVector<TxItem> items;QVector<Schedule> schedules;
 };
@@ -103,10 +108,13 @@ struct BusFrameEvent {
     EventSource source=EventSource::Received;
     quint64 hardwareUs=0; qint64 arrivalUs=0;
     QString detail;
+    bool classicChecksum=false;
+    bool replay=false,fd=false,brs=false,esi=false,rtr=false;int length=-1;
 };
 using BusFrameEvents=QVector<BusFrameEvent>;
 struct RunStatus {
     RunState state=RunState::Stopped;quint64 run=0;
+    bool cleanupPending=false; // Retain the hardware lease until stopping succeeds.
     QString current,pending,detail;
     QMap<QString,quint64> sent,missed;QMap<QString,QString> failures;
 };

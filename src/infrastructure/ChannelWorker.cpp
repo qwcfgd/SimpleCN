@@ -1,11 +1,13 @@
+#include "domain/TraceClock.h"
 #include "ChannelWorker.h"
 #include <QThread>
 #include "protocol/PluginKey.h"
 namespace host {
 using namespace communication;
 static void stampFrame(FrameRecord &record,const QElapsedTimer &clock){
-    record.timestamp=QDateTime::currentDateTime().toString("HH:mm:ss.zzz");
-    record.relativeTime=QString::number(clock.nsecsElapsed()/1000);
+    const auto now=QDateTime::currentDateTime();record.epochMs=now.toMSecsSinceEpoch();
+    record.timestamp=now.toString("HH:mm:ss.zzz");
+    Q_UNUSED(clock);record.captureUs=captureTimeUs();record.relativeTime=QString::number(record.captureUs);
 }
 class PreviewBackend final : public HardwareBackend {
 public:
@@ -31,7 +33,7 @@ void ChannelWorker::initialize() {
     m_signal=std::make_unique<SignalTransmitter>();
     m_signal->drainReceived=[this]{receive();return m_receiveDrained;};
     connect(m_signal.get(),&SignalTransmitter::statusChanged,this,[this](signal::RunStatus status){
-        if(!signal::active(status.state))m_operations.release(OperationCoordinator::Task::Signal);
+        if(!signal::active(status.state)&&!status.cleanupPending)m_operations.release(OperationCoordinator::Task::Signal);
         emit signalStatus(status);
     });
     connect(m_signal.get(),&SignalTransmitter::events,this,[this](signal::BusFrameEvents events){projectSignalEvents(events);emit busEvents(events);});
@@ -43,13 +45,13 @@ void ChannelWorker::initialize() {
     createSession();m_receive->start();emit ready();
 }
 void ChannelWorker::createSession() {
-    m_session.reset();m_can.reset();m_canApi.reset();m_lin.reset();m_canEchoes.clear();
+    m_session.reset();m_can.reset();m_lin.reset();m_canEchoes.clear();
     SoftwareChannelConfiguration config;QString error;
     if(!m_settings.toConfiguration(config,error)){emit logMessage(error);return;}
     std::unique_ptr<HardwareBackend> backend;
     if(m_settings.simulation){backend.reset(new PreviewBackend(m_settings.bus));}
-    else if(m_settings.bus==Bus::Lin){m_lin.reset(new tstPeakLin());backend.reset(new PeakLinBackend(*m_lin));}
-    else {m_canApi.reset(new PCANBasicClass());m_can.reset(new tstPeakCan(nullptr,m_canApi.get()));backend.reset(new PeakCanBackend(*m_can));}
+    else if(m_settings.bus==Bus::Lin){m_lin=createLinHardware();backend=sessionBackend(*m_lin);}
+    else {m_can=createCanHardware();backend=sessionBackend(*m_can);}
     m_session.reset(new SoftwareChannel(config,std::move(backend)));
     connect(m_session.get(),&SoftwareChannel::hardwareChanged,this,&ChannelWorker::hardwareChanged);
     connect(m_session.get(),&SoftwareChannel::stateChanged,this,[this](ConnectionState s,const QString &detail){
@@ -75,7 +77,12 @@ bool ChannelWorker::apply(const ChannelSettings &settings) {
     if(m_session && m_session->state()==ConnectionState::Connected){emit logMessage("请先断开后修改硬件及协议配置。");return false;}
     const bool recreate=!m_session || m_settings.simulation!=settings.simulation;
     m_settings=settings;
-    if(recreate)createSession();
+    if(recreate){
+        createSession();
+        // Publish the new backend's ports before commandFinished unlocks selection.
+        // startMonitoring schedules its first poll, so its old list must not win here.
+        if(m_session)m_session->poll();
+    }
     else {
         if(!m_session->configure(c)){emit logMessage(m_session->error());return false;}
         m_session->poll();
@@ -87,7 +94,11 @@ void ChannelWorker::connectChannel(ChannelSettings s) {
     if(apply(s) && m_session) m_session->connectChannel();
     emit commandFinished();
 }
-void ChannelWorker::disconnectChannel(){if(m_session)m_session->disconnectChannel();emit commandFinished();}
+void ChannelWorker::disconnectChannel(){
+    const bool connected=m_session&&m_session->state()==ConnectionState::Connected;
+    if(m_session&&m_session->disconnectChannel()&&connected&&m_signal)m_signal->hardwareClosed();
+    emit commandFinished();
+}
 void ChannelWorker::refresh(){if(m_session)m_session->poll();emit commandFinished();}
 void ChannelWorker::startPreview(ChannelSettings s) {
     SoftwareChannelConfiguration config;QString error;
@@ -200,12 +211,14 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
                 FrameRecord f;stampFrame(f,m_traceClock);f.channel=m_settings.softwareId;
                 f.direction="TX";f.identifier=QString("0x%1").arg(id,2,16,QChar('0')).toUpper();
                 f.data=QString::fromLatin1(bytes.toHex(' ')).toUpper();f.length=bytes.size();
-                f.status="发送";emit framesReceived({f});return;
+                f.bus=signal::Bus::Lin;f.request=true;f.classicChecksum=true;
+                f.status="发送";publishFrames({f});return;
             }
             FrameRecord f;stampFrame(f,m_traceClock);f.channel=m_settings.softwareId;
             f.direction="SIM "+QString(tx?(bytes.isEmpty()?"HEADER":"TX"):"RX");
             f.identifier=QString("0x%1").arg(id,2,16,QChar('0')).toUpper();f.data=QString::fromLatin1(bytes.toHex(' ')).toUpper();f.length=bytes.size();
-            f.status="LIN UDS · Classic checksum";emit framesReceived({f});
+            f.bus=signal::Bus::Lin;f.simulated=true;f.classicChecksum=true;
+            f.status="LIN UDS · Classic checksum";publishFrames({f});
         });
     }else{
         boot::CanOptions options;options.txId=m_settings.requestId.toUInt(nullptr,16);
@@ -213,9 +226,8 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
         if(!boot::CanOptions::fromJson(m_settings.canNetwork,options,error))return false;
         if(!m_settings.simulation){
             if(!manual){error="真实 CAN 下载须完成目标适配与发送确认验证";return false;}
-            DWORD enabled=PCAN_PARAMETER_ON;
-            if(!m_canApi||m_canApi->SetValue(TPCANHandle(m_settings.handle),PCAN_ALLOW_ECHO_FRAMES,&enabled,sizeof(enabled))!=PCAN_ERROR_OK){
-                error="PCAN 驱动不支持发送回显，请升级支持 Echo Frames 的 PCAN-Basic/驱动";return false;
+            if(!m_can||!m_can->enableEcho()){
+                error="当前 CAN 驱动未能开启发送回显，无法确认诊断请求已上总线";return false;
             }
         }else m_canEcu.reset(new boot::SimulatedCanEcu(options,profile));
         m_canTransport.reset(new boot::CanTransport(options,[this](const boot::CanFrame &frame,quint64 token,QString &error){
@@ -234,7 +246,8 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
             FrameRecord f;stampFrame(f,m_traceClock);f.channel=m_settings.softwareId;
             f.direction=(m_settings.simulation?QString("SIM "):QString())+(tx?"TX":"RX");f.identifier=QString("0x%1").arg(frame.id,frame.extended?8:3,16,QChar('0')).toUpper();
             f.data=QString::fromLatin1(frame.data.toHex(' ')).toUpper();f.length=frame.data.size();
-            f.status=frame.extended?"CAN ISO-TP · 29 bit":"CAN ISO-TP · 11 bit";emit framesReceived({f});
+            f.extended=frame.extended;f.simulated=m_settings.simulation;f.request=tx&&!m_settings.simulation;
+            f.status=frame.extended?"CAN ISO-TP · 29 bit":"CAN ISO-TP · 11 bit";publishFrames({f});
         });
     }
     boot::DiagnosticTransport *network=m_settings.bus==Bus::Lin?static_cast<boot::DiagnosticTransport*>(m_transport.get()):m_canTransport.get();
@@ -288,17 +301,29 @@ void ChannelWorker::startSignals(signal::TxPlan plan){
     }
     clearProtocol();m_canEchoes.clear(); // Also destroys idle TesterPresent timers.
     if(!m_operations.acquire(OperationCoordinator::Task::Signal)){reject("通道正在执行其他任务");return;}
+    if(plan.replay)plan.replayStampOffsetUs=m_traceOffsetUs;
     m_signal->start(plan,m_settings.bitrate,m_settings.simulation,m_can.get(),m_lin.get());
 }
 void ChannelWorker::stopSignals(quint64 run){if(m_signal)m_signal->stop(run);}
 void ChannelWorker::updateSignalPayload(signal::PayloadUpdate update){if(m_session&&update.connection==m_session->generation()&&m_signal)m_signal->update(update);}
 void ChannelWorker::switchSignalSchedule(quint64 run,QString name){if(m_signal)m_signal->switchSchedule(run,name);}
+void ChannelWorker::publishFrames(FrameBatch batch){
+    for(auto &r:batch){if(!r.replay)r.captureUs+=m_traceOffsetUs;r.captureUs=qMax(m_lastCaptureUs,r.captureUs);m_lastCaptureUs=r.captureUs;if(r.replay)m_traceOffsetUs=qMax(m_traceOffsetUs,r.captureUs-captureTimeUs());if(!r.typed){r.id=r.identifier.toUInt(nullptr,16);r.payload=QByteArray::fromHex(r.data.toLatin1());r.typed=true;}}
+    emit observedFrames(batch);
+    for(int i=batch.size()-1;i>=0;--i)if(batch[i].monitorHidden)batch.removeAt(i);
+    if(!batch.isEmpty())emit framesReceived(batch);
+}
 void ChannelWorker::projectSignalEvents(const signal::BusFrameEvents &events){
     FrameBatch batch;for(const auto&e:events){FrameRecord f;stampFrame(f,m_traceClock);f.channel=m_settings.softwareId;
+        f.bus=e.bus;f.id=e.id;f.extended=e.extended;f.payload=e.bytes;f.typed=true;f.hardwareUs=e.hardwareUs;f.classicChecksum=e.classicChecksum;
+        f.replay=e.replay;f.fd=e.fd;f.brs=e.brs;f.esi=e.esi;f.rtr=e.rtr;
+        f.echo=e.source==signal::EventSource::HardwareEcho;f.request=e.source==signal::EventSource::RequestAccepted;
+        f.simulated=m_settings.simulation||e.source==signal::EventSource::Simulated;f.noResponse=e.source==signal::EventSource::NoResponse;
+        if(e.arrivalUs>0)f.captureUs=e.arrivalUs;
         const bool simulation=m_settings.simulation;f.direction=(simulation?"SIM ":"")+QString(e.source==signal::EventSource::NoResponse?"HEADER":e.source==signal::EventSource::HardwareEcho?"TX ECHO":e.source==signal::EventSource::Received?"RX":"TX");
         f.identifier=QString("0x%1").arg(e.id,e.bus==signal::Bus::Lin?2:(e.extended?8:3),16,QChar('0')).toUpper();
-        f.data=QString::fromLatin1(e.bytes.toHex(' ')).toUpper();f.length=e.bytes.size();f.status=e.detail;f.error=!e.valid&&e.source!=signal::EventSource::NoResponse;f.warning=e.source==signal::EventSource::NoResponse;batch.append(f);
-    }if(!batch.isEmpty())emit framesReceived(batch);
+        f.data=QString::fromLatin1(e.bytes.toHex(' ')).toUpper();f.length=e.length<0?e.bytes.size():e.length;f.status=e.detail;f.error=!e.valid&&e.source!=signal::EventSource::NoResponse;f.warning=e.source==signal::EventSource::NoResponse;batch.append(f);
+    }if(!batch.isEmpty())publishFrames(batch);
 }
 void ChannelWorker::sendDiagnostic(ChannelSettings settings,diag::Request request){
     auto reject=[this](const QString &error){emit diagnosticFinished(false,{},error);};
@@ -357,17 +382,22 @@ void ChannelWorker::receive() {
             if(m_transport&&(m.FrameId&0x3f)==0x3c)m_transport->confirmTransmitted(QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8)),valid);
             if(m_transport)m_transport->receiveFrame(m.FrameId&0x3f,QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8)),absent,bad);
             FrameRecord record;stampFrame(record,m_traceClock);record.channel=m_settings.softwareId;
+            record.bus=signal::Bus::Lin;record.id=m.FrameId&0x3f;record.typed=true;
+            record.payload=QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8));
+            record.hardwareUs=m.TimeStamp;record.checksum=m.Checksum;record.classicChecksum=m.ChecksumType==cstClassic;
+            record.errorFlags=m.ErrorFlags;record.noResponse=absent;
             const auto frameId=quint8(m.FrameId&0x3f);const bool transmitReadback=(m_signal&&m_signal->running())?(m.Direction==dirPublisher&&m_signal->publishesLin(frameId)):frameId==0x3c;
             signal::BusFrameEvent event;event.bus=signal::Bus::Lin;event.id=frameId;event.bytes=QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8));
-            event.hardwareUs=m.TimeStamp;event.arrivalUs=m_traceClock.nsecsElapsed()/1000;event.valid=valid;
+            event.hardwareUs=m.TimeStamp;event.arrivalUs=captureTimeUs();event.valid=valid;
             event.source=absent?signal::EventSource::NoResponse:transmitReadback?signal::EventSource::HardwareEcho:signal::EventSource::Received;
             event.detail=absent?"无从节点响应":bad?QString("LIN 错误 0x%1").arg(m.ErrorFlags,0,16):"有效总线帧";events.append(event);
             record.direction="RX";record.identifier=QString("0x%1").arg(frameId,2,16,QChar('0')).toUpper();
+            record.echo=transmitReadback;
             record.length=m.Length;
             if(valid)record.data=QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8)).toHex(' ')).toUpper();
             record.status=transmitReadback&&valid?"发送回读":(absent?"无从节点响应":(bad?QString("LIN 错误 0x%1").arg(m.ErrorFlags,0,16):"有效响应"));
             record.error=bad;record.warning=absent;
-            if(!transmitReadback||m_settings.rxdEnabled)batch.append(record);
+            record.monitorHidden=transmitReadback&&!m_settings.rxdEnabled;batch.append(record);
             if(m_scanning){++m_scanEvents;if(valid)++m_scanResponses;if(bad)++m_scanErrors;}
         }
         m_receiveDrained=n<64;if(m_receiveDrained)break;
@@ -385,7 +415,7 @@ void ChannelWorker::receive() {
             signal::BusFrameEvent event;event.bus=signal::Bus::Can;event.id=m.ID;event.extended=frame.extended;event.bytes=frame.data;
             event.valid=!frame.error&&!frame.rtr&&!frame.fd&&m.LEN<=8;event.source=echo?signal::EventSource::HardwareEcho:signal::EventSource::Received;
             event.hardwareUs=(quint64(stamps[i].millis_overflow)<<32)*1000+quint64(stamps[i].millis)*1000+stamps[i].micros;
-            event.arrivalUs=m_traceClock.nsecsElapsed()/1000;event.detail=event.valid?"CAN 总线帧":"CAN 状态/错误/非经典数据帧";events.append(event);
+            event.arrivalUs=captureTimeUs();event.detail=event.valid?"CAN 总线帧":"CAN 状态/错误/非经典数据帧";events.append(event);
             if(frame.error&&m_signal)m_signal->linkFailed(event.detail);
             if(echo){
                 for(int k=0;k<m_canEchoes.size();++k){const auto pending=m_canEchoes[k];
@@ -398,14 +428,16 @@ void ChannelWorker::receive() {
                 else m_canTransport->receiveFrame(frame);
             }
             FrameRecord r;stampFrame(r,m_traceClock);
+            r.typed=true;r.id=m.ID;r.extended=frame.extended;r.fd=frame.fd;r.rtr=frame.rtr;r.payload=frame.data;
+            r.echo=echo;r.hardwareUs=event.hardwareUs;r.error=frame.error||frame.fd||m.LEN>8;r.errorFlags=m.MSGTYPE;
             r.channel=m_settings.softwareId;r.direction=echo?"TX ECHO":"RX";r.identifier=QString("0x%1").arg(m.ID,0,16).toUpper();
             r.length=m.LEN;r.data=QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(m.DATA),qMin(int(m.LEN),8)).toHex(' ')).toUpper();
-            r.status=(m.MSGTYPE&PCAN_MESSAGE_STATUS)?"硬件状态":"CAN";r.warning=m.MSGTYPE&PCAN_MESSAGE_STATUS;batch.append(r);
+            r.status=frame.fd?"当前经典 CAN 接口无法完整采集 CAN FD":(m.MSGTYPE&PCAN_MESSAGE_STATUS)?"硬件状态":"CAN";r.warning=m.MSGTYPE&PCAN_MESSAGE_STATUS;batch.append(r);
         }
         if(n<64)break;
       }while(budget.nsecsElapsed()<2000000);
     }
-    if(!batch.isEmpty())emit framesReceived(batch);
+    if(!batch.isEmpty())publishFrames(batch);
     if(!events.isEmpty()){if(m_signal)m_signal->observe(events);emit busEvents(events);}
 }
 void ChannelWorker::startHeaderScan() {
@@ -443,6 +475,6 @@ void ChannelWorker::shutdown() {
     if(m_scan)m_scan->stop();
     if(m_repeat)m_repeat->stop();
     m_running=m_scanning=m_waiting=false;
-    m_session.reset();m_can.reset();m_canApi.reset();m_lin.reset();m_canEchoes.clear();
+    m_session.reset();m_can.reset();m_lin.reset();m_canEchoes.clear();
 }
 }

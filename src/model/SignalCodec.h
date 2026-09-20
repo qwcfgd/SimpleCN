@@ -7,6 +7,7 @@ public:
     static RawValue defaults(const SignalDefinition &);
     static QString rawText(const SignalDefinition &,const RawValue &);
     static QString physicalText(const SignalDefinition &,const RawValue &);
+    static QString differenceText(const QString &a,const QString &b);
     static ValueResult parseRaw(const SignalDefinition &,const QString &);
     // rangeIndex is required only when a segmented inverse has multiple candidates.
     static ValueResult parsePhysical(const SignalDefinition &,const QString &,int rangeIndex=-1);

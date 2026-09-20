@@ -5,11 +5,13 @@
       "name": "qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt6",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"
@@ -19,11 +21,13 @@
       "name": "qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt5",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -33,11 +37,13 @@
       "name": "stage3-qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt6",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"
@@ -47,11 +53,13 @@
       "name": "stage3-qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt5",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -61,11 +69,13 @@
       "name": "stage4-qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt6",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"
@@ -75,11 +85,13 @@
       "name": "stage4-qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt5",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -89,11 +101,13 @@
       "name": "release-qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt6",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"
@@ -103,11 +117,13 @@
       "name": "release-qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt5",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -117,11 +133,13 @@
       "name": "stage6-qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt5",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -131,11 +149,13 @@
       "name": "stage6-qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt6",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"
@@ -145,11 +165,13 @@
       "name": "stage7-qt5",
       "displayName": "Local Qt 5 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt5",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -159,11 +181,13 @@
       "name": "stage7-qt6",
       "displayName": "Local Qt 6 x64",
       "generator": "Ninja",
-      "binaryDir": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+      "binaryDir": "C:/Documents/0_Qt/build/qttemp/Qt-GeneralController-qt6",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
-        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe"
+        "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
+        "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
+        "BUILD_TESTING": "ON"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"

@@ -80,12 +80,13 @@ QVariant CanTxTableModel::data(const QModelIndex&i,int role)const{
 Qt::ItemFlags CanTxTableModel::flags(const QModelIndex&i)const{
     auto flags=QAbstractTableModel::flags(i);if(!i.isValid()||i.row()>=m_definitions.size())return flags;
     if(i.column()==0&&m_vm->canData()&&m_definitions[i.row()].issue.isEmpty())flags|=Qt::ItemIsUserCheckable;
-    if((i.column()==7&&m_vm->canStructure())||(i.column()==8&&m_vm->canData()&&m_definitions[i.row()].issue.isEmpty()))flags|=Qt::ItemIsEditable;return flags;
+    if(((i.column()==3||i.column()==7)&&m_vm->canStructure())||(i.column()==8&&m_vm->canData()&&m_definitions[i.row()].issue.isEmpty()))flags|=Qt::ItemIsEditable;return flags;
 }
 bool CanTxTableModel::setData(const QModelIndex&i,const QVariant&v,int role){
     if(i.isValid()&&i.column()==0&&role==Qt::CheckStateRole){QString error;const bool ok=m_vm->setFrameEnabled(key(i.row()),v.toInt()==Qt::Checked,error);emit validation(error);return ok;}
     if(role!=Qt::EditRole||!(flags(i)&Qt::ItemIsEditable))return false;QString error;bool ok=false;
-    if(i.column()==8)ok=m_vm->editPayload(key(i.row()),v.toString(),error);
+    if(i.column()==3){bool parsed=false;const auto id=v.toString().toULongLong(&parsed,16);if(parsed&&id<=0x1fffffff)ok=m_vm->changeId(key(i.row()),quint32(id),error);else error="ID 无效";}
+    else if(i.column()==8)ok=m_vm->editPayload(key(i.row()),v.toString(),error);
     else if(i.column()==7){bool parsed=false;int period=v.toString().toInt(&parsed);if(parsed&&period>=0)ok=m_vm->setCanOptions(key(i.row()),true,period,error);else error="周期须为非负整数 ms；0 表示仅单次";}
     emit validation(error);return ok;
 }
@@ -102,23 +103,24 @@ LinScheduleTableModel::LinScheduleTableModel(SignalTransmitViewModel*vm,QObject*
 const Schedule*LinScheduleTableModel::schedule()const{for(const auto&s:m_vm->working().schedules)if(s.name==m_schedule)return &s;return nullptr;}
 int LinScheduleTableModel::rowCount(const QModelIndex&p)const{const auto*s=schedule();return p.isValid()||!s?0:s->entries.size();}
 QString LinScheduleTableModel::key(int row)const{const auto*s=schedule();return s&&row>=0&&row<s->entries.size()?s->entries[row].frame:QString();}
-QVariant LinScheduleTableModel::headerData(int c,Qt::Orientation o,int role)const{if(role!=Qt::DisplayRole)return {};if(o==Qt::Vertical)return c+1;return QStringList{"使能","槽","帧","ID","发布节点","字节","delay ms","报文","帧头 · 数据发送类型"}.value(c);}
+QVariant LinScheduleTableModel::headerData(int c,Qt::Orientation o,int role)const{if(role!=Qt::DisplayRole)return {};if(o==Qt::Vertical)return c+1;return QStringList{"使能","槽","帧-名称","ID","发布节点","字节","delay ms","报文","帧头 · 数据发送类型"}.value(c);}
 QVariant LinScheduleTableModel::data(const QModelIndex&i,int role)const{const auto*s=schedule();if(!i.isValid()||!s||i.row()>=s->entries.size()||(role!=Qt::DisplayRole&&role!=Qt::EditRole&&role!=Qt::ToolTipRole&&role!=Qt::BackgroundRole&&role!=Qt::CheckStateRole))return {};const auto&slot=s->entries[i.row()];const auto*f=m_vm->frame(slot.frame);
     const auto d=m_vm->working().frames.value(slot.frame);
     if(role==Qt::CheckStateRole)return i.column()==0?QVariant(d.sendEnabled?Qt::Checked:Qt::Unchecked):QVariant();
     if(role==Qt::ToolTipRole)return slot.issue+"\n"+(f?f->issue:QString())+"\n"+d.frameError;
     if(role==Qt::BackgroundRole)return d.frameError.isEmpty()?QVariant():QVariant(QBrush(QColor("#ffe0e0")));
-    switch(i.column()){case 1:return i.row()+1;case 2:return f?f->name:slot.frame;case 3:return f?QString("0x%1").arg(f->id,2,16,QChar('0')).toUpper():QString();case 4:return f?f->publisher:QString();case 5:return f?QVariant(f->length):QVariant();case 6:return slot.delayMs;case 7:return role==Qt::EditRole&&!d.frameError.isEmpty()?d.frameInput:QString::fromLatin1(d.applied.bytes.toHex(' ')).toUpper();case 8:{const auto role=m_vm->working().role;const bool tx=role!=LinRole::Monitor&&f&&(f->publisher==m_vm->working().node||(f->id==61&&role==LinRole::Slave));return QString(role==LinRole::Master?"Tx":"Rx")+" · "+(tx?"Tx":"Rx");}}return {};
+    switch(i.column()){case 1:return i.row()+1;case 2:return f?f->name:slot.frame;case 3:return f?QString("0x%1").arg(f->id,2,16,QChar('0')).toUpper():QString();case 4:return f?f->publisher:QString();case 5:return f?QVariant(f->length):QVariant();case 6:return slot.delayMs;case 7:return role==Qt::EditRole&&!d.frameError.isEmpty()?d.frameInput:QString::fromLatin1(d.applied.bytes.toHex(' ')).toUpper();case 8:{const auto role=m_vm->working().role;const bool tx=role!=LinRole::Monitor&&f&&(f->custom||f->publisher==m_vm->working().node||(f->id==61&&role==LinRole::Slave));return QString(role==LinRole::Master?"Tx":"Rx")+" · "+(tx?"Tx":"Rx");}}return {};
 }
 Qt::ItemFlags LinScheduleTableModel::flags(const QModelIndex&i)const{
     auto result=QAbstractTableModel::flags(i);const auto*f=m_vm->frame(key(i.row()));
     if(i.isValid()&&i.column()==0&&f&&f->issue.isEmpty()&&m_vm->canData())result|=Qt::ItemIsUserCheckable;
+    if(i.isValid()&&(i.column()==3||i.column()==6)&&m_vm->canStructure())result|=Qt::ItemIsEditable;
     if(i.isValid()&&i.column()==7&&f&&f->issue.isEmpty()&&m_vm->canData())result|=Qt::ItemIsEditable;return result;
 }
 bool LinScheduleTableModel::setData(const QModelIndex&i,const QVariant&v,int role){
     if(i.isValid()&&i.column()==0&&role==Qt::CheckStateRole){QString error;const bool ok=m_vm->setFrameEnabled(key(i.row()),v.toInt()==Qt::Checked,error);emit validation(error);return ok;}
     if(role!=Qt::EditRole||!(flags(i)&Qt::ItemIsEditable))return false;
-    QString error;const bool ok=m_vm->editPayload(key(i.row()),v.toString(),error);emit validation(error);return ok;
+    QString error;bool ok=false;if(i.column()==3){bool parsed=false;const auto id=v.toString().toULongLong(&parsed,16);if(parsed&&id<=61)ok=m_vm->changeId(key(i.row()),quint32(id),error);else error="LIN ID 必须在 0–0x3D";}else if(i.column()==6)ok=m_vm->setLinDelay(i.row(),v.toString(),error);else ok=m_vm->editPayload(key(i.row()),v.toString(),error);emit validation(error);return ok;
 }
 
 }

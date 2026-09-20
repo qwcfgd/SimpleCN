@@ -15,6 +15,9 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent):
     connect(m_signals,&SignalTransmitViewModel::scheduleRequested,m_model,&ChannelModel::signalScheduleRequested);
     connect(m_model,&ChannelModel::signalStatus,m_signals,&SignalTransmitViewModel::applyStatus);
     connect(m_model,&ChannelModel::busEvents,m_signals,&SignalTransmitViewModel::receive);
+    connect(m_model,&ChannelModel::observedFrames,m_signals,&SignalTransmitViewModel::observeFrames);
+    connect(&m_frames,&FrameTableModel::cleared,m_signals,&SignalTransmitViewModel::clearTrace);
+    connect(m_signals,&SignalTransmitViewModel::structureChanged,this,[this]{m_frames.setDatabase(m_signals->database());});
     connect(m_model,&ChannelModel::connectionGenerationChanged,this,[this](quint64 generation){m_connectionGeneration=generation;});
     connect(m_signals,&SignalTransmitViewModel::notice,this,&ChannelViewModel::log);
     connect(m_signals,&SignalTransmitViewModel::changed,this,[this]{emit changed();});
@@ -76,7 +79,7 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent):
     if(!m_settings.cddPath.isEmpty())QTimer::singleShot(0,this,[this]{QString error;if(!loadCdd(m_settings.cddPath,error,false)){m_diagnosticResult=error;log(error);emit changed();}});
     if(!m_settings.signalConfiguration.isEmpty())QTimer::singleShot(0,this,[this]{m_signals->readConfigurationAsync(m_settings.signalConfiguration,{});});
 }
-ChannelSettings ChannelViewModel::snapshotSettings()const{auto snapshot=m_settings;snapshot.signalConfiguration=m_signals->definitions().isEmpty()?QJsonObject():m_signals->configuration();return snapshot;}
+ChannelSettings ChannelViewModel::snapshotSettings()const{auto snapshot=m_settings;snapshot.signalConfiguration=m_signals->configuration();return snapshot;}
 bool ChannelViewModel::setSettings(const ChannelSettings &s) {
     if(busy() || s.bus!=m_settings.bus)return false;
     auto old=m_settings.toJson(),next=s.toJson();
@@ -92,6 +95,7 @@ bool ChannelViewModel::setSettings(const ChannelSettings &s) {
     const bool valid=true;m_error.clear();
     if(configurationChanged)m_model->resetDiagnosticRequested();
     if(valid && (m_backendSimulation!=m_settings.simulation || (m_lost && configurationChanged))){m_backendSimulation=m_settings.simulation;m_pending=true;m_model->settingsRequested(m_settings);}
+    if(modeChanged){m_hardware.clear();emit hardwareListChanged();}
     emit settingsChanged();emit changed();return valid;
 }
 communication::HardwareChannels ChannelViewModel::hardware() const {

@@ -176,3 +176,7 @@ LIN 待发送表上方增加与通信配置同步的调度选择框。手动切�
 回归日志保存为各 Qt 构建目录中的 `controls-final-build.log`、`controls-final-tests.log`；界面截图在 `tests/artifacts/`。新增覆盖 RAW 撤销、下载布局、勾选持久化、CAN 分批整轮更新/空表恢复、LIN 整轮更新/当前帧切表、从节点外部轮次识别和两个调度下拉框同步。
 
 本轮结果：Qt 5.15.19、Qt 6.8.4 均完成 Release 编译和 10/10 完整套件回归，最后的列宽与观测模式修正后，两套信号相关 3/3 套件再次通过（controls-polish-*.log）。最终信号解析/调度 27 项、驱动 8 项、信号界面 30 项、UDS 界面 19 项通过。testsrc 的 DBC/LDF 均正常导入及显示并保持源字节不变，已查看最终样本、通信配置、UDS 与 1366×768 下载布局截图；MVVM 边界检查及 git diff --check 通过。
+
+## 1.3 构建目录更新
+
+以上原构建记录保留为历史。1.3 起程序本体仍位于 `../build/Qt-GeneralController-qt5` / `qt6`；CMake 构建树、测试、调试和验证工具统一改到 `../build/qttemp/Qt-GeneralController-qt5` / `qt6`，详见根目录 README。

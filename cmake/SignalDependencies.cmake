@@ -5,7 +5,8 @@ if(POLICY CMP0169)
 endif()
 FetchContent_Declare(signal_dbcppp
     GIT_REPOSITORY https://github.com/xR3b0rn/dbcppp.git
-    GIT_TAG b520607559223ac02a7ca87d47b4932cd9f3d21b)
+    GIT_TAG b520607559223ac02a7ca87d47b4932cd9f3d21b
+    GIT_SUBMODULES "")
 FetchContent_Declare(signal_multiprecision
     GIT_REPOSITORY https://github.com/boostorg/multiprecision.git
     GIT_TAG de3aded8632e0ef0f17dcaf274f5699a25139738)
