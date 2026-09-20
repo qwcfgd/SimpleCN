@@ -30,7 +30,7 @@ def main():
     shutil.copy2(required[1], output)
     shutil.copy2(required[2], output)
     for path in build.glob("*.dll"):
-        if path.name.startswith(("Qt5", "Qt6", "libgcc_", "libstdc++", "libwinpthread", "libsignal_dbcppp")):
+        if path.name.startswith((f"Qt{args.qt_major}", "libgcc_", "libstdc++", "libwinpthread", "libsignal_dbcppp")) or path.name.lower() in {"d3dcompiler_47.dll", "opengl32sw.dll", "dxcompiler.dll", "dxil.dll"}:
             shutil.copy2(path, output)
     for name in ("generic", "iconengines", "imageformats",
                  "networkinformation", "platforms", "styles", "tls"):
@@ -43,10 +43,15 @@ def main():
     (output/"profiles").mkdir()
     shutil.copytree(ROOT/"profiles/fixtures", output/"profiles/fixtures")
     profile = json.loads((ROOT/"profiles/stage6-can-lin-simulation.json").read_text(encoding="utf-8"))
+    ports = {"CAN": 0, "LIN": 0}
     for channel in profile["channels"]:
         channel["flashPath"] = "fixtures/flash-driver.bin"
         channel["applicationPath"] = "fixtures/application.bin"
         channel["simulation"] = True
+        bus = channel["bus"]
+        ports[bus] += 1
+        channel["hardwareKey"] = f"preview:{bus}:{ports[bus]}"
+        channel["handle"] = (0xf100 if bus == "CAN" else 0xf200) + ports[bus]
     (output/"profiles/simulation.json").write_text(
         json.dumps(profile, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
     (output/"docs").mkdir()
@@ -55,7 +60,7 @@ def main():
     shutil.copytree(ROOT/"docs/licenses", output/"docs/licenses")
     (output/"README.txt").write_text(
         "GENERAL BOOTLOADER CONTROLLER - ReleaseVer: 1.2\n\n"
-        "启动 QtBootloader.exe。首次只有 CAN01，不自动连接。\n"
+        "启动 QtBootloader.exe。首次包含 CAN01 和 LIN01，不自动连接。\n"
         "完整说明：docs/User-Guide.md\n"
         "模拟验证：载入 profiles/simulation.json，连接所需通道后开始模拟下载。\n"
         "自动自检：运行 VerifyRelease.exe；不会连接或发送到物理总线。\n"
@@ -86,7 +91,8 @@ def main():
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     archive.with_suffix(".zip.sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
     print(json.dumps({"directory": str(output), "archive": str(archive),
-                      "files": len(manifest), "sha256": digest}, ensure_ascii=False))
+                      "files": len(manifest), "unpackedBytes": sum(p.stat().st_size for p in output.rglob("*") if p.is_file()),
+                      "archiveBytes": archive.stat().st_size, "sha256": digest}, ensure_ascii=False))
 
 if __name__ == "__main__":
     main()

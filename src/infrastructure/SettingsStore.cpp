@@ -33,7 +33,7 @@ bool SettingsStore::load(QVector<ChannelSettings> &settings,QString &error) cons
         const QDir folder(QFileInfo(m_path).absolutePath());
         for(QString *image:{&s.flashPath,&s.applicationPath,&s.cddPath})
             if(!image->isEmpty()&&QDir::isRelativePath(*image))*image=QDir::cleanPath(folder.absoluteFilePath(*image));
-        const auto source=s.signalConfiguration["source"].toString();
+        const auto source=s.signalConfiguration.value("source").toString();
         if(!source.isEmpty()&&QDir::isRelativePath(source))s.signalConfiguration["source"]=QDir::cleanPath(folder.absoluteFilePath(source));
         const QString name=s.softwareId.trimmed().toCaseFolded();
         if(names.contains(name)){error="软件通道名称不能重复。";return false;}

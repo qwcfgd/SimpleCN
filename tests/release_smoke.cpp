@@ -39,10 +39,10 @@ private slots:
         QVERIFY2(window.restoreChannels(root()+"/profiles/simulation.json",error),qPrintable(error));
         QCOMPARE(window.channels().size(),3);
         for(auto vm:window.channels()){
-            const auto s=vm->settings();QVERIFY(s.simulation);
+            const auto s=vm->settings();QVERIFY(s.simulation);QVERIFY(s.signalConfiguration.isEmpty());
             QVERIFY(s.applicationPath.startsWith(root()+"/profiles/fixtures/"));
             QVERIFY(imageReady(s.applicationPath));QVERIFY(imageReady(s.flashPath));
-            QTRY_VERIFY_WITH_TIMEOUT(vm->canConnect(),5000);
+            QTRY_VERIFY2_WITH_TIMEOUT(vm->canConnect(),qPrintable(QString("%1 simulation=%2 key=%3 handle=%4 pending=%5 state=%6 hardware=%7 busy=%8 logs=%9").arg(vm->settings().softwareId).arg(vm->settings().simulation).arg(vm->settings().hardwareKey).arg(vm->settings().handle).arg(vm->pending()).arg(vm->healthDetail()).arg(vm->hardware().size()).arg(vm->busy()).arg(vm->logs().join(";"))),5000);
             vm->toggleConnection();QTRY_VERIFY_WITH_TIMEOUT(vm->connected()&&!vm->pending(),5000);
             vm->start();
         }

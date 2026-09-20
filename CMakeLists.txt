@@ -133,3 +133,16 @@ target_link_libraries(QtBootloader PRIVATE bootloader_ui)
 host_deploy(QtBootloader)
 enable_testing()
 add_subdirectory(tests)
+
+# Publish runtime files only; the build tree also contains sources and test binaries.
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    set(HOST_RELEASE_OUTPUT "${CMAKE_BINARY_DIR}/release/QtBootloader-${PROJECT_VERSION}-qt${QT_VERSION_MAJOR}"
+        CACHE PATH "New directory for the distributable release (existing output is never overwritten)")
+    add_custom_target(package_release
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/package_release.py"
+            --build "${CMAKE_BINARY_DIR}" --output "${HOST_RELEASE_OUTPUT}" --qt-major "${QT_VERSION_MAJOR}"
+        DEPENDS QtBootloader VerifyRelease
+        COMMENT "Packaging runtime files without build caches or regression binaries"
+        VERBATIM)
+endif()
