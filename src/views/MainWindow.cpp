@@ -124,11 +124,14 @@ void MainWindow::channelContextMenu(int index,const QPoint&position) {
     }
     if(index>=m_channels.size())return;
     ui->channelTabs->setCurrentIndex(index);QPointer<ChannelViewModel>target=m_channels[index];
+    auto*connection=menu.addAction("");connection->setObjectName("connectChannelAction");
+    auto refreshConnection=[target,connection]{if(!target)return;connection->setText(target->pending()?"处理中…":target->connected()?"断开连接":"连接设备");connection->setEnabled(!target->pending()&&(target->connected()||target->canConnect()));};
+    refreshConnection();connect(target,&ChannelViewModel::changed,&menu,refreshConnection);
     auto*edit=menu.addAction("修改通道");edit->setObjectName("editChannelAction");edit->setEnabled(!target->hardwareLocked());
     edit->setToolTip("连接或运行期间请先断开通道");
     auto*remove=menu.addAction("删除通道");remove->setObjectName("deleteChannelAction");
     const auto*chosen=menu.exec(position);if(!target)return;
-    if(chosen==edit)createChannelDialog(target);else if(chosen==remove)removeChannel(target);
+    if(chosen==connection)target->toggleConnection();else if(chosen==edit)createChannelDialog(target);else if(chosen==remove)removeChannel(target);
 }
 void MainWindow::createChannelDialog(ChannelViewModel*target) {
     if(target && target->hardwareLocked())return;

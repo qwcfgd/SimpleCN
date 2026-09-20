@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(QtController VERSION 0.2.2 LANGUAGES CXX)
+project(QtController VERSION 1.1.0 LANGUAGES CXX)
 if(MINGW)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
 endif()

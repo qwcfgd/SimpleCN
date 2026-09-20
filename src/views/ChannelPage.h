@@ -28,8 +28,8 @@ private:
     bool m_loading=false,m_applying=false;
     QLineEdit *m_flashPath,*m_appPath,*m_flashAddress,*m_appAddress;
     QCheckBox *m_follow,*m_rxdEnabled;
-    QLabel *m_state,*m_busHealth,*m_device,*m_handle,*m_flashInfo,*m_appInfo,*m_hint,*m_task,*m_count,*m_elapsedText,*m_error;
-    QPushButton *m_connect,*m_start,*m_cancel,*m_scan,*m_protocol,*m_downloadSettings,*m_browseFlash;
+    QLabel *m_hardwareSummary,*m_flashInfo,*m_appInfo,*m_hint,*m_task,*m_count,*m_elapsedText,*m_error;
+    QPushButton *m_start,*m_cancel,*m_scan,*m_protocol,*m_downloadSettings,*m_browseFlash;
     QProgressBar *m_progress;
     QTableView *m_table;
     QPlainTextEdit *m_log;

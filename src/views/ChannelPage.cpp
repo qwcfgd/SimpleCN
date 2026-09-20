@@ -64,14 +64,9 @@ void ChannelPage::build() {
     auto hardwareCard=new QFrame;hardwareCard->setProperty("card",true);
     auto hardwareLayout=new QVBoxLayout(hardwareCard);hardwareLayout->setContentsMargins(12,6,12,6);hardwareLayout->setSpacing(6);
     auto status=new QHBoxLayout;
-    m_state=label("未连接");m_state->setObjectName("connectionState");
-    m_busHealth=label("等待设备");m_busHealth->setObjectName("muted");m_busHealth->setMinimumWidth(0);m_busHealth->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);
-    m_device=label("—");m_device->setObjectName("deviceValue");m_handle=label("—");m_handle->setObjectName("handleValue");
-    status->addWidget(m_state);status->addWidget(m_busHealth,1);
-    status->addWidget(label("设备通道"));status->addWidget(m_device);status->addSpacing(14);status->addWidget(label("硬件通道"));status->addWidget(m_handle);
+    m_hardwareSummary=label("");m_hardwareSummary->setObjectName("hardwareSummary");m_hardwareSummary->setWordWrap(true);status->addWidget(m_hardwareSummary,1);
     hardwareLayout->addLayout(status);
     m_protocol=new QPushButton("参数配置…");m_protocol->setObjectName("downloadParameters");
-    m_connect=new QPushButton("连接");m_connect->setObjectName("connectButton");m_connect->setProperty("primary",true);status->addWidget(m_connect);
     root->addWidget(hardwareCard);root->addWidget(m_regions,1);
 
     auto download=new QFrame;download->setObjectName("downloadPanel");download->setProperty("card",true);download->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Minimum);
@@ -156,7 +151,6 @@ void ChannelPage::build() {
     connect(tasks,&QTabWidget::currentChanged,this,[this]{updateRegionSizes();});
     connect(m_regions,&QSplitter::splitterMoved,this,[this]{const auto sizes=m_regions->sizes();const int total=sizes.value(0)+sizes.value(1);if(total>0)(m_tasks->currentIndex()==2?m_signalRatio:m_tasks->currentIndex()==1?m_udsRatio:m_downloadRatio)=double(sizes[0])/total;});
     QTimer::singleShot(0,this,[this]{updateRegionSizes();});
-    connect(m_connect,&QPushButton::clicked,m_vm,&ChannelViewModel::toggleConnection);
     connect(m_start,&QPushButton::clicked,m_vm,&ChannelViewModel::start);
     connect(m_cancel,&QPushButton::clicked,m_vm,&ChannelViewModel::cancel);
     connect(m_scan,&QPushButton::clicked,m_vm,&ChannelViewModel::scanHeaders);
@@ -323,26 +317,15 @@ void ChannelPage::editDownload() {
     });dialog.exec();
 }
 void ChannelPage::render() {
-    const auto &s=m_vm->settings();m_state->setText(connectionText(m_vm->state()));
-    const bool connected=m_vm->connected();
-    m_state->setStyleSheet(connected?"QLabel { color:#087F67;background:#DDF5EA;padding:3px 10px;border-radius:7px;font-weight:600; }":
-        "QLabel { color:#53677C;background:#E7EDF3;padding:3px 10px;border-radius:7px;font-weight:600; }");
-    QString health=m_vm->healthDetail();
-    if(connected && m_vm->health()==communication::Health::Ready)health=s.simulation?"模拟通道 · 不访问物理总线":"总线活动";
-    if(connected && m_vm->health()==communication::Health::Sleeping)health="总线休眠 · 硬件连接正常";
-    if(connected && !s.simulation && m_vm->health()==communication::Health::BusWarning)health="总线警告 · "+health;
-    m_busHealth->setText(health);m_busHealth->setToolTip(m_vm->healthDetail());
-    m_device->setText("—");m_handle->setText("—");
-    const auto list=m_vm->hardware();
-    for(const auto &h:list)if(h.key==s.hardwareKey){
-        m_device->setText(QString("%1 / %2").arg(h.deviceId).arg(h.controller));
-        m_handle->setText(QString("0x%1").arg(h.handle,0,16));break;
-    }
+    const auto &s=m_vm->settings();
+    QString hardware="未选择硬件",port="未选择通道";
+    for(const auto&h:m_vm->hardware())if(h.key==s.hardwareKey){hardware=h.label.section(" / SDK channel",0,0).section(" / channel",0,0);port=QString("通道%1").arg(h.controller);break;}
+    if(hardware=="未选择硬件"&&!s.hardwareKey.isEmpty())hardware="已选设备未连接";
+    if(s.simulation)hardware.replace("模拟 CAN 双通道适配器","模拟CAN双通道适配器").replace("模拟 LIN 双通道适配器","模拟LIN双通道适配器");
+    m_hardwareSummary->setText(QString("%1 · %2 · %3 · %4 bit/s").arg(s.simulation?"模拟模式":"在线硬件",hardware,port).arg(s.bitrate));
     m_protocol->setEnabled(!m_vm->busy());
     m_images->setEnabled(!m_vm->busy());m_flashPath->setEnabled(s.flashRequired);m_browseFlash->setEnabled(s.flashRequired);
     m_flashInfo->setEnabled(s.flashRequired);
-    m_connect->setText(m_vm->pending()?"处理中…":(connected?"断开":"连接"));
-    m_connect->setEnabled(!m_vm->pending() && (connected || m_vm->canConnect()));
     m_start->setText(s.simulation?"开始模拟下载":"开始下载");m_start->setEnabled(m_vm->canStart());
     m_start->setToolTip(m_vm->startHint());m_cancel->setEnabled(m_vm->taskState()==TaskState::Running || m_vm->scanning());
     m_scan->setEnabled(m_vm->canScan());m_scan->setText(m_vm->scanning()?"正在扫描…":"扫描帧头");

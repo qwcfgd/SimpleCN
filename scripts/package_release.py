@@ -54,7 +54,7 @@ def main():
         shutil.copy2(path, output/"docs"/path.name)
     shutil.copytree(ROOT/"docs/licenses", output/"docs/licenses")
     (output/"README.txt").write_text(
-        "GENERAL BOOTLOADER CONTROLLER - InternalVer 0.2\n\n"
+        "GENERAL BOOTLOADER CONTROLLER - ReleaseVer: 1.1\n\n"
         "启动 QtBootloader.exe。首次只有 CAN01，不自动连接。\n"
         "完整说明：docs/User-Guide.md\n"
         "模拟验证：载入 profiles/simulation.json，连接所需通道后开始模拟下载。\n"
@@ -63,7 +63,7 @@ def main():
         "请保留整个目录；不要只复制 exe。保存配置需要目录可写。\n",
         encoding="utf-8-sig")
     inventory = {
-        "applicationVersion": "0.2.1", "uiVersion": "InternalVer 0.2",
+        "applicationVersion": "1.1.0", "uiVersion": "ReleaseVer: 1.1",
         "qtMajor": int(args.qt_major), "architecture": "Windows x64",
         "buildType": "Release", "physicalDownloadEnabled": False, "physicalDownloadBuses": [], "physicalECUValidated": False,
         "components": ["Qt runtime and plugins", "MinGW runtime",

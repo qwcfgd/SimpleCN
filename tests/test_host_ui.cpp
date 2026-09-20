@@ -200,11 +200,11 @@ private slots:
         auto quick=lin->settings();quick.p2Ms=30;quick.p2StarMs=60;QVERIFY(lin->setSettings(quick));
         auto tabs=window.findChild<QTabWidget*>("channelTabs");QVERIFY(tabs);tabs->setCurrentIndex(1);
         auto page=window.findChild<ChannelPage*>("linPage");QVERIFY(page);
-        auto connectButton=page->findChild<QPushButton*>("connectButton");
+        QVERIFY(!page->findChild<QPushButton*>("connectButton"));QTRY_COMPARE(page->findChild<QLabel*>("hardwareSummary")->text(),QString("模拟模式 · 模拟LIN双通道适配器 · 通道1 · 19200 bit/s"));
         auto start=page->findChild<QPushButton*>("startButton");auto cancel=page->findChild<QPushButton*>("cancelButton");
         QTRY_VERIFY_WITH_TIMEOUT(lin->canConnect(),3000);QVERIFY(lin->chooseImage(true,fixture("ui-driver.bin",64)));
         QVERIFY(lin->chooseImage(false,fixture("ui-cancel.bin",262144)));
-        QTest::mouseClick(connectButton,Qt::LeftButton);QTRY_VERIFY(lin->connected() && !lin->pending());
+        openChannelAction(window,1,"connectChannelAction");QTRY_VERIFY(lin->connected() && !lin->pending());
         QVERIFY(!page->findChild<QComboBox*>("hardwareCombo"));QVERIFY(lin->hardwareLocked());
         QVERIFY(page->findChild<QLineEdit*>("applicationPath")->isEnabled());QVERIFY(start->isEnabled());
         QTest::mouseClick(start,Qt::LeftButton);QTRY_COMPARE(lin->taskState(),TaskState::Running);
@@ -223,7 +223,7 @@ private slots:
         tabs->setCurrentIndex(0);QTest::qWait(50);
         QVERIFY(window.grab().save(folder+"bootloader-can.png"));QCOMPARE(can->progress(),0);
         tabs->setCurrentIndex(1);
-        QTest::mouseClick(connectButton,Qt::LeftButton);QTRY_VERIFY(!lin->connected() && !lin->pending());
+        openChannelAction(window,1,"connectChannelAction");QTRY_VERIFY(!lin->connected() && !lin->pending());
         auto profile=lin->settings();profile.profileId="LIN 验收配置";QVERIFY(lin->setSettings(profile));
         QCOMPARE(lin->settings().profileId,QString("LIN 验收配置"));QCOMPARE(can->settings().profileId,QString("CAN UDS"));
         QTest::mouseClick(window.findChild<QPushButton*>("saveSettings"),Qt::LeftButton);
@@ -460,7 +460,7 @@ private slots:
         QVERIFY(page->findChild<QScrollArea*>("udsScrollArea"));
         auto version=window.findChild<QLabel*>("versionBadge");QVERIFY(version);QVERIFY(version->parentWidget()==window.statusBar());
         const auto pos=version->mapTo(&window,QPoint());
-        QVERIFY(pos.x()>window.width()/2);QVERIFY(pos.y()>window.height()-50);QCOMPARE(version->text(),QString("ReleaseVer: 1.0"));
+        QVERIFY(pos.x()>window.width()/2);QVERIFY(pos.y()>window.height()-50);QCOMPARE(version->text(),QString("ReleaseVer: 1.1"));
         QVERIFY(window.grab().save(artifactDir()+"/bootloader-1366.png"));
         QFile metadata(artifactDir()+"/display.json");QVERIFY(metadata.open(QIODevice::WriteOnly));
         metadata.write(QJsonDocument(QJsonObject{{"dpr",dpr},{"clientWidth",window.width()},{"clientHeight",window.height()},{"qt",qVersion()}}).toJson());
@@ -479,7 +479,7 @@ private slots:
         auto tabs=window.findChild<QTabWidget*>("channelTabs");auto bar=tabs->tabBar();
         QTimer::singleShot(30,&window,[&](){
             auto menu=window.findChild<QMenu*>("channelContextMenu");QVERIFY(menu);
-            QCOMPARE(menu->actions().size(),2);QCOMPARE(menu->actions()[0]->text(),QString("修改通道"));QCOMPARE(menu->actions()[1]->text(),QString("删除通道"));
+            QCOMPARE(menu->actions().size(),3);QCOMPARE(menu->actions()[0]->text(),QString("断开连接"));QCOMPARE(menu->actions()[1]->text(),QString("修改通道"));QCOMPARE(menu->actions()[2]->text(),QString("删除通道"));
             auto action=menu->findChild<QAction*>("deleteChannelAction");QVERIFY(action);QCOMPARE(action->text(),QString("删除通道"));
             QTest::mouseClick(menu,Qt::LeftButton,Qt::NoModifier,menu->actionGeometry(action).center());
         });
@@ -558,7 +558,7 @@ private slots:
         MainWindow window(m_temp.path()+"/hardware.json");window.resize(1440,1000);window.setAttribute(Qt::WA_DontShowOnScreen);window.show();
         auto vm=window.linChannel();auto page=window.findChild<ChannelPage*>("linPage");
         QTRY_VERIFY_WITH_TIMEOUT(vm->canConnect(),4000);
-        QTest::mouseClick(page->findChild<QPushButton*>("connectButton"),Qt::LeftButton);
+        openChannelAction(window,1,"connectChannelAction");
         QTRY_VERIFY(vm->connected() && !vm->pending());QTRY_VERIFY(vm->canScan());
         QVERIFY(!page->findChild<QPushButton*>("startButton")->isEnabled());
         QElapsedTimer idle;idle.start();
@@ -580,7 +580,7 @@ private slots:
         QTRY_COMPARE(vm->health(),communication::Health::Ready);QCOMPARE(vm->communicationIndicator(),1);
         QVERIFY(window.grab().save(artifactDir()+"/bootloader-lin-hardware.png"));
         QString error;QVERIFY(vm->frames()->exportCsv(artifactDir()+"/lin-page-frames.csv",error));
-        QTest::mouseClick(page->findChild<QPushButton*>("connectButton"),Qt::LeftButton);
+        openChannelAction(window,1,"connectChannelAction");
         QTRY_VERIFY(!vm->connected() && !vm->pending());
         QVERIFY(!page->findChild<QComboBox*>("hardwareCombo"));QVERIFY(!vm->hardwareLocked());
     }
