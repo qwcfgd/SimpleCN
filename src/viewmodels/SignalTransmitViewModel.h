@@ -32,6 +32,7 @@ public:
     void importAsync(const QString&);
     bool editSignal(const QString &key,int field,const QString&,bool physical,QString&error,int range=-1);
     bool editPayload(const QString&,const QString&,QString&error);
+    bool setFrameEnabled(const QString&,bool,QString&error);
     bool setCanOptions(const QString&,bool enabled,int period,QString&error);
     bool putCustom(const QString &oldKey,const QString &name,quint32 id,int length,int cycle,QString&error);
     bool removeCustom(const QString&,QString&error);
@@ -39,9 +40,6 @@ public:
     bool selectSchedule(const QString&,QString&error);
     bool replaceSchedules(const QVector<signal::Schedule>&,const QString&,QString&error);
     void back();void restore();
-    bool save(const QString&,QString&error)const;
-    bool read(const QString&,QString&error);
-    void readAsync(const QString&);
     void readConfigurationAsync(const QJsonObject&,const QString &baseDirectory);
     QJsonObject configuration(const QString &relativeTo=QString())const;
     bool readConfiguration(const QJsonObject&,const QString &baseDirectory,QString&error);
@@ -70,7 +68,7 @@ private:
     QVector<signal::WorkingSet> m_history;
     signal::RunStatus m_status;
     bool m_connected=false,m_externalBusy=false,m_importing=false,m_hasBaseline=false;
-    int m_bitrate=19200;quint64 m_connection=0,m_nextRun=0;
+    bool m_periodic=false;int m_bitrate=19200;quint64 m_connection=0,m_nextRun=0;
     QString m_message;
     QFutureWatcher<signal::ImportResult> m_import;
     QFutureWatcher<signal::ConfigurationResult> m_configurationLoad;

@@ -84,7 +84,7 @@ add_library(bootloader_ui STATIC
     src/viewmodels/DiagnosticDraftViewModel.h src/viewmodels/DiagnosticDraftViewModel.cpp
     src/views/ChannelHardwareEditor.h src/views/ChannelHardwareEditor.cpp
     src/views/ChannelPage.h src/views/ChannelPage.cpp
-    src/views/SignalTransmitPage.h src/views/SignalTransmitPage.cpp src/views/SignalCommunicationDialog.cpp
+    src/views/SignalTransmitPage.h src/views/SignalTransmitPage.cpp
     src/views/ChannelTabs.h
     src/views/UdsDiagnosticPage.h src/views/UdsDiagnosticPage.cpp
     src/views/UdsSettingsDialog.h src/views/UdsSettingsDialog.cpp

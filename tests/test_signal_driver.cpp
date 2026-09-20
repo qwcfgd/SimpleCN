@@ -61,6 +61,11 @@ private slots:
         api.state=schSuspended;api.suspended=101;QVERIFY(!lin.signalRoundBoundaryReached(reached));api.suspended=100;QVERIFY(lin.signalRoundBoundaryReached(reached));QVERIFY(reached);QCOMPARE(api.breakpoint,DWORD(0));
         QVERIFY(lin.signalStop());QVERIFY(lin.signalStop());QVERIFY(lin.signalInstallFrames({frame(16)}));QVERIFY(lin.signalStartSchedule({slot}));QVERIFY(lin.signalConfigureMode(false));QCOMPARE(api.mode,TLINHardwareMode(modSlave));QVERIFY(lin.signalConfigureMode(true));QCOMPARE(api.mode,TLINHardwareMode(modMaster));
     }
+    void frameBoundarySuspendsWithoutClearingResponse(){SignalLinApi api;tstPeakLin lin(nullptr,&api);open(lin);QVERIFY(lin.signalInstallFrames({frame(16)}));TLINScheduleSlot slot={};slot.Type=sltUnconditional;slot.Delay=10;slot.FrameId[0]=16;
+        QVERIFY(lin.signalStartSchedule({slot,slot}));QVERIFY(lin.signalRequestRoundBoundary());QVERIFY(lin.signalRequestFrameBoundary());QVERIFY(api.entries[16].Flags&FRAME_FLAG_RESPONSE_ENABLE);
+        QVERIFY(lin.signalRequestFrameBoundary());bool reached=false;api.suspended=101;QVERIFY(lin.signalFrameBoundaryReached(reached));QVERIFY(reached);QCOMPARE(api.breakpoint,DWORD(0));QVERIFY(api.entries[16].Flags&FRAME_FLAG_RESPONSE_ENABLE);
+        QVERIFY(lin.signalStop());QVERIFY(!lin.signalRequestFrameBoundary());
+    }
     void supportsFull256SlotPoolAndRejectsInvalid(){SignalLinApi api;tstPeakLin lin(nullptr,&api);open(lin);TLINScheduleSlot slot={};slot.Type=sltUnconditional;slot.Delay=10;slot.FrameId[0]=16;QVector<TLINScheduleSlot> all(256,slot);QVERIFY(lin.signalStartSchedule(all));QCOMPARE(api.schedule.size(),256);all.append(slot);QVERIFY(!lin.signalStartSchedule(all));}
 };
 QTEST_APPLESS_MAIN(SignalDriverTest)

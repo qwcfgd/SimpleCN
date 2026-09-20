@@ -1,0 +1,55 @@
+--- a/resource/driverLin/tstPeakLin.h
++++ b/resource/driverLin/tstPeakLin.h
+@@ -41,6 +41,8 @@
+     bool signalStop();
+     bool signalInstallFrames(const QVector<TLINFrameEntry> &frames);
+     bool signalStartSchedule(QVector<TLINScheduleSlot> entries);
++    bool signalRequestFrameBoundary();
++    bool signalFrameBoundaryReached(bool &reached);
+     bool signalRequestRoundBoundary();
+     bool signalRoundBoundaryReached(bool &reached);
+     bool signalUpdateFrame(BYTE id, const QByteArray &payload);
+--- a/resource/communication/SignalLinExtensions.cpp
++++ b/resource/communication/SignalLinExtensions.cpp
+@@ -74,7 +74,7 @@
+         t_LastLinErr = errIllegalSlotCount; return false;
+     }
+     // One resident schedule uses the entire pool. A new table is loaded only
+-    // after the first-slot breakpoint confirms completion of the previous round.
++    // after a round breakpoint or a confirmed suspension and frame drain.
+     for (int number = 0; number < 8; ++number) {
+         t_LastLinErr = t_pPLinApi->DeleteSchedule(t_hClient, t_hHw, number);
+         if (t_LastLinErr != errOK && t_LastLinErr != errIllegalSchedule) return false;
+@@ -87,6 +87,32 @@
+     t_signalFirstSlot = entries.first().Handle;
+     if (!t_signalFirstSlot) { t_LastLinErr = errIllegalSchedule; return false; }
+     t_LastLinErr = t_pPLinApi->StartSchedule(t_hClient, t_hHw, 0);
++    return t_LastLinErr == errOK;
++}
++
++bool tstPeakLin::signalRequestFrameBoundary()
++{
++    if (!t_open || !t_signalFirstSlot) { t_LastLinErr = errIllegalSchedule; return false; }
++    BYTE state = schNotRunning;
++    t_LastLinErr = t_pPLinApi->GetHardwareParam(t_hHw, hwpScheduleState, &state, sizeof(state));
++    if (t_LastLinErr != errOK) return false;
++    if (state == schSuspended) return true;
++    if (state != schRunning) { t_LastLinErr = errIllegalSchedulerState; return false; }
++    t_LastLinErr = t_pPLinApi->SuspendSchedule(t_hClient, t_hHw);
++    return t_LastLinErr == errOK;
++}
++
++bool tstPeakLin::signalFrameBoundaryReached(bool &reached)
++{
++    reached = false;
++    if (!t_open || !t_signalFirstSlot) { t_LastLinErr = errIllegalSchedule; return false; }
++    BYTE state = schNotRunning;
++    t_LastLinErr = t_pPLinApi->GetHardwareParam(t_hHw, hwpScheduleState, &state, sizeof(state));
++    if (t_LastLinErr != errOK) return false;
++    if (state == schRunning) return true;
++    if (state != schSuspended) { t_LastLinErr = errIllegalSchedulerState; return false; }
++    reached = true;
++    t_LastLinErr = t_pPLinApi->SetScheduleBreakPoint(t_hClient, t_hHw, 0, 0);
+     return t_LastLinErr == errOK;
+ }
+ 

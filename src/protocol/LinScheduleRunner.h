@@ -9,8 +9,8 @@ public:
     virtual bool stop(QString&)=0;
     virtual bool install(const QVector<TxItem>&,const QSet<QString>&publish,QString&)=0;
     virtual bool start(const Schedule&,const QVector<TxItem>&,QString&)=0;
-    virtual bool requestBoundary(QString&)=0;
-    virtual bool boundary(bool&,QString&)=0;
+    virtual bool requestBoundary(QString&,bool round=true)=0;
+    virtual bool boundary(bool&,QString&,bool round=true)=0;
     virtual bool update(const TxItem&,QString&)=0;
 };
 class LinScheduleRunner {
@@ -18,6 +18,7 @@ public:
     explicit LinScheduleRunner(LinDevice *device=nullptr):m_device(device){}
     bool start(const TxPlan&,int bitrate,qint64 nowUs,QString&);
     bool switchTo(const QString&,qint64 nowUs,QString&);
+    bool setEnabled(const QString&,bool,qint64 nowUs,QString&);
     bool update(const QString&,const AppliedPayload&,QString&);
     bool tick(qint64 nowUs,QString&);
     void observe(const BusFrameEvent&);
@@ -32,12 +33,16 @@ public:
     // the table. False postpones switching until the next worker tick.
     std::function<bool()> drainBeforeSwitch;
 private:
+    Schedule effective(const QString&)const;
+    void applyEnabled();
     const Schedule*schedule(const QString&)const;
     bool activate(const QString&,qint64 nowUs,QString&);
     QSet<QString> responseSet(const Schedule&)const;
     bool fault(QString&);
     QString validate(const Schedule&)const;
     LinDevice*m_device=nullptr;TxPlan m_plan;RunStatus m_status;QSet<QString> m_publish;
+    Schedule m_effective;QMap<QString,bool> m_pendingEnabled;bool m_enableBoundary=false,m_slaveBoundary=false;
+    qint64 m_frameEnd=0;int m_observedSlot=0;
     int m_slot=0;int m_bitrate=19200;qint64 m_due=0,m_switchBegan=0,m_lastOldFrameUs=0;
     BusFrameEvent m_lastObserved,m_gapAnchor;
     bool m_observed=false,m_gapPending=false;

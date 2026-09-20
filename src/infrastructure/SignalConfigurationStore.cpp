@@ -1,12 +1,9 @@
 #include "SignalConfigurationStore.h"
 #include "model/DatabaseImporter.h"
 #include "model/SignalCodec.h"
-#include <QFile>
 #include <QFileInfo>
-#include <QSaveFile>
 #include <QDir>
 #include <QJsonArray>
-#include <QJsonDocument>
 #include <cmath>
 namespace host::signal {
 static bool legacyDiagnosticIssue(const QString&issue){return issue=="首版不执行 LIN 诊断帧/槽"||issue=="首版不执行诊断槽：MasterReq"||issue=="首版不执行诊断槽：SlaveResp";}
@@ -18,18 +15,8 @@ QJsonObject SignalConfigurationStore::serialize(const Database&db,const WorkingS
     if(db->bus==Bus::Can){root["canNode"]=work.canNode;root["canDirection"]=work.canDirection;}
     QJsonArray custom;for(const auto&f:work.customFrames)custom.append(QJsonObject{{"name",f.name},{"id",QString::number(f.id)},{"length",f.length}});root["custom"]=custom;
     QJsonArray frames;for(const auto&f:definitions(db,work)){const auto d=work.frames.value(f.key);QJsonArray values;for(int i=0;i<f.fields.size();++i)values.append(SignalCodec::rawText(f.fields[i],d.appliedValues.value(i)));
-        frames.append(QJsonObject{{"key",f.key},{"payload",QString::fromLatin1(d.applied.bytes.toHex())},{"values",values},{"enabled",d.enabled},{"cycleMs",d.cycleMs}});}root["frames"]=frames;
+        frames.append(QJsonObject{{"key",f.key},{"payload",QString::fromLatin1(d.applied.bytes.toHex())},{"values",values},{"enabled",d.enabled},{"sendEnabled",d.sendEnabled},{"cycleMs",d.cycleMs}});}root["frames"]=frames;
     QJsonArray schedules;for(const auto&s:work.schedules){QJsonArray entries;for(const auto&slot:s.entries)entries.append(QJsonObject{{"frame",slot.frame},{"delayMs",slot.delayMs},{"issue",slot.issue}});schedules.append(QJsonObject{{"name",s.name},{"issue",s.issue},{"slots",entries}});}root["schedules"]=schedules;return root;
-}
-bool SignalConfigurationStore::save(const QString&path,const Database&db,const WorkingSet&work,QString&error){
-    QSaveFile file(path);if(!file.open(QIODevice::WriteOnly)){error=file.errorString();return false;}const auto bytes=QJsonDocument(serialize(db,work,QFileInfo(path).absolutePath())).toJson();
-    if(file.write(bytes)!=bytes.size()||!file.commit()){error=file.errorString();return false;}return true;
-}
-bool SignalConfigurationStore::read(const QString&path,Bus bus,ConfigurationSnapshot&snapshot,QString&error){
-    QFile file(path);if(!file.open(QIODevice::ReadOnly)){error=file.errorString();return false;}if(file.size()>8*1024*1024){error="通信配置超过 8 MiB";return false;}
-    QJsonParseError parseError;const auto json=QJsonDocument::fromJson(file.readAll(),&parseError);
-    if(parseError.error!=QJsonParseError::NoError||!json.isObject()){error="通信配置 JSON 无效："+parseError.errorString();return false;}
-    return parse(json.object(),bus,QFileInfo(path).absolutePath(),snapshot,error);
 }
 bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QString&directory,ConfigurationSnapshot&snapshot,QString&error){
     auto reject=[&](const QString&why){error=why;return false;};
@@ -59,6 +46,7 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
         QVector<RawValue> raw;for(int i=0;i<values.size();++i){if(!values[i].isString())return reject("64 位/raw 值必须使用字符串");const auto r=SignalCodec::parseRaw(f.fields[i],values[i].toString());if(!r.ok())return reject(r.error);raw.append(r.raw);d.warnings[i]=r.warning;}
         if(f.issue.isEmpty()){auto check=bytes;if(!SignalCodec::encode(f,raw,check,error))return false;if(check!=bytes)return reject("配置 payload 与信号使用值不一致");}
         const auto cycle=o["cycleMs"];if(!cycle.isDouble()||cycle.toDouble()!=cycle.toInt(-1)||cycle.toInt(-1)<0||!o["enabled"].isBool())return reject("无效周期/启用字段");
+        if(o.contains("sendEnabled")&&!o["sendEnabled"].isBool())return reject("无效发送使能");d.sendEnabled=o.value("sendEnabled").toBool(true);
         d.values=d.appliedValues=raw;d.applied.bytes=bytes;d.enabled=o["enabled"].toBool();d.cycleMs=cycle.toInt();
         // For CAN, enabled is persisted queue membership; unsupported entries remain visible, but start rejects them.
         if(bus==Bus::Lin&&d.enabled&&!f.issue.isEmpty())return reject("不支持的帧不能启用发送");

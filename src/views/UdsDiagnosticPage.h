@@ -17,16 +17,16 @@ private:
     int sourceRow()const;
     diag::Values values()const;
     ChannelViewModel *m_vm;
-    QLabel *m_summary,*m_validation,*m_conditions;
-    QPushButton *m_settings,*m_send,*m_copy;
+    QLabel *m_validation;
+    QPushButton *m_settings,*m_send,*m_copy,*m_revert;
     QLabel *m_repeatStatus;
     QTableView *m_services;
     QTableWidget *m_parameters;
     QPlainTextEdit *m_request,*m_response;
-    QCheckBox *m_raw,*m_suppress;
+    QCheckBox *m_suppress;
     QSortFilterProxyModel *m_proxy;
     QByteArray m_bytes;
-    bool m_updating=false;
+    bool m_updating=false,m_custom=false;
     QString m_error;
 };
 }

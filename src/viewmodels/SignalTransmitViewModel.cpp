@@ -8,6 +8,10 @@
 #include <cmath>
 namespace host {
 using namespace signal;
+static QString validateEnabled(Schedule schedule,const QVector<FrameDefinition>&frames,const WorkingSet&work,int bitrate){
+    const auto original=schedule.entries.size();for(int i=schedule.entries.size()-1;i>=0;--i)if(work.frames.contains(schedule.entries[i].frame)&&!work.frames.value(schedule.entries[i].frame).sendEnabled)schedule.entries.removeAt(i);
+    if(schedule.entries.isEmpty())return {};if(original!=schedule.entries.size())schedule.issue.clear();return SignalCodec::validateSchedule(schedule,frames,bitrate);
+}
 SignalTransmitViewModel::SignalTransmitViewModel(Bus bus,QObject*parent):QObject(parent),m_bus(bus){
     auto empty=QSharedPointer<DatabaseDefinition>::create();empty->bus=bus;m_database=empty;
     connect(&m_import,&QFutureWatcher<ImportResult>::finished,this,[this]{
@@ -92,6 +96,13 @@ bool SignalTransmitViewModel::editPayload(const QString&key,const QString&input,
     for(int i=0;i<f->fields.size();++i)draft.warnings[i]=SignalCodec::rangeWarning(f->fields[i],values[i]);
     if(running())emit payloadRequested({key,draft.applied,m_status.run,m_connection});changedFrame(key);return true;
 }
+bool SignalTransmitViewModel::setFrameEnabled(const QString&key,bool enabled,QString&error){
+    const auto*f=frame(key);if(!canData()||!f||(enabled&&!f->issue.isEmpty())){error="当前不能修改发送使能";return false;}
+    if(running()&&m_periodic&&enabled&&m_bus==Bus::Can&&m_work.frames[key].cycleMs<1){error="周期发送需先设置有效周期";return false;}
+    if(running()&&enabled&&m_bus==Bus::Lin){auto next=m_work;next.frames[key].sendEnabled=true;for(const auto&table:next.schedules)if(table.name==next.schedule||table.name==m_status.pending){error=validateEnabled(table,definitions(),next,m_bitrate);if(!error.isEmpty())return false;}}
+    if(m_work.frames[key].sendEnabled==enabled)return true;remember();m_work.frames[key].sendEnabled=enabled;
+    if(running())emit payloadRequested({key,m_work.frames[key].applied,m_status.run,m_connection,enabled,true});changedFrame(key);return true;
+}
 bool SignalTransmitViewModel::setCanOptions(const QString&key,bool enabled,int period,QString&error){
     if(!canStructure()||m_bus!=Bus::Can||!frame(key)||period<0){error="停止后才能修改发送选择/周期（整数 ms）";return false;}
     if(enabled&&!frame(key)->issue.isEmpty()){error=frame(key)->issue;return false;}
@@ -123,7 +134,7 @@ bool SignalTransmitViewModel::setRole(LinRole role,const QString&node,QString&er
 bool SignalTransmitViewModel::selectSchedule(const QString&name,QString&error){
     const auto it=std::find_if(m_work.schedules.begin(),m_work.schedules.end(),[&](const auto&s){return s.name==name;});
     if(it==m_work.schedules.end()||m_importing||m_externalBusy||m_status.state==RunState::Starting||m_status.state==RunState::Stopping||m_status.state==RunState::SwitchPending||m_status.state==RunState::Switching){error="调度表不存在或切换正在进行";return false;}
-    if(running()&&m_work.role!=LinRole::Monitor){error=SignalCodec::validateSchedule(*it,definitions(),m_bitrate);if(!error.isEmpty())return false;
+    if(running()){error=m_work.role==LinRole::Monitor?QString():validateEnabled(*it,definitions(),m_work,m_bitrate);if(!error.isEmpty())return false;
         m_status.state=RunState::SwitchPending;m_status.pending=name;emit scheduleRequested(m_status.run,name);
     }else {remember();m_work.schedule=name;}emit changed();return true;
 }
@@ -151,16 +162,16 @@ bool SignalTransmitViewModel::start(bool periodic,QString&error){
     plan.periodic=periodic;plan.connection=m_connection;plan.databaseRevision=m_database->sha256;
     if(m_bus==Bus::Lin){
         if(m_work.role!=LinRole::Monitor){auto it=std::find_if(plan.schedules.begin(),plan.schedules.end(),[&](const auto&s){return s.name==plan.schedule;});if(it==plan.schedules.end()){error="请选择调度表";return false;}
-            error=SignalCodec::validateSchedule(*it,definitions(),m_bitrate);if(!error.isEmpty())return false;}
+            error=validateEnabled(*it,definitions(),m_work,m_bitrate);if(!error.isEmpty())return false;}
         if((plan.role==LinRole::Master&&plan.node!=m_database->master)||(plan.role==LinRole::Slave&&(!m_database->nodes.contains(plan.node)||plan.node==m_database->master))){error="请选择有效的实际节点";return false;}
     }
     for(const auto&f:definitions()){const auto &draft=m_work.frames[f.key];if(m_bus==Bus::Can&&!draft.enabled)continue;
-        if(m_bus==Bus::Can&&(!f.issue.isEmpty()||(periodic&&draft.cycleMs<1))){error=f.issue.isEmpty()?"周期发送的每一项必须设置至少 1 ms":f.issue;return false;}
-        if(m_bus==Bus::Lin&&!f.issue.isEmpty())continue;
-        plan.items.append({f.key,f.id,f.extended,draft.applied.bytes,draft.cycleMs,draft.applied.revision,m_bus==Bus::Lin&&f.id==61&&m_work.role==LinRole::Slave?m_work.node:f.publisher,f.classicChecksum});
+        if(m_bus==Bus::Can&&draft.sendEnabled&&(!f.issue.isEmpty()||(periodic&&draft.cycleMs<1))){error=f.issue.isEmpty()?"周期发送的每一项必须设置至少 1 ms":f.issue;return false;}
+        if(!f.issue.isEmpty())continue;
+        plan.items.append({f.key,f.id,f.extended,draft.applied.bytes,draft.cycleMs,draft.applied.revision,m_bus==Bus::Lin&&f.id==61&&m_work.role==LinRole::Slave?m_work.node:f.publisher,f.classicChecksum,draft.sendEnabled});
     }
     if(m_bus==Bus::Can&&plan.items.isEmpty()){error="请先选择节点报文或右键自建报文";return false;}
-    plan.run=++m_nextRun;m_status={};m_status.state=RunState::Starting;m_status.run=plan.run;m_status.detail="启动中";emit startRequested(plan);emit changed();return true;
+    m_periodic=periodic;plan.run=++m_nextRun;m_status={};m_status.state=RunState::Starting;m_status.run=plan.run;m_status.detail="启动中";emit startRequested(plan);emit changed();return true;
 }
 void SignalTransmitViewModel::stop(){if(!running())return;m_status.state=RunState::Stopping;emit stopRequested(m_status.run);emit changed();}
 void SignalTransmitViewModel::applyStatus(RunStatus status){if(status.run!=m_status.run)return;m_status=std::move(status);if(!m_status.current.isEmpty())m_work.schedule=m_status.current;emit changed();}
@@ -172,19 +183,6 @@ void SignalTransmitViewModel::receive(BusFrameEvents events){QSet<QString> updat
 }
 QJsonObject SignalTransmitViewModel::configuration(const QString&directory)const{
     return SignalConfigurationStore::serialize(m_database,m_work,directory);
-}
-bool SignalTransmitViewModel::save(const QString&path,QString&error)const{
-    if(!SignalConfigurationStore::save(path,m_database,m_work,error))return false;
-    if(hasInvalidDraft())error="已保存最后有效值；错误草稿未保存";return true;
-}
-bool SignalTransmitViewModel::read(const QString&path,QString&error){
-    if(!canStructure()){error="停止后才能读取通信配置";return false;}
-    ConfigurationSnapshot snapshot;if(!SignalConfigurationStore::read(path,m_bus,snapshot,error))return false;
-    applyConfiguration(snapshot.database,snapshot.working);return true;
-}
-void SignalTransmitViewModel::readAsync(const QString&path){
-    if(!canStructure())return;m_importing=true;m_message="正在读取配置并校验源数据库…";emit changed();const auto bus=m_bus;
-    m_configurationLoad.setFuture(QtConcurrent::run([path,bus]{ConfigurationResult result;result.ok=SignalConfigurationStore::read(path,bus,result.snapshot,result.error);return result;}));
 }
 void SignalTransmitViewModel::readConfigurationAsync(const QJsonObject&root,const QString&directory){
     if(!canStructure())return;m_importing=true;m_message="正在恢复配置并校验源数据库…";emit changed();const auto bus=m_bus;

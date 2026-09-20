@@ -75,7 +75,7 @@ void ChannelPage::build() {
     root->addWidget(hardwareCard);root->addWidget(m_regions,1);
 
     auto download=new QFrame;download->setObjectName("downloadPanel");download->setProperty("card",true);download->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Minimum);
-    auto downloadLayout=new QHBoxLayout(download);downloadLayout->setContentsMargins(12,8,12,8);downloadLayout->setSpacing(6);
+    auto downloadLayout=new QVBoxLayout(download);downloadLayout->setContentsMargins(12,8,12,8);downloadLayout->setSpacing(6);
     m_images=new QWidget;m_images->setObjectName("imageRegion");
     auto imageGrid=new QGridLayout(m_images);imageGrid->setContentsMargins(0,0,0,0);imageGrid->setHorizontalSpacing(6);imageGrid->setVerticalSpacing(3);
     auto heading=label("下载镜像");heading->setObjectName("sectionTitle");
@@ -100,7 +100,7 @@ void ChannelPage::build() {
     // Image addresses live in the settings dialog; image selection and task controls stay visible.
     for(auto address:{m_flashAddress,m_appAddress}){address->setParent(this);address->hide();}
     imageGrid->setColumnStretch(1,1);
-    auto downloadSplit=new QSplitter(Qt::Horizontal);downloadSplit->setObjectName("downloadSplit");downloadSplit->setChildrenCollapsible(false);
+    auto downloadSplit=new QSplitter(Qt::Vertical);downloadSplit->setObjectName("downloadSplit");downloadSplit->setChildrenCollapsible(false);
     downloadLayout->addWidget(downloadSplit);downloadSplit->addWidget(m_images);
     auto taskRegion=new QWidget;taskRegion->setObjectName("taskRegion");
     auto runLayout=new QVBoxLayout(taskRegion);runLayout->setContentsMargins(8,0,0,0);runLayout->setSpacing(8);
@@ -109,7 +109,7 @@ void ChannelPage::build() {
     // keeping the title at the top and the status/actions directly below it.
     auto upperBand=new QVBoxLayout;upperBand->setSpacing(0);upperBand->addLayout(taskHeading);upperBand->addStretch();runLayout->addLayout(upperBand,1);
     m_progress=new QProgressBar;m_progress->setObjectName("downloadProgress");m_progress->setRange(0,100);m_progress->setValue(0);m_progress->setMinimumHeight(22);
-    runLayout->addWidget(m_progress);
+    auto progressRow=new QHBoxLayout;progressRow->addWidget(m_progress,1);runLayout->addLayout(progressRow);
     auto footer=new QHBoxLayout;footer->setSpacing(8);auto statusLayout=new QVBoxLayout;statusLayout->setSpacing(3);auto statusRow=new QHBoxLayout;statusRow->setSpacing(6);
     auto elapsedLabel=label("总耗时");elapsedLabel->setObjectName("muted");statusRow->addWidget(elapsedLabel);m_elapsedText=label("0.0 s");m_elapsedText->setObjectName("muted");statusRow->addWidget(m_elapsedText);
     m_task=label("等待开始");m_task->setWordWrap(true);m_task->setObjectName("taskText");statusRow->addWidget(m_task,1);statusLayout->addLayout(statusRow);
@@ -117,9 +117,9 @@ void ChannelPage::build() {
     m_error=label("");m_error->setObjectName("inlineError");m_error->setWordWrap(true);m_error->hide();statusLayout->addWidget(m_error);
     footer->addLayout(statusLayout,1);
     m_start=new QPushButton("开始下载");m_start->setObjectName("startButton");m_start->setProperty("primary",true);
-    m_cancel=new QPushButton("取消");m_cancel->setObjectName("cancelButton");footer->addWidget(m_start);footer->addWidget(m_cancel);
+    m_cancel=new QPushButton("取消");m_cancel->setObjectName("cancelButton");progressRow->addWidget(m_start);progressRow->addWidget(m_cancel);
     auto lowerBand=new QVBoxLayout;lowerBand->setSpacing(0);lowerBand->addLayout(footer);lowerBand->addStretch();runLayout->addLayout(lowerBand,1);
-    downloadSplit->addWidget(taskRegion);downloadSplit->setSizes({600,400});
+    downloadSplit->addWidget(taskRegion);downloadSplit->setSizes({150,110});
     auto tasks=new QTabWidget;m_tasks=tasks;tasks->setObjectName("taskPages");tasks->setDocumentMode(true);
     tasks->tabBar()->setObjectName("taskTabBar");
     tasks->addTab(download,"下载");

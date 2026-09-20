@@ -26,23 +26,21 @@ static QLabel *plain(const QString &s){auto l=new QLabel(s);l->setTextFormat(Qt:
 UdsDiagnosticPage::UdsDiagnosticPage(ChannelViewModel *vm,QWidget *parent):QWidget(parent),m_vm(vm){
     setObjectName("udsDiagnosticPage");auto root=new QVBoxLayout(this);root->setContentsMargins(10,6,10,6);root->setSpacing(5);
     m_settings=new QPushButton("UDS 设置…");m_settings->setObjectName("udsSettings");
-    m_summary=plain("");m_summary->setObjectName("cddSummary");
     m_repeatStatus=plain("");m_repeatStatus->setObjectName("udsRepeatStatus");
     auto split=new QSplitter(Qt::Horizontal);split->setObjectName("udsMainSplit");split->setChildrenCollapsible(false);
     auto left=new QWidget;auto leftLayout=new QVBoxLayout(left);leftLayout->setContentsMargins(0,0,0,0);leftLayout->setSpacing(4);
-    auto consoleHeading=new QHBoxLayout;auto console=plain("诊断控制台");console->setObjectName("sectionTitle");consoleHeading->addWidget(console);consoleHeading->addStretch();consoleHeading->addWidget(m_settings);leftLayout->addLayout(consoleHeading);
-    auto summary=new QHBoxLayout;summary->addWidget(m_summary);summary->addStretch();summary->addWidget(m_repeatStatus);leftLayout->addLayout(summary);
+    auto consoleHeading=new QHBoxLayout;auto console=plain("诊断控制台");console->setObjectName("sectionTitle");consoleHeading->addWidget(console);consoleHeading->addStretch();consoleHeading->addWidget(m_repeatStatus);consoleHeading->addWidget(m_settings);leftLayout->addLayout(consoleHeading);
     auto filter=new QLineEdit;filter->setObjectName("udsServiceFilter");filter->setPlaceholderText("搜索服务名称、SID、DID 或 RID");leftLayout->addWidget(filter);
     m_services=new QTableView;m_services->setObjectName("udsServiceTable");m_services->setSelectionBehavior(QAbstractItemView::SelectRows);m_services->setSelectionMode(QAbstractItemView::SingleSelection);
     m_services->setEditTriggers(QAbstractItemView::NoEditTriggers);m_services->setAlternatingRowColors(true);m_services->setSortingEnabled(true);m_services->verticalHeader()->hide();m_services->verticalHeader()->setDefaultSectionSize(25);
     m_proxy=new QSortFilterProxyModel(this);m_proxy->setSourceModel(vm->diagnosticServices());m_proxy->setFilterKeyColumn(-1);m_proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);m_services->setModel(m_proxy);
     m_services->setColumnWidth(0,60);m_services->setColumnWidth(1,230);m_services->setColumnWidth(2,140);m_services->setColumnWidth(3,70);m_services->horizontalHeader()->setStretchLastSection(true);m_services->sortByColumn(0,Qt::AscendingOrder);
-    leftLayout->addWidget(m_services,1);m_conditions=plain("");m_conditions->setWordWrap(true);m_conditions->setObjectName("udsConditions");leftLayout->addWidget(m_conditions);
+    leftLayout->addWidget(m_services,1);
     auto right=new QWidget;auto editor=new QVBoxLayout(right);editor->setContentsMargins(0,0,0,0);editor->setSpacing(4);
     auto detailSplit=new QSplitter(Qt::Vertical);detailSplit->setObjectName("udsDetailSplit");detailSplit->setChildrenCollapsible(false);editor->addWidget(detailSplit);
     auto parameterPanel=new QWidget;auto parameterLayout=new QVBoxLayout(parameterPanel);parameterLayout->setContentsMargins(0,0,0,0);parameterLayout->setSpacing(3);
     auto requestPanel=new QWidget;auto requestLayout=new QVBoxLayout(requestPanel);requestLayout->setContentsMargins(0,0,0,0);requestLayout->setSpacing(3);
-    auto options=new QHBoxLayout;auto parameterHeading=plain("请求参数");parameterHeading->setObjectName("sectionTitle");options->addWidget(parameterHeading,1);m_raw=new QCheckBox("手动 HEX");m_raw->setObjectName("udsRawMode");m_suppress=new QCheckBox("抑制正响应");m_suppress->setObjectName("udsSuppressResponse");options->addWidget(m_suppress);options->addWidget(m_raw);parameterLayout->addLayout(options);
+    auto options=new QHBoxLayout;auto parameterHeading=plain("请求参数");parameterHeading->setObjectName("sectionTitle");options->addWidget(parameterHeading,1);m_suppress=new QCheckBox("抑制正响应");m_suppress->setObjectName("udsSuppressResponse");options->addWidget(m_suppress);parameterLayout->addLayout(options);
     m_parameters=new QTableWidget;m_parameters->setObjectName("udsParameterTable");m_parameters->setColumnCount(3);m_parameters->setHorizontalHeaderLabels({"字段","输入值","类型 / 约束"});
     m_parameters->verticalHeader()->hide();m_parameters->setColumnWidth(0,150);m_parameters->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Stretch);m_parameters->horizontalHeader()->setSectionResizeMode(2,QHeaderView::Stretch);
     m_parameters->setMinimumHeight(60);parameterLayout->addWidget(m_parameters,1);
@@ -50,7 +48,7 @@ UdsDiagnosticPage::UdsDiagnosticPage(ChannelViewModel *vm,QWidget *parent):QWidg
     m_request=new QPlainTextEdit;m_request->setObjectName("udsCommand");m_request->setReadOnly(true);m_request->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));m_request->setMinimumHeight(40);requestLayout->addWidget(m_request,1);
     m_validation=plain("");m_validation->setObjectName("udsValidation");m_validation->setWordWrap(true);requestLayout->addWidget(m_validation);
     auto actions=new QHBoxLayout;m_copy=new QPushButton("复制指令");m_copy->setObjectName("copyUdsCommand");m_send=new QPushButton("发送");m_send->setObjectName("sendUdsRequest");m_send->setProperty("primary",true);
-    actions->addWidget(m_copy);actions->addStretch();actions->addWidget(m_send);requestLayout->addLayout(actions);
+    actions->addWidget(m_copy);actions->addStretch();actions->addWidget(m_send);m_revert=new QPushButton("撤销");m_revert->setObjectName("revertUdsCommand");actions->addWidget(m_revert);requestLayout->addLayout(actions);
     m_response=new QPlainTextEdit;m_response->setObjectName("udsResponse");m_response->setReadOnly(true);m_response->setMaximumBlockCount(1000);m_response->setPlaceholderText("请求结果、响应 HEX 和 CDD 字段解析");m_response->setMinimumHeight(55);
     auto responsePanel=new QWidget;auto responseLayout=new QVBoxLayout(responsePanel);responseLayout->setContentsMargins(0,0,0,0);responseLayout->setSpacing(3);auto responseHeading=plain("解析结果");responseHeading->setObjectName("sectionTitle");responseHeading->setAlignment(Qt::AlignLeft|Qt::AlignVCenter);responseLayout->addWidget(responseHeading);responseLayout->addWidget(m_response,1);
     detailSplit->addWidget(parameterPanel);detailSplit->addWidget(requestPanel);detailSplit->addWidget(responsePanel);detailSplit->setSizes({130,115,100});
@@ -58,9 +56,9 @@ UdsDiagnosticPage::UdsDiagnosticPage(ChannelViewModel *vm,QWidget *parent):QWidg
     connect(filter,&QLineEdit::textChanged,m_proxy,&QSortFilterProxyModel::setFilterFixedString);
     connect(m_settings,&QPushButton::clicked,this,[this]{editUdsSettings(m_vm,this);});
     connect(m_services->selectionModel(),&QItemSelectionModel::currentRowChanged,this,[this]{selectService();});
-    connect(m_raw,&QCheckBox::toggled,this,[this](bool raw){m_request->setReadOnly(!raw);if(raw)m_suppress->setChecked(false);updateRequest();});
     connect(m_suppress,&QCheckBox::toggled,this,&UdsDiagnosticPage::updateRequest);
-    connect(m_request,&QPlainTextEdit::textChanged,this,[this]{if(!m_updating&&m_raw->isChecked())updateRequest();});
+    connect(m_request,&QPlainTextEdit::textChanged,this,[this]{if(!m_updating){m_custom=true;updateRequest();}});
+    connect(m_revert,&QPushButton::clicked,this,[this]{m_custom=false;updateRequest();});
     connect(m_copy,&QPushButton::clicked,this,[this]{if(!m_bytes.isEmpty()&&m_error.isEmpty())QApplication::clipboard()->setText(QString::fromLatin1(m_bytes.toHex(' ')).toUpper());});
     connect(m_send,&QPushButton::clicked,this,[this]{
         if(m_vm->diagnosticBusy()){m_vm->cancel();return;}
@@ -74,15 +72,13 @@ UdsDiagnosticPage::UdsDiagnosticPage(ChannelViewModel *vm,QWidget *parent):QWidg
 }
 int UdsDiagnosticPage::sourceRow()const {auto i=m_services->currentIndex();return i.isValid()?m_proxy->mapToSource(i).row():-1;}
 void UdsDiagnosticPage::refreshDatabase(){
-    m_summary->setText(QString("%1 · %2 项").arg(m_vm->diagnosticDatabase().version).arg(m_vm->diagnosticServices()->rowCount()));
     if(m_proxy->rowCount())m_services->selectRow(0);selectService();
 }
 void UdsDiagnosticPage::selectService(){
-    QScopedValueRollback<bool> guard(m_updating,true);QSignalBlocker raw(m_raw),suppress(m_suppress);
-    m_raw->setChecked(false);m_request->setReadOnly(true);m_suppress->setChecked(false);m_parameters->setRowCount(0);m_request->clear();
+    QScopedValueRollback<bool> guard(m_updating,true);QSignalBlocker suppress(m_suppress);
+    m_custom=false;m_suppress->setChecked(false);m_parameters->setRowCount(0);m_request->clear();
     auto s=m_vm->diagnosticServices()->service(sourceRow());bool supports=false;
     if(s){
-        m_conditions->setText(s->name+"\n"+(s->conditions.isEmpty()?QString("CDD 未限定执行状态"):QString("CDD 允许执行状态：%1（会话和安全访问需先满足）").arg(s->conditions)));
         for(const auto &f:s->request.fields){
             supports|=f.suppressible;if(f.constant)continue;const int row=m_parameters->rowCount();m_parameters->insertRow(row);
             auto name=new QTableWidgetItem(f.name);name->setToolTip(f.name);name->setData(Qt::UserRole,f.key);name->setFlags(name->flags()&~Qt::ItemIsEditable);m_parameters->setItem(row,0,name);
@@ -98,7 +94,7 @@ void UdsDiagnosticPage::selectService(){
             }
             auto constraint=new QTableWidgetItem(f.encoding+" · "+f.constraint());constraint->setFlags(constraint->flags()&~Qt::ItemIsEditable);constraint->setToolTip(constraint->text());m_parameters->setItem(row,2,constraint);
         }
-    }else m_conditions->clear();
+    }
     m_suppress->setVisible(supports);m_updating=false;updateRequest();
 }
 diag::Values UdsDiagnosticPage::values()const{
@@ -110,14 +106,14 @@ diag::Values UdsDiagnosticPage::values()const{
 }
 void UdsDiagnosticPage::updateRequest(){
     if(m_updating)return;QScopedValueRollback<bool> guard(m_updating,true);m_bytes.clear();m_error.clear();
-    const auto preview=DiagnosticDraftViewModel::preview(m_vm->diagnosticServices()->service(sourceRow()),values(),m_raw->isChecked(),m_request->toPlainText(),m_suppress->isChecked());
-    m_bytes=preview.bytes;m_error=preview.error;if(!m_raw->isChecked())m_request->setPlainText(preview.text);
+    const auto preview=DiagnosticDraftViewModel::preview(m_vm->diagnosticServices()->service(sourceRow()),values(),m_custom,m_request->toPlainText(),m_suppress->isChecked());
+    m_bytes=preview.bytes;m_error=preview.error;if(!m_custom)m_request->setPlainText(preview.text);
     render();
 }
 void UdsDiagnosticPage::render(){
-    const bool idle=!m_vm->busy();for(auto w:QList<QWidget*>{m_settings,m_services,m_raw})w->setEnabled(idle);
+    const bool idle=!m_vm->busy();for(auto w:QList<QWidget*>{m_settings,m_services})w->setEnabled(idle);
     m_repeatStatus->setText(m_vm->diagnosticRepeatStatus());m_repeatStatus->setToolTip(m_repeatStatus->text());
-    m_parameters->setEnabled(idle&&!m_raw->isChecked());m_request->setReadOnly(!idle||!m_raw->isChecked());m_suppress->setEnabled(idle&&!m_raw->isChecked());
+    m_parameters->setEnabled(idle&&!m_custom);m_request->setReadOnly(!idle);m_revert->setEnabled(idle&&m_custom);m_suppress->setEnabled(idle&&!m_custom);
     m_send->setText(m_vm->diagnosticBusy()?"取消发送":"发送");
     auto hint=m_vm->diagnosticHint();auto s=m_vm->diagnosticServices()->service(sourceRow());
     m_send->setEnabled(m_vm->diagnosticBusy()||(m_error.isEmpty()&&!m_bytes.isEmpty()&&hint.isEmpty()&&s&&s->physical));m_copy->setEnabled(m_error.isEmpty()&&!m_bytes.isEmpty());

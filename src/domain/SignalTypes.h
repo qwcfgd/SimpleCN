@@ -74,7 +74,7 @@ struct TxDraft {
     QString frameInput,frameError;
     AppliedPayload applied;
     LastRxState rx;
-    bool enabled=false;int cycleMs=0;
+    bool enabled=false,sendEnabled=true;int cycleMs=0;
 };
 struct WorkingSet {
     QString canNode,canDirection="Tx";
@@ -88,7 +88,7 @@ struct ConfigurationResult { ConfigurationSnapshot snapshot;QString error;bool o
 struct TxItem {
     QString key;quint32 id=0;bool extended=false;
     QByteArray payload;int periodMs=0;quint64 revision=0;
-    QString publisher;bool classicChecksum=false;
+    QString publisher;bool classicChecksum=false;bool enabled=true;
 };
 struct TxPlan {
     Bus bus=Bus::Can;LinRole role=LinRole::Master;
@@ -96,7 +96,7 @@ struct TxPlan {
     quint64 run=0,connection=0;QString databaseRevision;
     QVector<TxItem> items;QVector<Schedule> schedules;
 };
-struct PayloadUpdate { QString key;AppliedPayload payload;quint64 run=0,connection=0; };
+struct PayloadUpdate { QString key;AppliedPayload payload;quint64 run=0,connection=0;bool enabled=true,enableChanged=false; };
 struct BusFrameEvent {
     Bus bus=Bus::Can;quint32 id=0;bool extended=false;
     QByteArray bytes;bool valid=true;

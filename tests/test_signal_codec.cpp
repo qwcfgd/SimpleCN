@@ -17,8 +17,8 @@ public:
     bool stop(QString&)override{calls<<"stop";publishers.clear();return true;}
     bool install(const QVector<TxItem>&,const QSet<QString>&set,QString&e)override{calls<<"install";if(failInstall){e="injected install failure";return false;}publishers=set;return true;}
     bool start(const Schedule&s,const QVector<TxItem>&,QString&)override{calls<<"start:"+s.name;current=s.name;return true;}
-    bool requestBoundary(QString&)override{calls<<"requestBoundary";return true;}
-    bool boundary(bool&b,QString&)override{calls<<"boundary";b=reached;return true;}
+    bool requestBoundary(QString&,bool round=true)override{calls<<(round?"requestRoundBoundary":"requestFrameBoundary");return true;}
+    bool boundary(bool&b,QString&,bool=true)override{calls<<"boundary";b=reached;return true;}
     bool update(const TxItem&,QString&e)override{calls<<"update";if(failUpdate){e="injected update failure";return false;}return true;}
 };
 class SignalCodecTest:public QObject {
@@ -125,25 +125,57 @@ private slots:
         device.reached=true;QVERIFY(runner.tick(10000000,error));QCOMPARE(device.current,QString("Alternate"));QVERIFY(runner.status().state==RunState::Running);QCOMPARE(device.calls.last(),QString("start:Alternate"));
         QVERIFY(runner.switchTo("Main",10000001,error));QVERIFY(runner.stop(error));QVERIFY(runner.tick(10000002,error));QVERIFY(runner.status().state==RunState::Stopped);
     }
-    void simulatedMasterFinishesLastSlotDelay(){LinScheduleRunner runner;QString error;auto plan=linPlan();QVector<quint32>events;runner.event=[&](const BusFrameEvent&e){events.append(e.id);};
+    void simulatedMasterSwitchesAfterCurrentFrame(){LinScheduleRunner runner;QString error;auto plan=linPlan();QVector<quint32>events;runner.event=[&](const BusFrameEvent&e){events.append(e.id);};
         QVERIFY(runner.start(plan,19200,0,error));QVERIFY(runner.tick(0,error));QCOMPARE(events,QVector<quint32>{0x10});QVERIFY(runner.switchTo("Alternate",1,error));
-        QVERIFY(runner.tick(10000,error));QCOMPARE(events.last(),quint32(0x11));QCOMPARE(runner.status().current,QString("Main"));QVERIFY(runner.tick(19999,error));QCOMPARE(events.size(),2);
-        QVERIFY(runner.tick(20000,error));QCOMPARE(runner.status().current,QString("Alternate"));QCOMPARE(events.last(),quint32(0x12));
+        QVERIFY(runner.tick(1000,error));QCOMPARE(events.size(),1);QCOMPARE(runner.status().current,QString("Main"));
+        QVERIFY(runner.tick(5000,error));QCOMPARE(runner.status().current,QString("Alternate"));QCOMPARE(events,QVector<quint32>({0x10,0x12}));
     }
     void hardwareSwitchDrainsOldEventsAndMeasuresInterval(){RecordingLin device;LinScheduleRunner runner(&device);QString error;auto plan=linPlan();QStringList notes;runner.notice=[&](const QString&s){notes.append(s);};
         QVERIFY(runner.start(plan,19200,0,error));BusFrameEvent old;old.bus=Bus::Lin;old.id=0x10;old.source=EventSource::HardwareEcho;old.hardwareUs=1000;runner.observe(old);QCOMPARE(runner.status().sent.value(frameKey(Bus::Lin,0x10)),quint64(1));
         QVERIFY(runner.switchTo("Alternate",1,error));device.reached=true;bool drained=false;runner.drainBeforeSwitch=[&]{return drained;};QVERIFY(runner.tick(2,error));QCOMPARE(device.current,QString("Main"));
-        old.id=0x11;old.source=EventSource::Received;old.hardwareUs=11000;runner.observe(old);drained=true;QVERIFY(runner.tick(3,error));QCOMPARE(device.current,QString("Alternate"));
+        old.id=0x11;old.source=EventSource::Received;old.hardwareUs=11000;runner.observe(old);drained=true;QVERIFY(runner.tick(10000,error));QCOMPARE(device.current,QString("Alternate"));
         BusFrameEvent first=old;first.id=0x12;first.hardwareUs=25000;runner.observe(first);QVERIFY(notes.last().contains("14.000 ms"));QVERIFY(notes.last().contains("硬件时间戳"));
     }
     void slaveWhitelistSwitchAndMonitor(){LinScheduleRunner sim;QString error;auto plan=linPlan(LinRole::Slave);QVERIFY(sim.start(plan,19200,0,error));QVERIFY(!sim.simulatedHeader(0x11).isEmpty());QVERIFY(sim.simulatedHeader(0x12).isEmpty());QVERIFY(sim.simulatedHeader(0x10).isEmpty());
-        QVERIFY(sim.switchTo("Alternate",10,error));QVERIFY(sim.simulatedHeader(0x11).isEmpty());QVERIFY(!sim.simulatedHeader(0x12).isEmpty());QVERIFY(sim.stop(error));QVERIFY(sim.simulatedHeader(0x12).isEmpty());
-        RecordingLin device;LinScheduleRunner runner(&device);QVERIFY(runner.start(plan,19200,0,error));device.calls.clear();QVERIFY(runner.switchTo("Alternate",100,error));QCOMPARE(device.calls,QStringList({"stop","install"}));QCOMPARE(device.publishers,QSet<QString>{frameKey(Bus::Lin,0x12)});
-        device.failInstall=true;QVERIFY(!runner.switchTo("Main",200,error));QVERIFY(device.publishers.isEmpty());QVERIFY(runner.status().state==RunState::Faulted);
+        QVERIFY(sim.switchTo("Alternate",10,error));QVERIFY(sim.tick(10,error));QVERIFY(sim.simulatedHeader(0x11).isEmpty());QVERIFY(!sim.simulatedHeader(0x12).isEmpty());QVERIFY(sim.stop(error));QVERIFY(sim.simulatedHeader(0x12).isEmpty());
+        RecordingLin device;LinScheduleRunner runner(&device);QVERIFY(runner.start(plan,19200,0,error));device.calls.clear();QVERIFY(runner.switchTo("Alternate",100,error));QVERIFY(runner.tick(10000,error));QCOMPARE(device.calls,QStringList({"stop","install"}));QCOMPARE(device.publishers,QSet<QString>{frameKey(Bus::Lin,0x12)});
+        device.failInstall=true;QVERIFY(runner.switchTo("Main",20000,error));QVERIFY(!runner.tick(30000,error));QVERIFY(device.publishers.isEmpty());QVERIFY(runner.status().state==RunState::Faulted);
         device.failInstall=false;plan.role=LinRole::Monitor;QVERIFY(runner.start(plan,19200,300,error));QVERIFY(device.publishers.isEmpty());QVERIFY(runner.simulatedHeader(0x12).isEmpty());
     }
     void nonPublisherUpdatesNeverReachHardware(){RecordingLin device;LinScheduleRunner runner(&device);QString error;auto plan=linPlan(LinRole::Slave);QVERIFY(runner.start(plan,19200,0,error));device.calls.clear();
         QVERIFY(runner.update(frameKey(Bus::Lin,0x12),{QByteArray(1,'x'),2},error));QVERIFY(device.calls.isEmpty());QVERIFY(runner.update(frameKey(Bus::Lin,0x11),{QByteArray(2,'y'),2},error));QCOMPARE(device.calls,QStringList{"update"});
+    }
+    void canEnableUpdatesWaitForRoundAndCanResumeFromEmpty(){
+        CanTxScheduler scheduler;QVector<TxItem> items{{"a",1,false,QByteArray(1,0),10,1,{},false,true},{"b",2,false,QByteArray(1,0),10,1,{},false,true},{"c",3,false,QByteArray(1,0),10,1,{},false,false}};
+        QStringList sent;auto send=[&](const TxItem&i,QString&){sent<<i.key;return true;};scheduler.start(items,0);
+        QCOMPARE(scheduler.pump(0,send,1),1);scheduler.setEnabled("b",false);scheduler.setEnabled("c",true);
+        QCOMPARE(scheduler.pump(0,send,1),1);QCOMPARE(sent,QStringList({"a","b"}));
+        scheduler.pump(10000,send);QCOMPARE(sent,QStringList({"a","b","a","c"}));
+        scheduler.setEnabled("a",false);scheduler.setEnabled("c",false);scheduler.pump(20000,send);QCOMPARE(sent.size(),4);QVERIFY(scheduler.running());
+        scheduler.setEnabled("b",true);scheduler.pump(30000,send);scheduler.pump(40000,send);QCOMPARE(sent.last(),QString("b"));QCOMPARE(sent.size(),5);
+        scheduler.stop();QVERIFY(!scheduler.running());
+    }
+    void linEnableUpdatesWaitForFullRound(){
+        LinScheduleRunner runner;auto plan=linPlan();QString error;QVector<quint32> ids;runner.event=[&](const BusFrameEvent&e){ids<<e.id;};
+        QVERIFY(runner.start(plan,19200,0,error));QVERIFY(runner.tick(0,error));QVERIFY(runner.setEnabled(frameKey(Bus::Lin,0x11),false,1,error));
+        QVERIFY(runner.tick(10000,error));QCOMPARE(ids,QVector<quint32>({0x10,0x11}));QVERIFY(runner.tick(20000,error));QCOMPARE(ids.last(),quint32(0x10));
+        QVERIFY(runner.setEnabled(frameKey(Bus::Lin,0x10),false,20001,error));QVERIFY(runner.tick(30000,error));QCOMPARE(ids.size(),3);QCOMPARE(runner.status().state,RunState::Running);
+        QVERIFY(runner.setEnabled(frameKey(Bus::Lin,0x11),true,30001,error));QVERIFY(runner.tick(31000,error));QCOMPARE(ids.last(),quint32(0x11));QVERIFY(runner.stop(error));
+    }
+    void hardwareEnableUsesRoundAndManualSwitchUsesFrame(){
+        RecordingLin device;LinScheduleRunner runner(&device);QString error;auto plan=linPlan();QVERIFY(runner.start(plan,19200,0,error));
+        QVERIFY(runner.setEnabled(frameKey(Bus::Lin,0x10),false,1,error));QVERIFY(device.calls.contains("requestRoundBoundary"));QVERIFY(device.publishers.contains(frameKey(Bus::Lin,0x10)));
+        QVERIFY(runner.tick(10000,error));QVERIFY(device.publishers.contains(frameKey(Bus::Lin,0x10)));device.reached=true;QVERIFY(runner.tick(20000,error));QVERIFY(!device.publishers.contains(frameKey(Bus::Lin,0x10)));
+        QVERIFY(runner.switchTo("Alternate",20001,error));QVERIFY(device.calls.contains("requestFrameBoundary"));QVERIFY(runner.tick(20002,error));QCOMPARE(device.current,QString("Main"));QVERIFY(runner.tick(30000,error));QCOMPARE(device.current,QString("Alternate"));
+    }
+    void slaveEnableWaitsForObservedRound(){
+        LinScheduleRunner runner;QString error;auto plan=linPlan(LinRole::Slave);QVERIFY(runner.start(plan,19200,0,error));
+        QVERIFY(runner.setEnabled(frameKey(Bus::Lin,0x11),false,1,error));QVERIFY(runner.tick(100000,error));QVERIFY(!runner.simulatedHeader(0x11).isEmpty());
+        BusFrameEvent e;e.bus=Bus::Lin;e.id=0x10;runner.observe(e);QVERIFY(runner.tick(100001,error));QVERIFY(!runner.simulatedHeader(0x11).isEmpty());
+        e.id=0x11;runner.observe(e);QVERIFY(runner.tick(100002,error));QVERIFY(runner.simulatedHeader(0x11).isEmpty());
+    }
+    void monitorDoesNotRequireExecutableSchedule(){RecordingLin device;LinScheduleRunner runner(&device);QString error;auto plan=linPlan(LinRole::Monitor);plan.schedule.clear();QVERIFY(runner.start(plan,19200,0,error));QVERIFY(device.publishers.isEmpty());
+        QVERIFY(runner.switchTo("Fractional",1,error));QVERIFY(runner.tick(10000,error));QCOMPARE(runner.status().current,QString("Fractional"));QVERIFY(device.publishers.isEmpty());QVERIFY(!device.calls.contains("start:Fractional"));
     }
     void coordinatorIsPerChannel(){host::OperationCoordinator a,b;using Task=host::OperationCoordinator::Task;QVERIFY(a.acquire(Task::Signal));QVERIFY(!a.acquire(Task::Diagnostic));QVERIFY(b.acquire(Task::Diagnostic));a.release(Task::Scan);QVERIFY(!a.permits(Task::Download));a.release(Task::Signal);QVERIFY(a.acquire(Task::Download));}
 };

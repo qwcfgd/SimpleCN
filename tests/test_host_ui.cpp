@@ -450,6 +450,9 @@ private slots:
             QVERIFY2(window.rect().contains(rect),qPrintable(name+" outside window"));
             QVERIFY2(w->visibleRegion().contains(w->rect()),qPrintable(name+" clipped"));
         }
+        auto*images=page->findChild<QWidget*>("imageRegion");auto*task=page->findChild<QWidget*>("taskRegion");
+        QVERIFY(images->mapTo(page,QPoint()).y()+images->height()<=task->mapTo(page,QPoint()).y());
+        const auto*progress=page->findChild<QWidget*>("downloadProgress");for(const auto*name:{"startButton","cancelButton"}){const auto*button=page->findChild<QWidget*>(name);QVERIFY(qAbs(button->mapTo(page,button->rect().center()).y()-progress->mapTo(page,progress->rect().center()).y())<=2);}
         QVERIFY(window.grab().save(artifactDir()+"/bootloader-1366.png"));
         QVERIFY2(page->findChild<QTableView*>("frameTable")->viewport()->height()>=24,
             qPrintable(QString("frame table %1 / viewport %2 / download %3").arg(page->findChild<QTableView*>("frameTable")->height()).arg(page->findChild<QTableView*>("frameTable")->viewport()->height()).arg(page->findChild<QWidget*>("downloadPanel")->height())));
