@@ -75,6 +75,8 @@ ImportResult DatabaseImporter::dbc(const QByteArray&bytes,const QString&path){
         FrameDefinition f;const auto encoded=m.Id();f.extended=(encoded&0x80000000ULL)!=0;f.id=quint32(encoded&0x1fffffffULL);
         if(encoded>0xffffffffULL||(!f.extended&&encoded>0x7ff)||((encoded&0x60000000ULL)!=0))return {{},"DBC CAN ID 无效："+QString::number(encoded)};
         f.key=frameKey(Bus::Can,f.id,f.extended);f.name=qs(m.Name());f.publisher=qs(m.Transmitter());f.comment=qs(m.Comment());
+        if(!f.publisher.isEmpty())f.transmitters.append(f.publisher);
+        for(const auto&node:m.MessageTransmitters())if(!f.transmitters.contains(qs(node)))f.transmitters.append(qs(node));
         if(m.MessageSize()>64)return {{},"DBC 帧长度无效："+f.name};f.length=int(m.MessageSize());
         if(keys.contains(f.key)||names.contains(f.name))return {{},"DBC 重复帧 ID/名称："+f.name};keys.insert(f.key);names.insert(f.name);
         for(const auto&a:m.AttributeValues())f.attributes[qs(a.Name())]=attribute(a);

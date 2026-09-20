@@ -12,6 +12,9 @@ public:
     const signal::WorkingSet &working()const{return m_work;}
     const signal::RunStatus &status()const{return m_status;}
     QVector<signal::FrameDefinition> definitions()const;
+    QVector<signal::FrameDefinition> queuedDefinitions()const;
+    bool selectCanNode(const QString&,const QString &direction,QString&error);
+    bool removeQueuedFrame(const QString&,QString&error);
     const signal::FrameDefinition *frame(const QString&)const;
     bool running()const{return signal::active(m_status.state);}
     bool canStructure()const{return !running()&&!m_externalBusy&&!m_importing;}

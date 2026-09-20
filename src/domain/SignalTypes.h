@@ -32,6 +32,7 @@ struct SignalDefinition {
 };
 struct FrameDefinition {
     QString key,name,publisher,comment,issue;
+    QStringList transmitters;
     quint32 id=0;int length=0,line=0,cycleMs=0;
     bool extended=false,custom=false,classicChecksum=false;
     QVector<SignalDefinition> fields;
@@ -76,6 +77,7 @@ struct TxDraft {
     bool enabled=false;int cycleMs=0;
 };
 struct WorkingSet {
+    QString canNode,canDirection="Tx";
     QVector<FrameDefinition> customFrames;
     QMap<QString,TxDraft> frames;
     QVector<Schedule> schedules;

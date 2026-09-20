@@ -14,6 +14,7 @@ QJsonObject SignalConfigurationStore::serialize(const Database&db,const WorkingS
     QJsonObject root{{"schema","signal-communication"},{"version",1},{"bus",db->bus==Bus::Can?"CAN":"LIN"}};
     auto path=db->path;if(!directory.isEmpty()&&!path.isEmpty())path=QDir(directory).relativeFilePath(path);root["source"]=path;root["sha256"]=db->sha256;
     root["role"]=int(work.role);root["node"]=work.node;root["schedule"]=work.schedule;
+    if(db->bus==Bus::Can){root["canNode"]=work.canNode;root["canDirection"]=work.canDirection;}
     QJsonArray custom;for(const auto&f:work.customFrames)custom.append(QJsonObject{{"name",f.name},{"id",QString::number(f.id)},{"length",f.length}});root["custom"]=custom;
     QJsonArray frames;for(const auto&f:definitions(db,work)){const auto d=work.frames.value(f.key);QJsonArray values;for(int i=0;i<f.fields.size();++i)values.append(SignalCodec::rawText(f.fields[i],d.appliedValues.value(i)));
         frames.append(QJsonObject{{"key",f.key},{"payload",QString::fromLatin1(d.applied.bytes.toHex())},{"values",values},{"enabled",d.enabled},{"cycleMs",d.cycleMs}});}root["frames"]=frames;
@@ -57,7 +58,9 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
         QVector<RawValue> raw;for(int i=0;i<values.size();++i){if(!values[i].isString())return reject("64 位/raw 值必须使用字符串");const auto r=SignalCodec::parseRaw(f.fields[i],values[i].toString());if(!r.ok())return reject(r.error);raw.append(r.raw);d.warnings[i]=r.warning;}
         if(f.issue.isEmpty()){auto check=bytes;if(!SignalCodec::encode(f,raw,check,error))return false;if(check!=bytes)return reject("配置 payload 与信号使用值不一致");}
         const auto cycle=o["cycleMs"];if(!cycle.isDouble()||cycle.toDouble()!=cycle.toInt(-1)||cycle.toInt(-1)<0||!o["enabled"].isBool())return reject("无效周期/启用字段");
-        d.values=d.appliedValues=raw;d.applied.bytes=bytes;d.enabled=o["enabled"].toBool();d.cycleMs=cycle.toInt();if(d.enabled&&!f.issue.isEmpty())return reject("不支持的帧不能启用发送");
+        d.values=d.appliedValues=raw;d.applied.bytes=bytes;d.enabled=o["enabled"].toBool();d.cycleMs=cycle.toInt();
+        // For CAN, enabled is persisted queue membership; unsupported entries remain visible, but start rejects them.
+        if(bus==Bus::Lin&&d.enabled&&!f.issue.isEmpty())return reject("不支持的帧不能启用发送");
     }
     if(seen.size()!=all.size())return reject("配置帧清单不完整");
     if(bus==Bus::Lin){
@@ -79,6 +82,13 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
         work.role=LinRole(root["role"].toInt());work.node=root["node"].toString();
         if((work.role==LinRole::Master&&work.node!=next.database->master)||(work.role==LinRole::Slave&&(!next.database->nodes.contains(work.node)||work.node==next.database->master)))return reject("角色与实际节点不匹配");
     }else if(!root["schedules"].toArray().isEmpty())return reject("CAN 配置不能包含 LIN 调度表");
+    if(bus==Bus::Can){
+        if(root.contains("canNode")&&!root["canNode"].isString())return reject("无效 DBC 节点");
+        work.canNode=root["canNode"].toString();work.canDirection=root.value("canDirection").toString("Tx");
+        if((!work.canNode.isEmpty()&&!next.database->nodes.contains(work.canNode))||
+           (root.contains("canDirection")&&!root["canDirection"].isString())||
+           (work.canDirection!="Tx"&&work.canDirection!="Rx"&&work.canDirection!="Tx/Rx"))return reject("无效 DBC 节点或方向");
+    }
     snapshot=next;return true;
 }
 }

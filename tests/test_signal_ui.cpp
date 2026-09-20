@@ -13,6 +13,8 @@
 #include <QTableView>
 #include <QLabel>
 #include <QDialog>
+#include <QMenu>
+#include <QDialogButtonBox>
 #include <QTreeView>
 #include <QFontDatabase>
 #include "viewmodels/SignalTransmitViewModel.h"
@@ -42,8 +44,9 @@ private slots:
         QCOMPARE(s->database()->sha256,QString::fromLatin1(QCryptographicHash::hash(original,QCryptographicHash::Sha256).toHex()));
         QSet<QString> keys;int fields=0;for(const auto&f:s->definitions()){QVERIFY(!keys.contains(f.key));keys.insert(f.key);fields+=f.fields.size();}
         QVERIFY(fields>0);QVERIFY(page.findChild<QTreeView*>("signalTree")->model()->rowCount()>0);
-        auto*plan=page.findChild<QTableView*>("signalPlanTable");QVERIFY(plan->model()->rowCount()>0);QVERIFY(plan->currentIndex().isValid());
-        QVERIFY(!page.findChild<QLineEdit*>("signalFrameRaw")->text().isEmpty());
+        auto*plan=page.findChild<QTableView*>("signalPlanTable");if(!lin){QCOMPARE(plan->model()->rowCount(),0);auto*node=page.findChild<QComboBox*>("signalCanNode");node->setCurrentIndex(1);}
+        QVERIFY(plan->model()->rowCount()>0);QVERIFY(plan->currentIndex().isValid());
+        QVERIFY(!page.findChild<QLineEdit*>("signalFrameRaw"));QVERIFY(!plan->model()->index(0,lin?4:5).data().toString().isEmpty());
         QTest::qWait(60);const auto artifact=QCoreApplication::applicationDirPath()+"/artifacts/testsrc-"+ext;
         QVERIFY(page.grab().save(artifact+".png"));
         auto*dialog=page.findChild<QDialog*>("signalSettingsDialog");QVERIFY(dialog);bool captured=false;
@@ -62,6 +65,61 @@ private slots:
         qInfo()<<ext<<"frames"<<s->definitions().size()<<"signals"<<fields<<"schedules"<<s->working().schedules.size();
     }
     void initTestCase(){QApplication::setStyle("Fusion");QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf");QApplication::setFont(QFont("Microsoft YaHei",9));QDir().mkpath(QCoreApplication::applicationDirPath()+"/artifacts");}
+    void canNodeDirectionsAndQueuePersistence(){
+        SignalTransmitViewModel vm(Bus::Can);QString error;CanTxTableModel table(&vm);QVERIFY(vm.importFile(fixture(),error));QCOMPARE(table.rowCount(),0);
+        QVERIFY(vm.putCustom({},"Keep",0x600,2,10,error));QCOMPARE(table.rowCount(),1);
+        for(const auto&node:vm.database()->nodes)for(const auto&direction:QStringList{"Tx","Rx","Tx/Rx"}){
+            QVERIFY(vm.selectCanNode(node,direction,error));QSet<QString> expected{key(0x600)};
+            for(const auto&f:vm.database()->frames){bool rx=false;for(const auto&field:f.fields)rx|=field.receivers.contains(node);
+                if((direction!="Rx"&&f.publisher==node)||(direction!="Tx"&&rx))expected.insert(f.key);}
+            QSet<QString> actual;for(int i=0;i<table.rowCount();++i)actual.insert(table.key(i));QCOMPARE(actual,expected);
+            QVERIFY(vm.selectCanNode(node,direction,error));QCOMPARE(table.rowCount(),expected.size());
+        }
+        QVERIFY(vm.selectCanNode("Tester","Tx",error));const auto removed=table.key(0);const auto bytes=vm.working().frames[removed].applied.bytes;
+        QVERIFY(vm.removeQueuedFrame(removed,error));QVERIFY(vm.frame(removed));QVERIFY(!vm.working().frames[removed].enabled);QCOMPARE(vm.working().frames[removed].applied.bytes,bytes);
+        const auto saved=vm.configuration();SignalTransmitViewModel copy(Bus::Can);QVERIFY2(copy.readConfiguration(saved,{},error),qPrintable(error));QCOMPARE(copy.configuration(),saved);
+        vm.back();QVERIFY(vm.working().frames[removed].enabled);vm.restore();QCOMPARE(table.rowCount(),0);
+        auto bad=saved;bad["canDirection"]="bad";QVERIFY(!copy.readConfiguration(bad,{},error));QCOMPARE(copy.configuration(),saved);
+        bad=saved;bad["canNode"]="missing";QVERIFY(!copy.readConfiguration(bad,{},error));QCOMPARE(copy.configuration(),saved);
+        auto legacy=saved;legacy.remove("canNode");legacy.remove("canDirection");QVERIFY(copy.readConfiguration(legacy,{},error));QVERIFY(!copy.working().frames[removed].enabled);QVERIFY(copy.working().frames[key(0x600)].enabled);
+    }
+    void canAdditionalTransmittersAndUnsupportedQueue(){
+        QFile source(fixture());QVERIFY(source.open(QIODevice::ReadOnly));auto data=source.readAll();data.insert(data.indexOf("CM_ BO_"),"BO_TX_BU_ 291 : Tester,ECU;\n\n");
+        QTemporaryDir dir;const auto path=dir.filePath("multi.dbc");QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));QCOMPARE(file.write(data),qint64(data.size()));file.close();
+        SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY2(vm.importFile(path,error),qPrintable(error));QVERIFY(vm.selectCanNode("ECU","Tx",error));
+        QCOMPARE(vm.queuedDefinitions().size(),2);QVERIFY(vm.working().frames[key()].enabled);QVERIFY(vm.working().frames[key(294)].enabled);
+        SignalTransmitViewModel copy(Bus::Can);QVERIFY2(copy.readConfiguration(vm.configuration(),{},error),qPrintable(error));QCOMPARE(copy.configuration(),vm.configuration());
+        copy.setAvailability(true,false,500000,1);QVERIFY(!copy.start(false,error));QVERIFY(copy.removeQueuedFrame(key(294),error));
+        QSignalSpy sent(&copy,&SignalTransmitViewModel::startRequested);QVERIFY(copy.start(false,error));QCOMPARE(sent.count(),1);const auto plan=qvariant_cast<TxPlan>(sent.first().first());QCOMPARE(plan.items.size(),1);QCOMPARE(plan.items.first().key,key());
+    }
+    void payloadColumnEditsAndRuntimeLocks(){
+        for(bool lin:{false,true}){
+            SignalTransmitViewModel vm(lin?Bus::Lin:Bus::Can);QString error;QVERIFY(vm.importFile(fixture(lin?"ldf":"dbc"),error));
+            CanTxTableModel can(&vm);LinScheduleTableModel schedule(&vm);QAbstractItemModel*table=lin?static_cast<QAbstractItemModel*>(&schedule):&can;
+            if(!lin)QVERIFY(vm.setCanOptions(key(),true,10,error));const auto frame=lin?schedule.key(0):can.key(0);const auto cell=table->index(0,lin?4:5);
+            QCOMPARE(table->headerData(cell.column(),Qt::Horizontal).toString(),QString("报文"));
+            const auto data=QByteArray(vm.frame(frame)->length,char(1));QVERIFY(table->setData(cell,QString::fromLatin1(data.toHex(' '))));QCOMPARE(vm.working().frames[frame].applied.bytes,data);
+            QVERIFY(!table->setData(cell,"ZZ"));QCOMPARE(vm.working().frames[frame].applied.bytes,data);QCOMPARE(cell.data(Qt::EditRole).toString(),QString("ZZ"));
+            QVERIFY(table->setData(cell,QString::fromLatin1(data.toHex(' '))));QVERIFY(vm.editSignal(frame,0,"2",false,error));QCOMPARE(cell.data().toString(),QString::fromLatin1(vm.working().frames[frame].applied.bytes.toHex(' ')).toUpper());
+            vm.setAvailability(true,false,19200,1);QVERIFY(vm.start(true,error));QVERIFY(cell.flags()&Qt::ItemIsEditable);
+            if(!lin){QVERIFY(!vm.removeQueuedFrame(frame,error));QVERIFY(!vm.selectCanNode("Tester","Rx",error));QVERIFY(!(table->index(0,4).flags()&Qt::ItemIsEditable));}
+        }
+    }
+    void canQueueContextMenu(){
+        SignalTransmitViewModel vm(Bus::Can);SignalTransmitPage page(&vm);page.resize(1200,750);page.show();QString error;QVERIFY(vm.importFile(fixture(),error));
+        auto*table=page.findChild<QTableView*>("signalPlanTable");QCOMPARE(table->model()->rowCount(),0);
+        for(const auto*name:{"signalAddCan","signalEditCan","signalDeleteCan"})QVERIFY(!page.findChild<QPushButton*>(name));
+        auto*node=page.findChild<QComboBox*>("signalCanNode");auto*direction=page.findChild<QComboBox*>("signalCanDirection");node->setCurrentIndex(node->findData("Tester"));direction->setCurrentText("Tx");
+        const auto initial=table->model()->rowCount();QVERIFY(initial>0);
+        const auto removed=vm.queuedDefinitions().first().key;bool deleted=false;
+        QTimer::singleShot(20,&page,[&]{auto*menu=page.findChild<QMenu*>("signalPlanMenu");QVERIFY(menu);auto*action=menu->actions().first();QCOMPARE(action->text(),QString("删除报文"));action->trigger();menu->close();deleted=true;});
+        table->customContextMenuRequested(table->visualRect(table->model()->index(0,0)).center());QVERIFY(deleted);QCOMPARE(table->model()->rowCount(),initial-1);QVERIFY(vm.frame(removed));
+        bool created=false;QTimer::singleShot(20,&page,[&]{auto*menu=page.findChild<QMenu*>("signalPlanMenu");QVERIFY(menu);QCOMPARE(menu->actions().first()->objectName(),QString("signalCreateFrame"));
+            QTimer::singleShot(20,&page,[&]{auto*dialog=page.findChild<QDialog*>("signalCustomDialog");QVERIFY(dialog);dialog->findChild<QLineEdit*>("signalCustomName")->setText("ContextCustom");dialog->findChild<QLineEdit*>("signalCustomId")->setText("600");QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok),Qt::LeftButton);created=true;});
+            menu->actions().first()->trigger();menu->close();});
+        table->customContextMenuRequested(QPoint(5,table->viewport()->height()-5));QVERIFY(created);QCOMPARE(table->model()->rowCount(),initial);QVERIFY(vm.working().frames[key(0x600)].enabled);
+        direction->setCurrentText("Rx");QVERIFY(vm.working().frames[key(0x600)].enabled);QVERIFY(vm.removeQueuedFrame(key(0x600),error));QVERIFY(!vm.frame(key(0x600)));
+    }
     void draftsAreAtomicAndWarningsCanSend(){SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY2(vm.importFile(fixture(),error),qPrintable(error));auto before=vm.working().frames[key()].applied;
         QVERIFY(!vm.editSignal(key(),1,"300",false,error));QCOMPARE(vm.working().frames[key()].applied.bytes,before.bytes);QVERIFY(vm.hasInvalidDraft());
         QVERIFY(!vm.editSignal(key(),0,"4",false,error));QCOMPARE(vm.working().frames[key()].applied.bytes,before.bytes);
@@ -106,20 +164,20 @@ private slots:
         tables[0].entries[0].frame="invented";QVERIFY(!vm.replaceSchedules(tables,"Main",error));QCOMPARE(vm.working().schedules[0].entries[0].delayMs,QString("20"));
     }
     void pageOrderAndOfflineEditing(){ChannelViewModel vm(settings());ChannelPage page(&vm);page.resize(1300,950);page.show();auto*tabs=page.findChild<QTabWidget*>("taskPages");QVERIFY(tabs);QCOMPARE(tabs->count(),3);QCOMPARE(tabs->tabText(0),QString("下载"));QCOMPARE(tabs->tabText(1),QString("UDS 诊断"));QCOMPARE(tabs->tabText(2),QString("信号发送"));tabs->setCurrentIndex(2);
-        QString error;QVERIFY(vm.signalTransmission()->importFile(fixture(),error));QVERIFY(page.findChild<QLineEdit*>("signalFrameRaw")->isEnabled());QVERIFY(!page.findChild<QPushButton*>("signalStart")->isEnabled());
+        QString error;QVERIFY(vm.signalTransmission()->importFile(fixture(),error));QVERIFY(vm.signalTransmission()->selectCanNode("Tester","Tx",error));QVERIFY(page.findChild<QTableView*>("signalPlanTable")->model()->index(0,5).flags()&Qt::ItemIsEditable);QVERIFY(!page.findChild<QPushButton*>("signalStart")->isEnabled());
         QTest::qWait(50);QDir().mkpath(QCoreApplication::applicationDirPath()+"/artifacts");QVERIFY(page.grab().save(QCoreApplication::applicationDirPath()+"/artifacts/signal-can.png"));
     }
     void configurationControlsOnlyAppearInSecondaryDialog(){
         for(bool lin:{false,true}){
             ChannelViewModel vm(settings(lin));SignalTransmitPage page(vm.signalTransmission());page.resize(1000,700);page.show();QString error;
-            QVERIFY(vm.signalTransmission()->importFile(fixture(lin?"ldf":"dbc"),error));
+            QVERIFY(vm.signalTransmission()->importFile(fixture(lin?"ldf":"dbc"),error));if(!lin)QVERIFY(vm.signalTransmission()->selectCanNode("Tester","Tx",error));
             auto*dialog=page.findChild<QDialog*>("signalSettingsDialog");QVERIFY(dialog);QVERIFY(!dialog->isVisible());
             for(const auto*name:{"signalImport","signalReload","signalBack","signalRestore","signalCommunication"}){
                 auto*control=dialog->findChild<QPushButton*>(name);QVERIFY(control);QVERIFY(!control->isVisible());
             }
             QVERIFY(dialog->findChild<QLabel*>("signalDatabaseSummary"));QVERIFY(page.findChild<QTreeView*>("signalTree")->isVisible());
             auto*plan=page.findChild<QTableView*>("signalPlanTable");QVERIFY(plan->isVisible());QVERIFY(plan->currentIndex().isValid());
-            QVERIFY(page.findChild<QTableView*>("signalValues")->isVisible());QVERIFY(page.findChild<QLineEdit*>("signalFrameRaw")->isVisible());
+            QVERIFY(page.findChild<QTableView*>("signalValues")->isVisible());QVERIFY(!page.findChild<QLineEdit*>("signalFrameRaw"));
             QTimer::singleShot(50,&page,[&]{QVERIFY(dialog->isVisible());QVERIFY(dialog->findChild<QPushButton*>("signalImport")->isVisible());dialog->reject();});
             QTest::mouseClick(page.findChild<QPushButton*>("signalSettings"),Qt::LeftButton);QVERIFY(!dialog->isVisible());
         }
@@ -139,7 +197,7 @@ private slots:
         const auto count=statuses.count();model.signalsRequested(plan);QTest::qWait(35);QCOMPARE(statuses.count(),count);plan.run=2;model.signalsRequested(plan);QTRY_VERIFY(last().run==2&&last().state==RunState::Running);model.signalStopRequested(1);QTest::qWait(25);QVERIFY(last().state==RunState::Running);model.signalStopRequested(2);QTRY_VERIFY(last().state==RunState::Stopped);
     }
     void workerLinMonitorAndSwitch(){ChannelViewModel vm(settings(true));ChannelPage page(&vm);QString error;auto*s=vm.signalTransmission();QVERIFY(s->importFile(fixture("ldf"),error));connectChannel(vm);QVERIFY(s->start(true,error));QTRY_VERIFY(s->status().state==RunState::Running);QVERIFY(s->selectSchedule("Alternate",error));QTRY_COMPARE_WITH_TIMEOUT(s->status().current,QString("Alternate"),3000);
-        s->stop();QTRY_VERIFY(!s->running());QVERIFY(s->setRole(LinRole::Monitor,"Tester",error));QCOMPARE(page.findChild<QComboBox*>("signalLinRole")->currentIndex(),int(LinRole::Monitor));const auto count=vm.frames()->rowCount();QVERIFY(s->start(true,error));QTRY_VERIFY(s->status().state==RunState::Running);QTest::qWait(50);QCOMPARE(vm.frames()->rowCount(),count);QVERIFY(!page.findChild<QLineEdit*>("signalFrameRaw")->isEnabled());s->stop();QTRY_VERIFY(!s->running());
+        s->stop();QTRY_VERIFY(!s->running());QVERIFY(s->setRole(LinRole::Monitor,"Tester",error));QCOMPARE(page.findChild<QComboBox*>("signalLinRole")->currentIndex(),int(LinRole::Monitor));const auto count=vm.frames()->rowCount();QVERIFY(s->start(true,error));QTRY_VERIFY(s->status().state==RunState::Running);QTest::qWait(50);QCOMPARE(vm.frames()->rowCount(),count);QVERIFY(!(page.findChild<QTableView*>("signalPlanTable")->model()->index(0,4).flags()&Qt::ItemIsEditable));s->stop();QTRY_VERIFY(!s->running());
         page.resize(1300,950);page.show();page.findChild<QTabWidget*>("taskPages")->setCurrentIndex(2);QTest::qWait(30);QVERIFY(page.grab().save(QCoreApplication::applicationDirPath()+"/artifacts/signal-lin.png"));
     }
     void settingsVersion3RestoresStopped(){ChannelViewModel vm(settings());QString error;QVERIFY(vm.signalTransmission()->importFile(fixture(),error));QVERIFY(vm.signalTransmission()->setCanOptions(key(),true,1,error));QTemporaryDir dir;SettingsStore store(dir.filePath("channels.json"));QVERIFY(store.save({vm.snapshotSettings()},error));QVector<ChannelSettings>loaded;QVERIFY(store.load(loaded,error));QCOMPARE(loaded.size(),1);ChannelViewModel restored(loaded[0]);QTRY_COMPARE(restored.signalTransmission()->definitions().size(),5);QVERIFY(restored.signalTransmission()->working().frames[key()].enabled);QVERIFY(!restored.signalTransmission()->running());

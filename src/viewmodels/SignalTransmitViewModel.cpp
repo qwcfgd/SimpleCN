@@ -22,6 +22,24 @@ SignalTransmitViewModel::SignalTransmitViewModel(Bus bus,QObject*parent):QObject
     });
 }
 QVector<FrameDefinition> SignalTransmitViewModel::definitions()const{auto list=m_database->frames;list+=m_work.customFrames;return list;}
+QVector<FrameDefinition> SignalTransmitViewModel::queuedDefinitions()const{
+    QVector<FrameDefinition> result;for(const auto&f:definitions())if(m_work.frames.value(f.key).enabled)result.append(f);return result;
+}
+bool SignalTransmitViewModel::selectCanNode(const QString&node,const QString&direction,QString&error){
+    if(!canStructure()||m_bus!=Bus::Can||(!node.isEmpty()&&!m_database->nodes.contains(node))||
+       (direction!="Tx"&&direction!="Rx"&&direction!="Tx/Rx")){error="当前不能选择 DBC 节点或方向";return false;}
+    remember();m_work.canNode=node;m_work.canDirection=direction;
+    for(const auto&f:m_database->frames){
+        bool receive=false;for(const auto&s:f.fields)if(s.receivers.contains(node)){receive=true;break;}
+        m_work.frames[f.key].enabled=!node.isEmpty()&&((direction!="Rx"&&(f.publisher==node||f.transmitters.contains(node)))||(direction!="Tx"&&receive));
+    }
+    emit structureChanged();emit changed();return true;
+}
+bool SignalTransmitViewModel::removeQueuedFrame(const QString&key,QString&error){
+    if(!canStructure()||m_bus!=Bus::Can||!frame(key)||!m_work.frames.value(key).enabled){error="停止后才能删除待发送报文";return false;}
+    if(frame(key)->custom)return removeCustom(key,error);
+    remember();m_work.frames[key].enabled=false;emit structureChanged();emit changed();return true;
+}
 const FrameDefinition* SignalTransmitViewModel::frame(const QString&key)const{for(const auto&f:m_database->frames)if(f.key==key)return &f;for(const auto&f:m_work.customFrames)if(f.key==key)return &f;return nullptr;}
 QString SignalTransmitViewModel::protocolInfo(const QString&key)const{const auto*f=frame(key);if(!f)return {};if(m_bus==Bus::Can)return f->extended?"经典 CAN · 扩展 29 bit":"经典 CAN · 标准 11 bit";
     return QString("PID 0x%1 · %2 checksum").arg(SignalCodec::linPid(quint8(f->id)),2,16,QChar('0')).arg(f->classicChecksum?"Classic":"Enhanced");}
@@ -77,7 +95,8 @@ bool SignalTransmitViewModel::editPayload(const QString&key,const QString&input,
 bool SignalTransmitViewModel::setCanOptions(const QString&key,bool enabled,int period,QString&error){
     if(!canStructure()||m_bus!=Bus::Can||!frame(key)||period<0){error="停止后才能修改发送选择/周期（整数 ms）";return false;}
     if(enabled&&!frame(key)->issue.isEmpty()){error=frame(key)->issue;return false;}
-    remember();m_work.frames[key].enabled=enabled;m_work.frames[key].cycleMs=period;changedFrame(key);return true;
+    const bool membershipChanged=m_work.frames[key].enabled!=enabled;
+    remember();m_work.frames[key].enabled=enabled;m_work.frames[key].cycleMs=period;if(membershipChanged)emit structureChanged();changedFrame(key);return true;
 }
 bool SignalTransmitViewModel::putCustom(const QString&oldKey,const QString&name,quint32 id,int length,int cycle,QString&error){
     if(!canStructure()||m_bus!=Bus::Can||name.trimmed().isEmpty()||id>0x1fffffff||length<0||length>8||cycle<0){error="自建帧需要有效名称、0–0x1FFFFFFF ID、0–8 字节及非负整数周期";return false;}
@@ -86,7 +105,7 @@ bool SignalTransmitViewModel::putCustom(const QString&oldKey,const QString&name,
     remember();FrameDefinition f;f.key=frameKey(Bus::Can,id,id>0x7ff);f.id=id;f.extended=id>0x7ff;f.length=length;f.name=name.trimmed();f.custom=true;f.cycleMs=cycle;
     TxDraft draft;if(!oldKey.isEmpty()){draft=m_work.frames.take(oldKey);for(int i=0;i<m_work.customFrames.size();++i)if(m_work.customFrames[i].key==oldKey){m_work.customFrames.removeAt(i);break;}}
     if(draft.applied.bytes.size()!=length){draft.applied.bytes=QByteArray(length,0);draft.frameError.clear();draft.frameInput.clear();}draft.cycleMs=cycle;++draft.applied.revision;
-    m_work.customFrames.append(f);m_work.frames[f.key]=draft;emit structureChanged();emit changed();return true;
+    draft.enabled=true;m_work.customFrames.append(f);m_work.frames[f.key]=draft;emit structureChanged();emit changed();return true;
 }
 bool SignalTransmitViewModel::removeCustom(const QString&key,QString&error){
     if(!canStructure()||!frame(key)||!frame(key)->custom){error="停止后只能删除自建 CAN 帧";return false;}
@@ -140,7 +159,7 @@ bool SignalTransmitViewModel::start(bool periodic,QString&error){
         if(m_bus==Bus::Lin&&!f.issue.isEmpty())continue;
         plan.items.append({f.key,f.id,f.extended,draft.applied.bytes,draft.cycleMs,draft.applied.revision,f.publisher,f.classicChecksum});
     }
-    if(m_bus==Bus::Can&&plan.items.isEmpty()){error="请启用至少一条 CAN 报文";return false;}
+    if(m_bus==Bus::Can&&plan.items.isEmpty()){error="请先选择节点报文或右键自建报文";return false;}
     plan.run=++m_nextRun;m_status={};m_status.state=RunState::Starting;m_status.run=plan.run;m_status.detail="启动中";emit startRequested(plan);emit changed();return true;
 }
 void SignalTransmitViewModel::stop(){if(!running())return;m_status.state=RunState::Stopping;emit stopRequested(m_status.run);emit changed();}
