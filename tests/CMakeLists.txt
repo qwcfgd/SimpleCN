@@ -90,7 +90,7 @@ add_test(NAME signal_ui COMMAND test_signal_ui -o "${CMAKE_CURRENT_BINARY_DIR}/s
 set_tests_properties(signal_ui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
 
 add_executable(signal_fixture_probe signal_fixture_probe.cpp)
-target_link_libraries(signal_fixture_probe PRIVATE signal_database)
+target_link_libraries(signal_fixture_probe PRIVATE signal_database cdd_model)
 host_deploy(signal_fixture_probe)
 
 # Trace, export and graphics regression tests; no physical bus access.

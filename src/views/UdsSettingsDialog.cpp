@@ -37,7 +37,7 @@ void editUdsSettings(ChannelViewModel *vm,QWidget *parent,bool download){
     const auto defaults=ChannelSettings::defaults(vm->settings().bus);
     DiagnosticDraftViewModel edit(vm->settings(),vm->diagnosticDatabase());auto &draft=edit.settings;auto &db=edit.database;bool loading=false,targetValid=true;
     auto target=new QGroupBox("诊断数据库与目标");auto targetLayout=new QVBoxLayout(target);layout->addWidget(target);target->setVisible(!download);
-    auto fileRow=new QHBoxLayout;auto path=new QLineEdit(draft.cddPath);path->setObjectName("cddPath");path->setPlaceholderText("CANdela 15 或更早版本的 CDD");
+    auto fileRow=new QHBoxLayout;auto path=new QLineEdit(draft.cddPath);path->setObjectName("cddPath");path->setPlaceholderText("CANdela CDD（高版本将尝试兼容读取）");
     auto browse=new QPushButton("选择 CDD…");browse->setObjectName("browseCdd");
     auto ecu=new QComboBox;ecu->setObjectName("cddEcu");auto variant=new QComboBox;variant->setObjectName("cddVariant");
     for(auto c:{ecu,variant}){c->setEditable(true);c->setInsertPolicy(QComboBox::NoInsert);c->setMinimumContentsLength(10);c->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);}
@@ -45,6 +45,7 @@ void editUdsSettings(ChannelViewModel *vm,QWidget *parent,bool download){
     auto indicator=new QLabel;indicator->setObjectName("cddProtocolIndicator");indicator->setFixedSize(12,12);fileRow->addWidget(indicator);
     auto indicate=[&](int state){indicator->setProperty("protocolState",state);indicator->setStyleSheet(QString("background:%1;border-radius:6px;").arg(state==0?"#999999":state==1?"#239B56":"#D64541"));};indicate(0);targetLayout->addLayout(fileRow);
     auto targetRow=new QHBoxLayout;targetRow->addWidget(new QLabel("ECU"));targetRow->addWidget(ecu,1);targetRow->addWidget(new QLabel("Variant"));targetRow->addWidget(variant,1);targetLayout->addLayout(targetRow);
+    auto databaseWarning=new QLabel;databaseWarning->setObjectName("cddCompatibilityWarning");databaseWarning->setWordWrap(true);databaseWarning->setStyleSheet("color:#9A6700;");targetLayout->addWidget(databaseWarning);
     auto repeatRow=new QHBoxLayout;auto repeat=new QCheckBox("自动重发");repeat->setObjectName("udsAutoRepeat");repeatRow->addWidget(repeat);
     auto repeatValue=[&](const QString &name,const QString &label,int low,int high){
         repeatRow->addWidget(new QLabel(label));
@@ -122,7 +123,7 @@ void editUdsSettings(ChannelViewModel *vm,QWidget *parent,bool download){
         if(targetValid&&import)showSettings();
     };
     auto fillVariants=[&]{QSignalBlocker blocker(variant);variant->clear();if(auto e=findEcu()){int index=0;for(const auto &v:e->variants){if(v.base)index=variant->count();variant->addItem(v.name,v.id);}int saved=variant->findData(draft.cddVariant);variant->setCurrentIndex(saved>=0?saved:index);}};
-    auto populate=[&]{loading=true;{QSignalBlocker blocker(ecu);ecu->clear();for(const auto &e:db.ecus)ecu->addItem(e.name,e.id);int index=ecu->findData(draft.cddEcu);ecu->setCurrentIndex(index>=0?index:0);}fillVariants();loading=false;};
+    auto populate=[&]{loading=true;databaseWarning->setText(db.warnings.join('\n'));databaseWarning->setVisible(!db.warnings.isEmpty());{QSignalBlocker blocker(ecu);ecu->clear();for(const auto &e:db.ecus)ecu->addItem(e.name,e.id);int index=ecu->findData(draft.cddEcu);ecu->setCurrentIndex(index>=0?index:0);}fillVariants();loading=false;};
     auto load=[&]{if(loading)return;QString message;if(!edit.loadDatabase(path->text().trimmed(),message)){targetValid=false;indicate(2);error->setText(message);return;}
         // The imported database supplies new protocol values; unsaved changes to
         // unrelated controls are retained where they are valid.

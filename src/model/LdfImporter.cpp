@@ -66,7 +66,19 @@ class Parser {
         SignalDefinition s;s.name=name();unique(s.name,encodings);s.conversion=false;expect("{");
         while(!accept("}")){const auto type=name();
             if(type=="logical_value"){expect(",");const auto value=natural();QString label;if(accept(","))label=string();expect(";");if(s.labels.contains(value))fail("重复逻辑枚举值");s.labels[value]=label;}
-            else if(type=="physical_value"){PhysicalRange r;expect(",");r.first=natural();expect(",");r.last=natural();if(r.first>r.last)fail("分段 raw 范围倒置");expect(",");r.factor=number();expect(",");r.offset=number();if(accept(","))r.unit=string();expect(";");s.ranges.append(r);s.conversion=true;}
+            else if(type=="physical_value"){
+                auto boundary=[&]{return peek().text.startsWith("0x",Qt::CaseInsensitive)?QString::number(natural()):number();};
+                PhysicalRange r;expect(",");const auto first=boundary();expect(",");const auto last=boundary();
+                const auto lo=decimal::require(first),hi=decimal::require(last);
+                if(lo.n%lo.d!=0||hi.n%hi.d!=0)fail("分段 raw 边界必须为整数");
+                if(hi<lo)fail("分段 raw 范围倒置");
+                expect(",");r.factor=number();expect(",");r.offset=number();if(accept(","))r.unit=string();expect(";");
+                if(lo.n<0||hi.n>decimal::Int(~quint64(0))*hi.d){
+                    s.issue=QString("编码 %1 的 raw 区间 [%2, %3] 超出 LIN 无符号范围；不猜测换算规则").arg(s.name,first,last);
+                    db.diagnostics.append(s.issue);
+                }else{r.first=(lo.n/lo.d).convert_to<quint64>();r.last=(hi.n/hi.d).convert_to<quint64>();s.ranges.append(r);}
+                s.conversion=true;
+            }
             else if(type=="bcd_value"||type=="ascii_value"){expect(";");s.issue="首版不支持 "+type;}
             else fail("未知编码语义："+type);
         }encodings[s.name]=s;

@@ -7,6 +7,34 @@ class CddTest : public QObject {
     QByteArray fixture(){QFile f(QString(TEST_SOURCE_DIR)+"/fixtures/diagnostic.cdd");if(!f.open(QIODevice::ReadOnly))return {};return f.readAll();}
     Service get(const Database &db,const QString &qualifier,int variant=0){for(auto s:db.ecus[0].variants[variant].services)if(s.qualifier==qualifier)return s;return {};}
 private slots:
+    void futureVersionsRequireCompleteParsing(){
+        auto xml=fixture();xml.replace("15.0.4","27.2.1");Database db;QString error;
+        QVERIFY2(Database::parse(xml,db,error),qPrintable(error));QCOMPARE(db.version,QString("27.2.1"));QCOMPARE(db.ecus[0].variants[0].services.size(),5);
+        QCOMPARE(db.warnings.size(),1);QVERIFY(db.warnings.first().contains("16.x"));
+        const auto original=db.ecus[0].variants[0].services.size();
+        auto bad=xml;bad.replace("dtref=\"littleWord\"","dtref=\"missing\"");QVERIFY(!Database::parse(bad,db,error));QVERIFY(error.contains("尝试解析失败"));QCOMPARE(db.ecus[0].variants[0].services.size(),original);
+        bad=xml;bad.replace("<REQ>","<REQ><FutureField/>");QVERIFY(!Database::parse(bad,db,error));QVERIFY(error.contains("FutureField"));
+        bad=xml;bad.replace("</CANDELA>","");QVERIFY(!Database::parse(bad,db,error));
+    }
+    void signedRangesAndCountedRecords(){
+        auto xml=fixture();xml.replace("<IDENT id=\"littleWord\"><QUAL>Value</QUAL><CVALUETYPE bl=\"16\" bo=\"12\" enc=\"uns\" qty=\"atom\"/></IDENT>",
+            "<LINCOMP id=\"littleWord\"><QUAL>Signed</QUAL><CVALUETYPE bl=\"16\" bo=\"12\" enc=\"sgn\" qty=\"atom\"/><COMP s=\"-720\" e=\"-300\" f=\"1\" o=\"0\"/></LINCOMP>");
+        Database db;QString error;QVERIFY2(Database::parse(xml,db,error),qPrintable(error));QVERIFY(db.warnings.isEmpty());
+        const auto s=get(db,"Number/Write");QByteArray bytes;Values decoded;
+        QVERIFY(Codec::encode(s.request,{{"2","-720"}},bytes,error));QCOMPARE(bytes,QByteArray::fromHex("2ef1a030fd"));
+        QVERIFY(Codec::decode(s.request,bytes,decoded,error));QCOMPARE(decoded["2"],QString("-720"));
+        QVERIFY(!Codec::encode(s.request,{{"2","-721"}},bytes,error));QVERIFY(!Codec::encode(s.request,{{"2","-299"}},bytes,error));
+        xml=fixture();const QByteArray field="<DATAOBJ dtref=\"littleWord\"><QUAL>Number</QUAL></DATAOBJ>";
+        xml.replace(xml.indexOf(field),field.size(),R"(<DATAOBJ id="recordCount" dtref="byte"><QUAL>Count</QUAL></DATAOBJ><NUMITERCOMP selref="recordCount" selbm="255"><QUAL>Records</QUAL><DATAOBJ dtref="word"><QUAL>Code</QUAL></DATAOBJ></NUMITERCOMP>)");
+        QVERIFY2(Database::parse(xml,db,error),qPrintable(error));QVERIFY2(db.warnings.isEmpty(),qPrintable(db.warnings.join('\n')));
+        const auto repeated=get(db,"Number/Read").response;
+        QVERIFY(Codec::decode(repeated,QByteArray::fromHex("62f1a00212345678"),decoded,error));QCOMPARE(decoded["3"],QString("12 34 56 78"));
+        QVERIFY(Codec::encode(repeated,{{"2","2"},{"3","12 34 56 78"}},bytes,error));QCOMPARE(bytes,QByteArray::fromHex("62f1a00212345678"));
+        QVERIFY(!Codec::encode(repeated,{{"2","1"},{"3","12 34 56 78"}},bytes,error));
+        QVERIFY(!Codec::decode(repeated,QByteArray::fromHex("62f1a00312345678"),decoded,error));
+        QVERIFY(!Codec::decode(repeated,QByteArray::fromHex("62f1a00112345678"),decoded,error));
+        QVERIFY(Codec::decode(repeated,QByteArray::fromHex("62f1a000"),decoded,error));
+    }
     void communicationDefaultsAndTargetOverrides(){
         auto xml=fixture();xml.replace("<ECUDOC>",R"(<ECUDOC><ECUATTS>
           <UNSDEF id="p2" v="150"><QUAL>CAN.P2Client</QUAL><UNIT>ms</UNIT></UNSDEF>
@@ -25,7 +53,7 @@ private slots:
         QVERIFY(Database::parse(xml,db,error));QCOMPARE(db.ecus[0].variants[1].communication["CAN.P2Client"].value,QString("25"));
     }
     void versionsAndTemplates(){
-        for(const QByteArray version:{"2.0.5","8.0.0","12.0.0","14.0.0","15.0.4"}){
+        for(const QByteArray version:{"2.0.5","8.0.0","12.0.0","14.0.0","15.0.4","16.0.3"}){
             Database db;QString error;auto xml=fixture();QVERIFY(!xml.isEmpty());xml.replace("15.0.4",version);
             QVERIFY2(Database::parse(xml,db,error),qPrintable(error));QCOMPARE(db.ecus.size(),1);QCOMPARE(db.ecus[0].variants.size(),2);QCOMPARE(db.ecus[0].variants[0].services.size(),5);QVERIFY2(db.warnings.isEmpty(),qPrintable(db.warnings.join('\n')));
             auto s=get(db,"Number/Write");QCOMPARE(s.sid,0x2e);QCOMPARE(s.request.fields.size(),3);QVERIFY(s.request.fields[2].littleEndian);
@@ -82,7 +110,7 @@ private slots:
     void malformedAndMissingReferences(){
         Database db;QString error;QVERIFY(Database::parse(fixture(),db,error));const auto original=db.ecus[0].name;
         QVERIFY(!Database::parse("<CANDELA>",db,error));QCOMPARE(db.ecus[0].name,original);
-        auto xml=fixture();xml.replace("15.0.4","16.0.0");QVERIFY(!Database::parse(xml,db,error));
+        auto xml=fixture();xml.replace("15.0.4","invalid");QVERIFY(!Database::parse(xml,db,error));
         xml=fixture();xml.replace("dtref=\"littleWord\"","dtref=\"missing\"");QVERIFY(Database::parse(xml,db,error));QVERIFY(!get(db,"Number/Write").issue.isEmpty());
         xml=fixture();xml.replace("SYSTEM \"candela.dtd\"","[<!ENTITY injected SYSTEM 'file:///not-allowed'>]");QVERIFY(!Database::parse(xml,db,error));
     }

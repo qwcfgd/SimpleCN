@@ -35,6 +35,17 @@ class UdsUiTest : public QObject {
     }
     void save(QDialog *dialog){dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();}
 private slots:
+    void futureCddCompatibilityWarningIsVisible(){
+        QTemporaryDir temp;QFile source(fixture());QVERIFY(source.open(QIODevice::ReadOnly));auto xml=source.readAll();xml.replace("15.0.4","27.0.0");
+        QFile file(temp.filePath("future.cdd"));QVERIFY(file.open(QIODevice::WriteOnly));file.write(xml);file.close();
+        ChannelViewModel vm(settings(communication::Bus::Can));ChannelPage page(&vm);
+        configure(page,[&](QDialog *dialog){
+            auto path=dialog->findChild<QLineEdit*>("cddPath");path->setText(file.fileName());QTest::keyClick(path,Qt::Key_Return);
+            auto warning=dialog->findChild<QLabel*>("cddCompatibilityWarning");QVERIFY(warning);QVERIFY(!warning->isHidden());QVERIFY(warning->text().contains("27.0.0"));QVERIFY(warning->text().contains("16.x"));
+            save(dialog);QVERIFY(!dialog->isVisible());
+        });
+        QCOMPARE(vm.diagnosticDatabase().version,QString("27.0.0"));QCOMPARE(vm.diagnosticServices()->rowCount(),5);
+    }
     void sharedParametersAndProtocolIndicator_data(){
         QTest::addColumn<bool>("lin");QTest::newRow("CAN")<<false;QTest::newRow("LIN")<<true;
     }

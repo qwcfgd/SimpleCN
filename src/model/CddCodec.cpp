@@ -8,7 +8,10 @@ namespace host::diag {
 namespace {
 bool rawAllowed(const Field &f,quint64 raw,QString &error){
     if(f.bits<64&&raw>=(quint64(1)<<f.bits)){error="超出位宽";return false;}
-    if(f.hasRange&&(raw<f.minimum||raw>f.maximum)){error="超出 CDD 数值范围";return false;}
+    if(f.hasRange){
+        qint64 signedRaw=qint64(raw);if(f.bits<64&&(raw&(quint64(1)<<(f.bits-1))))signedRaw=qint64(raw|(~quint64(0)<<f.bits));
+        if(f.encoding=="sgn"?(signedRaw<f.signedMinimum||signedRaw>f.signedMaximum):(raw<f.minimum||raw>f.maximum)){error="超出 CDD 数值范围";return false;}
+    }
     for(auto x:f.excluded)if(raw>=x.first&&raw<=x.second){error="CDD 排除的数值";return false;}
     if(!f.choices.isEmpty()){
         bool found=false;for(const auto &c:f.choices)if(raw>=c.first&&raw<=c.last)found=true;
@@ -93,7 +96,7 @@ bool Codec::parseHex(const QString &input,QByteArray &bytes,QString &error){
 }
 bool Codec::encode(const Message &m,const Values &values,QByteArray &out,QString &error){
     out.clear();error=m.issue;if(!error.isEmpty())return false;
-    QByteArray result;int pos=0;
+    QByteArray result;int pos=0;QMap<QString,quint64> rawValues;
     for(const auto &f:m.fields){
         QString why;
         if(f.array){
@@ -101,6 +104,7 @@ bool Codec::encode(const Message &m,const Values &values,QByteArray &out,QString
             const int unit=f.bits/8;
             if(pos%8||unit<1||data.size()%unit||data.size()/unit<f.minCount||data.size()/unit>f.maxCount){error=f.name+"：长度应为 "+f.constraint();return false;}
             if(pos/8+f.lengthBytes+data.size()>4095){error="请求超过 4095 字节";return false;}
+            if(!f.countKey.isEmpty()&&(!rawValues.contains(f.countKey)||(rawValues.value(f.countKey)&f.countMask)!=quint64(data.size()/unit))){error="重复记录数量与计数字段不一致："+f.name;return false;}
             if(f.lengthBytes){const auto count=quint64(data.size()/unit);if(count>=(quint64(1)<<(f.lengthBytes*8))){error="数组长度前缀溢出";return false;}putBits(result,pos,count,f.lengthBytes*8,f.littleEndian);}
             result+=data;pos+=data.size()*8;
         }else{
@@ -108,6 +112,7 @@ bool Codec::encode(const Message &m,const Values &values,QByteArray &out,QString
             if(!f.constant&&!scalar(f,values.value(f.key),raw,why)){error=f.name+"："+why;return false;}
             if(f.bits<1||f.bits>64||(f.bits<64&&raw>=(quint64(1)<<f.bits))||pos+f.bits>4095*8){error="字段长度或常量无效："+f.name;return false;}
             putBits(result,pos,raw,f.bits,f.littleEndian);
+            rawValues[f.key]=raw;
         }
     }
     if(pos%8){error="请求字段总长未按字节对齐";return false;}
@@ -115,12 +120,15 @@ bool Codec::encode(const Message &m,const Values &values,QByteArray &out,QString
 }
 bool Codec::decode(const Message &m,const QByteArray &bytes,Values &out,QString &error){
     out.clear();error=m.issue;if(!error.isEmpty())return false;
-    int pos=0;
+    int pos=0;QMap<QString,quint64> rawValues;
     for(int i=0;i<m.fields.size();++i){const auto &f=m.fields[i];
         if(f.array){
             if(pos%8||f.bits%8){error="数组边界未按字节对齐："+f.name;return false;}
             int count=f.minCount;
-            if(f.lengthBytes){
+            if(!f.countKey.isEmpty()){
+                if(!rawValues.contains(f.countKey)||(rawValues.value(f.countKey)&f.countMask)>quint64(f.maxCount)){error="重复记录计数字段无效："+f.name;return false;}
+                count=int(rawValues.value(f.countKey)&f.countMask);
+            }else if(f.lengthBytes){
                 if(pos+f.lengthBytes*8>bytes.size()*8){error="长度前缀不足："+f.name;return false;}
                 auto n=getBits(bytes,pos,f.lengthBytes*8,f.littleEndian);if(n>4095){error="数组长度超限";return false;}count=int(n);
             }else if(f.minCount!=f.maxCount){
@@ -141,6 +149,7 @@ bool Codec::decode(const Message &m,const QByteArray &bytes,Values &out,QString 
         }else{
             if(f.bits<1||f.bits>64||pos+f.bits>bytes.size()*8){error="报文过短："+f.name;return false;}
             const auto raw=getBits(bytes,pos,f.bits,f.littleEndian);
+            rawValues[f.key]=raw;
             if(f.constant&&raw!=f.value){error="常量/回显不匹配："+f.name;return false;}
             QString why;if(!f.constant&&!rawAllowed(f,raw,why)){error=f.name+"："+why;return false;}
             if(f.encoding=="bcd"){for(int b=0;b<f.bits;b+=4)if(((raw>>b)&15)>9){error="无效 BCD："+f.name;return false;}}
@@ -203,7 +212,7 @@ QByteArray Codec::simulationResponse(const Service &s,const QByteArray &request,
     for(const auto &f:s.response.fields)if(!f.constant){
         if(f.array){int count=f.minCount;values[f.key]=(f.encoding=="asc"||f.encoding=="utf"||f.encoding=="utf8")?QString(count,'S'):QString::fromLatin1(QByteArray(qMin(4095,count*f.bits/8),0).toHex(' '));}
         else if(!f.choices.isEmpty())values[f.key]="0x"+QString::number(f.choices.first().first,16);
-        else values[f.key]="0x"+QString::number(f.hasRange?f.minimum:0,16);
+        else {quint64 raw=f.hasRange?(f.encoding=="sgn"?quint64(f.signedMinimum):f.minimum):0;if(f.bits<64)raw&=(quint64(1)<<f.bits)-1;values[f.key]="0x"+QString::number(raw,16);}
     }
     QByteArray response;if(!encode(s.response,values,response,error))return nrc(0x11);
     auto echo=expected(s,request);if(response.size()<echo.size())response=echo;else response.replace(0,echo.size(),echo);

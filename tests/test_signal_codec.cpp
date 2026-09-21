@@ -31,6 +31,24 @@ class SignalCodecTest:public QObject {
     TxPlan linPlan(LinRole role=LinRole::Master)const{const auto db=ldf();TxPlan plan;plan.bus=Bus::Lin;plan.periodic=true;plan.role=role;plan.node=role==LinRole::Slave?"Sensor":"Tester";plan.schedules=db->schedules;plan.schedule="Main";plan.run=4;
         for(const auto&f:db->frames){TxDraft draft;QString e;SignalCodec::initialize(f,Bus::Lin,draft,e);plan.items.append({f.key,f.id,false,draft.applied.bytes,0,1,f.publisher,f.classicChecksum});}return plan;}
 private slots:
+    void legacyEncodingAndIndependentSignals(){
+#ifdef Q_OS_WIN
+        auto source=bytes("ldf");source+="\n/* "+QByteArray::fromHex("d6d0cec4")+" */\n";
+        const auto imported=DatabaseImporter::ldf(source);QVERIFY2(imported.database,qPrintable(imported.error));QVERIFY(imported.database->diagnostics.join(' ').contains("GB18030"));
+        DatabaseDefinition definition;QString text,error;QVERIFY(DatabaseImporter::prepare(QByteArray::fromHex("d6d0cec4"),{},definition,text,error));QCOMPARE(text,QString::fromUtf8("中文"));
+        QVERIFY(!DatabaseImporter::prepare(QByteArray::fromHex("81"),{},definition,text,error));
+#endif
+        const QByteArray independent="VERSION \"\"\nNS_ :\nBS_:\nBU_: Node\nBO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Node\n SG_ Detached : 0|8@1+ (1,0) [0|255] \"\" Node\n";
+        const auto result=DatabaseImporter::dbc(independent);QVERIFY2(result.database,qPrintable(result.error));QCOMPARE(result.database->frames.size(),1);QCOMPARE(result.database->frames.first().fields.first().name,QString("Detached"));QVERIFY(!result.database->frames.first().issue.isEmpty());
+        auto invalid=independent;invalid.replace("VECTOR__INDEPENDENT_SIG_MSG","Normal");QVERIFY(!DatabaseImporter::dbc(invalid).database);
+    }
+    void unusedInvalidLinEncodingIsDiagnosed(){
+        auto hex=bytes("ldf");hex.replace("physical_value, 0, 100,","physical_value, 0x00, 0x64,");QVERIFY(DatabaseImporter::ldf(hex).database);
+        auto source=bytes("ldf");source.replace("Signal_encoding_types {","Signal_encoding_types { Unused { physical_value, -2560, 2559, 0.1, 0, \"degC\"; }");
+        auto result=DatabaseImporter::ldf(source);QVERIFY2(result.database,qPrintable(result.error));QCOMPARE(result.database->frames.size(),ldf()->frames.size());QVERIFY(result.database->diagnostics.join(' ').contains("-2560"));
+        source.replace("Segments: Position","Unused: Position");result=DatabaseImporter::ldf(source);
+        QVERIFY(!result.database||!find(result.database,"Measurement").issue.isEmpty());
+    }
     void dbcRelationDeclarationsDoNotChangePayload(){
         auto source=bytes("dbc");
         source+="\nBA_DEF_REL_ BU_SG_REL_ \"Timeout\" INT 0 65535;\nBA_DEF_DEF_REL_ \"Timeout\" 0;\n";

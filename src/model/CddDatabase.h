@@ -8,7 +8,8 @@
 namespace host::diag {
 struct Choice { quint64 first=0,last=0; QString text; };
 struct Field {
-    QString key,name,spec,encoding="uns",unit,description;
+    QString key,name,spec,encoding="uns",unit,description,sourceId,countKey;
+    quint64 countMask=~quint64(0);
     int bits=8,minCount=1,maxCount=1,lengthBytes=0;
     bool littleEndian=false,array=false,constant=false,suppressible=false;
     quint64 value=0;
@@ -17,6 +18,7 @@ struct Field {
     QVector<QPair<quint64,quint64>> excluded;
     bool hasRange=false;
     quint64 minimum=0,maximum=0;
+    qint64 signedMinimum=0,signedMaximum=0;
     QString constraint() const;
 };
 using Values=QMap<QString,QString>;

@@ -58,7 +58,7 @@ CAN/LIN 波特率始终采用当前设备通道设置，不再在诊断设置中
 
 ## 解析与兼容范围
 
-模型层由独立 `cdd_model` 库负责，使用 Qt XML 解析，无 Python 运行依赖。版本入口接受 CANdela 1–15，超过 15 明确拒绝；可处理的内容以结构定义为准，版本号通过不等于该版本全部厂商扩展均已覆盖。
+模型层由独立 `cdd_model` 库负责，使用 Qt XML 解析，无 Python 运行依赖。目前最高已验证版本为 CANdela 16.x。更高版本按现有最高版本规则尝试读取：成功时提示版本兼容性警告；XML、引用、服务或字段结构无法正确解析时拒绝导入，保留原数据库。版本号通过不等于该版本全部厂商扩展均已覆盖。
 
 已实现的结构包括：
 
@@ -68,7 +68,7 @@ CAN/LIN 波特率始终采用当前设备通道设置，不再在诊断设置中
 - CONSTCOMP、STATICCOMP、DATAOBJ、GAPDATAOBJ、CONTENTCOMP、SIMPLEPROXYCOMP；内联 GODTCDATAOBJ / RECORDDATAOBJ。
 - IDENT、TEXTTBL、LINCOMP、CVALUETYPE，定长 / 变长数组、长度前缀、枚举、位域、大小端、整数、BCD、浮点和字符数据。
 
-无类型定义的代理数据区和 EOSITERCOMP 重复记录以原始 HEX 表示。MUXCOMP / MUXDT、NUMITERCOMP、UNION 等条件结构当前显示不支持原因；不完整的请求禁止发送，无法结构化解码的响应保留原始 HEX 并显示原因。多个无边界变长字段不能可靠拆分时，校验会拒绝。当前传输 PDU 上限为 4095 字节，CDD 文件上限 32 MiB，不加载外部 DTD 或自定义 XML 实体。
+无类型定义的代理数据区和 EOSITERCOMP 重复记录以原始 HEX 表示。NUMITERCOMP 支持前置计数字段引用及固定字节长度的记录，每条记录以 HEX 表示，严格校验计数与数据长度；无法界定的重复项仍明确报错。MUXCOMP / MUXDT、UNION 等条件结构当前显示不支持原因；不完整的请求禁止发送，无法结构化解码的响应保留原始 HEX 并显示原因。多个无边界变长字段不能可靠拆分时，校验会拒绝。当前传输 PDU 上限为 4095 字节，CDD 文件上限 32 MiB，不加载外部 DTD 或自定义 XML 实体。
 
 当前执行物理寻址诊断；CDD 中仅支持功能寻址的服务仍显示在表格中，但禁用发送。ISO-TP 功能寻址多 ECU 响应收集未包含在本次实现中。
 

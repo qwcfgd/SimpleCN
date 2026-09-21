@@ -39,6 +39,7 @@ void descendants(const Node *n,const QString &tag,QVector<const Node*> &out){
 class Parser {
 public:
     QMap<QString,const Node*> ids;
+    bool futureVersion=false;
     CommunicationParameters communicationDefaults() const {
         CommunicationParameters values;
         for(auto n:ids)if(n->tag.endsWith("DEF")&&n->attrs.contains("v")){
@@ -95,7 +96,7 @@ public:
         }
     }
     void appendField(const Node *n,const Node *dt,Message &m,const QString &prefix,const Context &ctx){
-        Field f;f.name=prefix+name(n);f.spec=n->a("spec");f.key=QString::number(m.fields.size());
+        Field f;f.name=prefix+name(n);f.spec=n->a("spec");f.key=QString::number(m.fields.size());f.sourceId=n->a("id");
         f.suppressible=n->a("respsupbit")=="1";
         const auto cv=dt?dt->child("CVALUETYPE"):nullptr;
         if(cv){
@@ -114,7 +115,10 @@ public:
                 bool a=false,b=false;f.factor=comp->a("f","1").toDouble(&a);f.offset=comp->a("o","0").toDouble(&b);
                 if(!a||!b||!std::isfinite(f.factor)||!std::isfinite(f.offset)||f.factor==0)m.issue="非法线性转换："+f.name;
                 if(comp->attrs.contains("s")&&comp->attrs.contains("e")){
-                    f.hasRange=number(comp->a("s"),f.minimum)&&number(comp->a("e"),f.maximum);
+                    if(f.encoding=="sgn"){
+                        bool lo=false,hi=false;f.signedMinimum=comp->a("s").toLongLong(&lo);f.signedMaximum=comp->a("e").toLongLong(&hi);
+                        f.hasRange=lo&&hi&&f.signedMinimum<=f.signedMaximum;
+                    }else f.hasRange=number(comp->a("s"),f.minimum)&&number(comp->a("e"),f.maximum)&&f.minimum<=f.maximum;
                     if(!f.hasRange)m.issue="非法数值范围："+f.name;
                 }
             }
@@ -174,12 +178,25 @@ public:
             Field f;f.key=QString::number(m.fields.size());f.name=prefix+name(n);f.encoding="hex";f.array=true;f.minCount=0;f.maxCount=4095;
             f.description="重复记录（原始 HEX）";m.fields.append(f);return;
         }
-        if(t=="MUXCOMP"||t=="MUXDT"||t=="NUMITERCOMP"||t=="UNION"){
+        if(t=="NUMITERCOMP"){
+            Message record;for(const auto &c:n->children)expand(c.get(),record,ctx,{},stack);
+            qint64 bits=0;for(const auto &f:record.fields){if(f.array&&f.minCount!=f.maxCount){record.issue="可变长度重复项";break;}bits+=qint64(f.bits)*(f.array?f.minCount:1)+f.lengthBytes*8;if(bits>4095*8)break;}
+            Field repeated;repeated.key=QString::number(m.fields.size());repeated.name=prefix+name(n);repeated.sourceId=n->a("id");
+            for(const auto &f:m.fields)if(f.sourceId==n->a("selref"))repeated.countKey=f.key;
+            if(!record.issue.isEmpty()||bits<=0||bits%8||bits>4095*8||repeated.countKey.isEmpty()||!number(n->a("selbm","4294967295"),repeated.countMask)){
+                m.issue="无法界定计数重复结构："+name(n);return;
+            }
+            repeated.encoding="hex";repeated.array=true;repeated.bits=int(bits);repeated.minCount=0;repeated.maxCount=4095/int(bits/8);
+            repeated.description="按计数字段重复的记录（每项 "+QString::number(bits/8)+" 字节 HEX）";
+            m.fields.append(repeated);return;
+        }
+        if(t=="MUXCOMP"||t=="MUXDT"||t=="UNION"){
             m.issue="需要专用编解码的条件结构："+t+" / "+name(n);return;
         }
         static const QSet<QString> containers={"REQ","POS","SIMPLECOMPCONT","MUXCOMPCONT","CONTENTCOMP","STRUCTURE","STRUCT","STRUCTDT"};
         if(containers.contains(t)){for(const auto &c:n->children)expand(c.get(),m,ctx,prefix,stack);return;}
         if(t.endsWith("COMP")||t.endsWith("DATAOBJ")||t.endsWith("REF"))m.issue="不支持的报文字段："+t;
+        else if(futureVersion&&!QSet<QString>{"NAME","QUAL","DESC","CVALUETYPE","PVALUETYPE","CSTR","UNS"}.contains(t))m.issue="高版本 CDD 中无法识别的报文结构："+t;
     }
     Service service(const Node *inst,const Node *s,const QString &group){
         Service result;result.id=s->a("id",s->a("oid"));result.qualifier=inst->content("QUAL")+"/"+s->content("QUAL");
@@ -245,7 +262,9 @@ bool Database::parse(const QByteArray &bytes,Database &out,QString &error){
     if(xml.hasError()||!root){error=QString("CDD XML 第 %1 行：%2").arg(xml.lineNumber()).arg(xml.errorString());return false;}
     if(root->tag!="CANDELA"){error="文件不是 CANdela CDD";return false;}
     Database db;db.version=root->a("dtdvers");bool ok=false;int major=db.version.section('.',0,0).toInt(&ok);
-    if(!ok||major<1||major>15){error="支持 CANdela 1–15；文件版本："+db.version;return false;}
+    if(!ok||major<1){error="无效 CANdela 版本："+db.version;return false;}
+    constexpr int highestSupportedMajor=16;
+    parser.futureVersion=major>highestSupportedMajor;
     auto doc=root->child("ECUDOC");if(!doc){error="CDD 缺少 ECUDOC";return false;}
     for(const auto &e:doc->children)if(e->tag=="ECU"){
         Ecu ecu;ecu.id=e->a("id");ecu.name=name(e.get());ecu.qualifier=e->content("QUAL");
@@ -282,6 +301,13 @@ bool Database::parse(const QByteArray &bytes,Database &out,QString &error){
         db.ecus.append(ecu);
     }
     if(db.ecus.isEmpty()){error="CDD 中未找到 ECU";return false;}
+    if(parser.futureVersion){
+        int services=0;for(const auto &ecu:db.ecus)for(const auto &variant:ecu.variants)services+=variant.services.size();
+        if(!services||!db.warnings.isEmpty()){
+            error=QString("CDD %1 按最高支持版本 %2.x 尝试解析失败：%3").arg(db.version).arg(highestSupportedMajor).arg(services?db.warnings.join('\n'):QString("未识别到诊断服务"));return false;
+        }
+        db.warnings.append(QString("CDD %1 高于当前最高支持版本 %2.x；已按 %2.x 解析规则成功读取，请核查版本兼容性").arg(db.version).arg(highestSupportedMajor));
+    }
     out=std::move(db);return true;
 }
 QString Field::constraint() const {

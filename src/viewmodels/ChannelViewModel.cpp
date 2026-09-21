@@ -249,6 +249,7 @@ bool ChannelViewModel::applyDiagnosticConfiguration(const diag::Database &db,con
     const auto services=target?target->services:QVector<diag::Service>{};
     m_database=db;m_services.setServices(services);m_model->resetDiagnosticRequested();
     m_diagnosticResult=QString("UDS 设置已更新 · CDD %1 · %2 个服务").arg(db.version).arg(services.size());
+    if(!db.warnings.isEmpty())m_diagnosticResult+='\n'+db.warnings.join('\n');
     emit diagnosticDatabaseChanged();emit changed();error.clear();return true;
 }
 bool ChannelViewModel::sendDiagnostic(int row,const QByteArray &bytes,QString &error){
