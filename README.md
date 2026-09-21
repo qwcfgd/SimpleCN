@@ -9,7 +9,7 @@
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
-从数据库信号编辑，到报文监视、日志回放和图像观测，在同一工作台完成。
+从数据库信号编辑，到报文监视、日志回放和图像观测，在同一工作台完成，基于Codex。
 
 [快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.3 更新](docs/Release-1.3.md) · [许可说明](docs/Licensing.md)
 
