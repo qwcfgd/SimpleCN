@@ -5,6 +5,8 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QDialog>
+#include <QTabWidget>
+#include <QTabBar>
 #include <QMouseEvent>
 #include <QFontDatabase>
 #include <QLineEdit>
@@ -23,11 +25,32 @@
 #include "model/FrameTableModel.h"
 #include "viewmodels/SignalTableModels.h"
 using namespace host;
+class LayoutCounter final:public QObject {
+public:
+    int requests=0;
+    bool eventFilter(QObject *,QEvent *event)override{if(event->type()==QEvent::LayoutRequest)++requests;return false;}
+};
 class LocalizationTest:public QObject {
     Q_OBJECT
 private slots:
     void initTestCase(){QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");QApplication::setFont(QFont("Microsoft YaHei",9));}
     void cleanup(){Language::instance().setCode("zh_CN");}
+    void repeatedTabTranslationDoesNotInvalidateLayout(){
+        auto &controller=UiLanguageController::instance();QTabWidget tabs;
+        tabs.addTab(new QWidget,"下载");tabs.addTab(new QWidget,"信号发送");tabs.setTabToolTip(0,"取消");tabs.show();
+        LayoutCounter counter;tabs.installEventFilter(&counter);
+        for(const auto &code:QStringList{"zh_CN","en","zh_CN"}){
+            Language::instance().setCode(code);QTest::qWait(100);
+            QCoreApplication::sendPostedEvents(&tabs,QEvent::LayoutRequest);counter.requests=0;
+            for(int n=0;n<50;++n)controller.translateWidget(tabs.tabBar());
+            QCoreApplication::sendPostedEvents(&tabs,QEvent::LayoutRequest);
+            QCOMPARE(counter.requests,0);
+            QCOMPARE(tabs.tabText(0),Language::text("下载"));QCOMPARE(tabs.tabToolTip(0),Language::text("取消"));
+        }
+        Language::instance().setCode("en");tabs.setTabText(0,"取消");tabs.tabBar()->update();
+        QTRY_COMPARE(tabs.tabText(0),QString("Cancel"));
+        Language::instance().setCode("zh_CN");QCOMPARE(tabs.tabText(0),QString("取消"));
+    }
     void catalog(){
         Language::instance().setCode("en");
         QCOMPARE(Language::text("时间"),QString("Time"));

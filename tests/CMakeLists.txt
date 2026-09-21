@@ -145,6 +145,9 @@ set_tests_properties(revision141 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscre
 
 # Opt-in native desktop probe with a bounded Windows driver; never run by CTest.
 if(WIN32)
+    add_executable(idle_cpu_probe EXCLUDE_FROM_ALL idle_cpu_probe.cpp)
+    target_link_libraries(idle_cpu_probe PRIVATE bootloader_ui)
+    host_deploy(idle_cpu_probe)
     add_executable(native_file_dialog_probe native_file_dialog_probe.cpp)
     target_link_libraries(native_file_dialog_probe PRIVATE bootloader_ui user32 gdi32)
     host_deploy(native_file_dialog_probe)

@@ -2,6 +2,8 @@
 
 日期：2026-09-21。检查接收线程、报文缓存/表格/导出、图像采样与刷新，以及 View / ViewModel / Model 的调用边界。性能测量使用合成报文，不连接硬件。
 
+后续实际空闲测量发现标签栏翻译引起持续布局/重绘，已单独定位并修复；见 [空闲 CPU 修复](Idle-CPU-Fix-1.4.3.md)。下述报文路径基准不能用于推断空闲进程 CPU。
+
 ## MVVM
 
 现有 Qt Widgets MVVM 分层继续成立，`python scripts/check_mvvm_boundaries.py` 通过。界面负责控件、显示窗口与选择状态；ViewModel 组织通道和信号命令；模型/服务负责缓存、解码与导出；ChannelModel 通过线程消息桥接 ChannelWorker，SDK 操作留在 worker。此次改动没有引入底层对 View/ViewModel 的反向依赖，也没有让 ViewModel 创建控件或让 View 直接操作硬件。

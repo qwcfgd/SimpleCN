@@ -54,7 +54,17 @@ void UiLanguageController::translateWidget(QWidget *widget){
     if(auto *tabs=qobject_cast<QTabBar*>(widget)){
         // Software channel names are user data, unlike the fixed task tabs.
         const bool channels=tabs->parent()&&tabs->parent()->inherits("host::ChannelTabs");
-        QSignalBlocker blocker(tabs);for(int i=0;i<tabs->count();++i){if(!channels)tabs->setTabText(i,value(tabs,"tab"+QString::number(i),tabs->tabText(i)));tabs->setTabToolTip(i,value(tabs,"tabTip"+QString::number(i),tabs->tabToolTip(i)));}
+        QSignalBlocker blocker(tabs);
+        for(int i=0;i<tabs->count();++i){
+            // QSignalBlocker does not suppress layout/paint invalidation.
+            // Rewriting unchanged tab text from Paint can keep the UI busy.
+            if(!channels){
+                const auto current=tabs->tabText(i),translated=value(tabs,"tab"+QString::number(i),current);
+                if(current!=translated)tabs->setTabText(i,translated);
+            }
+            const auto tip=tabs->tabToolTip(i),translatedTip=value(tabs,"tabTip"+QString::number(i),tip);
+            if(tip!=translatedTip)tabs->setTabToolTip(i,translatedTip);
+        }
     }
     if(auto *combo=qobject_cast<QComboBox*>(widget)){
         // Editable/database/node/schedule/enum selectors contain user data.
