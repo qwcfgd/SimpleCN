@@ -78,6 +78,7 @@ void SignalPlotModel::append(const FrameBatch &batch){ingest(batch);}
 void SignalPlotModel::ingest(const FrameBatch &batch,int onlyRow,bool replay){
     QHash<QString,QVector<FrameRecord>> replayPending;
     auto &queues=replay?replayPending:m_pending;
+    bool changed=false;
     for(const auto &r:batch){
         if(r.bus!=m_database->bus||r.rtr)continue;
         const auto key=frameKey(r.bus,r.id,r.extended);
@@ -90,6 +91,7 @@ void SignalPlotModel::ingest(const FrameBatch &batch,int onlyRow,bool replay){
         QVector<RawValue> values;QString error;
         const bool decoded=!r.error&&!r.noResponse&&SignalCodec::decode(*frame,r.payload,values,error);
         for(int seriesIndex=0;seriesIndex<m_series.size();++seriesIndex){auto &s=m_series[seriesIndex];if((onlyRow>=0&&onlyRow!=seriesIndex)||s.frameKey!=key||s.field<0)continue;
+            changed=true;
             const auto &field=frame->fields[s.field];Point p;p.us=r.timeUs;p.unit=field.unit;
             bool active=decoded&&SignalCodec::isActive(*frame,s.field,values);
             if(active){
@@ -104,7 +106,7 @@ void SignalPlotModel::ingest(const FrameBatch &batch,int onlyRow,bool replay){
             const int limit=qMin(m_capacity,qMax(1,1000000/qMax(1,int(m_series.size()))));
             while(int(s.points.size())>limit)s.points.pop_front();
         }
-    }++m_revision;
+    }if(changed)++m_revision;
 }
 void SignalPlotModel::refresh(){if(!m_series.isEmpty())emit dataChanged(index(0,0),index(m_series.size()-1,7));}
 void SignalPlotModel::clearSamples(){for(auto &s:m_series){s.points.clear();s.raw=s.physical="—";s.status="等待采样";}m_pending.clear();++m_revision;refresh();}

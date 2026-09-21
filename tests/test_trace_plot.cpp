@@ -68,6 +68,42 @@ private slots:
         model.setDatabase(imported.database);QCOMPARE(model.rowCount(model.index(0,0)),5);
         model.clear();QCOMPARE(model.rowCount(),0);
     }
+    void repeatedPayloadKeepsValidityAndDatabaseUpdates(){
+        FrameTableModel model;auto imported=DatabaseImporter::load(fixture(),Bus::Can);QVERIFY(imported.database);
+        QAbstractItemModelTester tester(&model,QAbstractItemModelTester::FailureReportingMode::QtTest);
+        model.setDatabase(imported.database);model.setRolling(true);
+        auto value=[&]{return model.index(2,7,model.index(0,0)).data().toString();};
+        model.append({frame()});model.append({frame(1000)});QCOMPARE(value(),QString("1"));
+        QCOMPARE(model.index(0,7).data(FrameTableModel::NibbleAgeRole).toList()[0].toInt(),1);
+        auto invalid=frame(2000);invalid.error=true;model.append({invalid});QCOMPARE(value(),QString("无有效数据"));
+        QCOMPARE(model.index(0,7).data(FrameTableModel::NibbleAgeRole).toList()[0].toInt(),0);
+        invalid=frame(3000);invalid.noResponse=true;model.append({invalid});QCOMPARE(value(),QString("无有效数据"));
+        invalid=frame(4000);invalid.rtr=true;model.append({invalid});QCOMPARE(value(),QString("无有效数据"));
+        model.append({frame(5000)});QCOMPARE(value(),QString("1"));
+        invalid=frame(6000);invalid.payload.resize(1);invalid.length=1;model.append({invalid});QCOMPARE(value(),QString("无有效数据"));
+        model.append({frame(7000)});QCOMPARE(value(),QString("1"));
+        auto changed=QSharedPointer<DatabaseDefinition>::create(*imported.database);
+        changed->frames[0].fields[1].factor="0.2";model.setDatabase(changed);QCOMPARE(value(),QString("2"));
+        model.append({frame(8000)});QCOMPARE(value(),QString("2"));
+        model.setPaused(true);model.setDatabase(imported.database);model.setPaused(false);QCOMPARE(value(),QString("1"));
+    }
+    void parentIndicesSurviveCapacityRebuildAndClear(){
+        FrameTableModel model;auto imported=DatabaseImporter::load(fixture(),Bus::Can);QVERIFY(imported.database);
+        model.setDatabase(imported.database);model.setRolling(true);FrameBatch batch;
+        for(int n=0;n<=FrameTableModel::Capacity;++n){auto r=frame(n*1000);r.channel=QString::number(n);batch.append(r);}
+        model.append(batch);QCOMPARE(model.rowCount(),FrameTableModel::Capacity);
+        QCOMPARE(model.index(0,3).data().toString(),QString("1"));
+        for(int row:{0,5000,9999}){const auto root=model.index(row,0);QCOMPARE(model.rowCount(root),5);QCOMPARE(model.index(1,5,root).parent(),root);}
+        model.clear();model.append({frame()});const auto root=model.index(0,0);QCOMPARE(model.index(1,5,root).parent(),root);
+    }
+    void sameHistoryPositionCanGrowWithoutRedundantResets(){
+        FrameTableModel model;model.append({frame()});model.setPaused(true);
+        QSignalSpy reset(&model,&QAbstractItemModel::modelReset);
+        model.setHistoryStart(0);QCOMPARE(reset.count(),0);
+        model.append({frame(1000)});QCOMPARE(model.rowCount(),1);
+        model.setHistoryStart(0);QCOMPARE(model.rowCount(),2);QCOMPARE(reset.count(),1);
+        model.setHistoryStart(-1);QCOMPARE(reset.count(),1);
+    }
     void boundedDisplayWithCompleteHistory(){
         FrameTableModel model;model.setRolling(true);FrameBatch batch;
         for(int n=0;n<FrameTableModel::Capacity+50;++n)batch.append(frame(n*1000));
@@ -157,6 +193,15 @@ private slots:
         QVERIFY(model.addSignal(frameKey(Bus::Can,291),"Small"));QCOMPARE(model.series()[0].points.size(),size_t(41));QCOMPARE(model.series()[1].points.size(),size_t(40));
         vm.clearTrace();QVERIFY(model.series()[0].points.empty());
     }
+    void unrelatedFramesAndSuppressedEchoDoNotRefreshPlots(){
+        SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY(vm.importFile(fixture(),error));SignalPlotModel model(&vm);
+        QVERIFY(model.addSignal(frameKey(Bus::Can,291),"Scaled"));const auto initial=model.revision();
+        model.append({frame(0,2,10,292)});model.append({});QCOMPARE(model.revision(),initial);
+        auto request=frame(1000);request.request=true;model.append({request});QVERIFY(model.revision()>initial);
+        const auto recorded=model.revision();const auto points=model.series()[0].points.size();
+        auto echo=frame(2000);echo.echo=true;model.append({echo});QCOMPARE(model.revision(),recorded);QCOMPARE(model.series()[0].points.size(),points);
+        auto errorFrame=frame(3000);errorFrame.error=true;model.append({errorFrame});QVERIFY(model.revision()>recorded);QVERIFY(!model.series()[0].points.back().valid);
+    }
     void monitorControls(){
         auto settings=ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;
         ChannelViewModel vm(settings);ChannelPage page(&vm);page.resize(1366,800);page.show();
@@ -183,6 +228,21 @@ private slots:
         QWheelEvent wheel(position,canvas->mapToGlobal(position.toPoint()),QPoint(),QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
         QApplication::sendEvent(canvas,&wheel);QVERIFY(canvas->xRange().second-canvas->xRange().first<before.second-before.first);
         table->clearSelection();table->topLevelItem(0)->setSelected(true);table->setFocus();QTest::keyClick(table,Qt::Key_Delete);QCOMPARE(model->rowCount(),1);
+    }
+    void exportPreservesInputAndStableTimeOrder(){
+        const FrameBatch input{frame(2000,2,10,0x125),frame(1000,2,10,0x124),frame(1000,2,10,0x123)};
+        QString error;
+        for(const auto &format:QStringList{"asc","blf"}){
+            const auto path=artifacts()+"/unsorted."+format;QVERIFY2(TraceExporter::write(path,input,error),qPrintable(error));
+            const auto read=TraceReader::read(path);QVERIFY2(read.error.isEmpty(),qPrintable(read.error));QCOMPARE(read.frames.size(),3);
+            QCOMPARE(read.frames[0].id,quint32(0x124));QCOMPARE(read.frames[1].id,quint32(0x123));QCOMPARE(read.frames[2].id,quint32(0x125));
+            const auto sortedPath=artifacts()+"/sorted."+format;QVERIFY2(TraceExporter::write(sortedPath,read.frames,error),qPrintable(error));
+            const auto reread=TraceReader::read(sortedPath);QCOMPARE(reread.frames.size(),3);QCOMPARE(reread.frames[0].id,quint32(0x124));QCOMPARE(reread.frames[1].id,quint32(0x123));
+        }
+        QCOMPARE(input[0].id,quint32(0x125));QCOMPARE(input[0].timeUs,qint64(2000));
+        const auto csv=artifacts()+"/unsorted.csv";QVERIFY2(TraceExporter::write(csv,input,error),qPrintable(error));
+        QFile file(csv);QVERIFY(file.open(QIODevice::ReadOnly));const auto contents=file.readAll();
+        QVERIFY(contents.indexOf("0x125")<contents.indexOf("0x124"));QVERIFY(contents.indexOf("0x124")<contents.indexOf("0x123"));
     }
     void exports(){
         FrameBatch rows;auto can=frame();rows.append(can);can.timeUs=can.captureUs=1000;can.extended=true;rows.append(can);

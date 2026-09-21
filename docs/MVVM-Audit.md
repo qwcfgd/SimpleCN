@@ -74,3 +74,7 @@ python scripts/check_mvvm_boundaries.py
 ## 报文监视后续修订
 
 FrameTableModel 保留完整会话缓存，同时管理最多 10,000 条的显示窗口、暂停状态与历史位置；暂停不阻断 recorded 信号，图像和后台记录继续。ChannelPage 只绑定暂停控件和按比例定位的滚动条，导出继续由 TraceExporter 处理完整缓存。新增控件、统计、提示与秒单位表头接入现有 Language / UiLanguageController。时刻改用显式 relativeSeconds 数值与秒格式，采集线程仅提供数值 captureUs，不再将原始微秒塞进显示字符串；协议和回放单位不变。
+
+## V1.4.3 性能复核
+
+分层检查再次通过。本次通过缓存显示格式与解码结果、索引父行、跳过无变化重建/刷新、避免有序导出的额外复制和排序来减少开销；完整缓存和线程职责保持原样。优化条件、测量数据和剩余开销见 [代码与性能检查](Performance-Review-1.4.3.md)。

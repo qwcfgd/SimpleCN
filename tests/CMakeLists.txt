@@ -94,6 +94,11 @@ target_link_libraries(signal_fixture_probe PRIVATE signal_database cdd_model)
 host_deploy(signal_fixture_probe)
 
 # Trace, export and graphics regression tests; no physical bus access.
+add_executable(trace_performance_probe EXCLUDE_FROM_ALL trace_performance_probe.cpp)
+target_link_libraries(trace_performance_probe PRIVATE bootloader_ui)
+target_compile_definitions(trace_performance_probe PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+host_deploy(trace_performance_probe)
+
 add_executable(test_trace_plot test_trace_plot.cpp)
 target_link_libraries(test_trace_plot PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
 target_compile_definitions(test_trace_plot PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

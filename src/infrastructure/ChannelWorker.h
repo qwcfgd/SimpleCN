@@ -75,7 +75,7 @@ private:
     std::unique_ptr<boot::UdsSession> m_uds;
     std::unique_ptr<boot::FlashJob> m_job;
     QTimer *m_receive=nullptr,*m_scan=nullptr,*m_repeat=nullptr;
-    QElapsedTimer m_traceClock;qint64 m_traceOffsetUs=0,m_lastCaptureUs=0;
+    qint64 m_traceOffsetUs=0,m_lastCaptureUs=0;
     bool m_running=false,m_scanning=false,m_waiting=false;
     int m_round=0,m_totalRounds=1;
     int m_progress=0,m_scanId=0,m_scanSent=0,m_scanEvents=0,m_scanResponses=0,m_scanErrors=0;

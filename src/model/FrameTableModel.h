@@ -39,11 +39,13 @@ private:
     struct Detail { quintptr token=0;QVariantList ages;QVector<QStringList> children; };
     QString key(const FrameRecord &) const;
     Detail detail(const FrameRecord &,quintptr token) const;
+    Detail updatedDetail(const FrameRecord &before,const FrameRecord &after,const Detail &) const;
     void rebuild();
     bool merged()const{return m_rolling&&!m_paused;}
     FrameBatch m_rows,m_history;
     QVector<Detail> m_details;
     QHash<QString,int> m_keys;
+    QHash<quintptr,int> m_parentRows;
     signal::Database m_database;
     QHash<quint64,int> m_frameLookup;
     bool m_rolling=false;

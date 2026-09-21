@@ -4,10 +4,10 @@
 #include "protocol/PluginKey.h"
 namespace host {
 using namespace communication;
-static void stampFrame(FrameRecord &record,const QElapsedTimer &clock){
+static void stampFrame(FrameRecord &record){
     const auto now=QDateTime::currentDateTime();record.epochMs=now.toMSecsSinceEpoch();
     record.timestamp=now.toString("HH:mm:ss.zzz");
-    Q_UNUSED(clock);record.captureUs=captureTimeUs();
+    record.captureUs=captureTimeUs();
 }
 class PreviewBackend final : public HardwareBackend {
 public:
@@ -29,7 +29,6 @@ private:Bus m_bus;
 };
 void ChannelWorker::initialize() {
     Q_ASSERT(QThread::currentThread()==thread());
-    m_traceClock.start();
     m_signal=std::make_unique<SignalTransmitter>();
     m_signal->drainReceived=[this]{receive();return m_receiveDrained;};
     connect(m_signal.get(),&SignalTransmitter::statusChanged,this,[this](signal::RunStatus status){
@@ -208,13 +207,13 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
                 // Record every requested bus transmission immediately. The later
                 // PLIN 0x3C queue event is a separate RxD readback.
                 if(!tx)return;
-                FrameRecord f;stampFrame(f,m_traceClock);f.channel=m_settings.softwareId;
+                FrameRecord f;stampFrame(f);f.channel=m_settings.softwareId;
                 f.direction="TX";f.identifier=QString("0x%1").arg(id,2,16,QChar('0')).toUpper();
                 f.data=QString::fromLatin1(bytes.toHex(' ')).toUpper();f.length=bytes.size();
                 f.bus=signal::Bus::Lin;f.request=true;f.classicChecksum=true;
                 f.status="发送";publishFrames({f});return;
             }
-            FrameRecord f;stampFrame(f,m_traceClock);f.channel=m_settings.softwareId;
+            FrameRecord f;stampFrame(f);f.channel=m_settings.softwareId;
             f.direction="SIM "+QString(tx?(bytes.isEmpty()?"HEADER":"TX"):"RX");
             f.identifier=QString("0x%1").arg(id,2,16,QChar('0')).toUpper();f.data=QString::fromLatin1(bytes.toHex(' ')).toUpper();f.length=bytes.size();
             f.bus=signal::Bus::Lin;f.simulated=true;f.classicChecksum=true;
@@ -243,7 +242,7 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
         }
         connect(m_canTransport.get(),&boot::CanTransport::trace,this,[this](bool tx,const boot::CanFrame &frame){
             if(!m_settings.simulation&&!tx)return;
-            FrameRecord f;stampFrame(f,m_traceClock);f.channel=m_settings.softwareId;
+            FrameRecord f;stampFrame(f);f.channel=m_settings.softwareId;
             f.direction=(m_settings.simulation?QString("SIM "):QString())+(tx?"TX":"RX");f.identifier=QString("0x%1").arg(frame.id,frame.extended?8:3,16,QChar('0')).toUpper();
             f.data=QString::fromLatin1(frame.data.toHex(' ')).toUpper();f.length=frame.data.size();
             f.extended=frame.extended;f.simulated=m_settings.simulation;f.request=tx&&!m_settings.simulation;
@@ -314,7 +313,7 @@ void ChannelWorker::publishFrames(FrameBatch batch){
     if(!batch.isEmpty())emit framesReceived(batch);
 }
 void ChannelWorker::projectSignalEvents(const signal::BusFrameEvents &events){
-    FrameBatch batch;for(const auto&e:events){FrameRecord f;stampFrame(f,m_traceClock);f.channel=m_settings.softwareId;
+    FrameBatch batch;for(const auto&e:events){FrameRecord f;stampFrame(f);f.channel=m_settings.softwareId;
         f.bus=e.bus;f.id=e.id;f.extended=e.extended;f.payload=e.bytes;f.typed=true;f.hardwareUs=e.hardwareUs;f.classicChecksum=e.classicChecksum;
         f.replay=e.replay;f.fd=e.fd;f.brs=e.brs;f.esi=e.esi;f.rtr=e.rtr;
         f.echo=e.source==signal::EventSource::HardwareEcho;f.request=e.source==signal::EventSource::RequestAccepted;
@@ -381,7 +380,7 @@ void ChannelWorker::receive() {
             const bool valid=!m.ErrorFlags && m.Length>=1 && m.Length<=8;
             if(m_transport&&(m.FrameId&0x3f)==0x3c)m_transport->confirmTransmitted(QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8)),valid);
             if(m_transport)m_transport->receiveFrame(m.FrameId&0x3f,QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8)),absent,bad);
-            FrameRecord record;stampFrame(record,m_traceClock);record.channel=m_settings.softwareId;
+            FrameRecord record;stampFrame(record);record.channel=m_settings.softwareId;
             record.bus=signal::Bus::Lin;record.id=m.FrameId&0x3f;record.typed=true;
             record.payload=QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8));
             record.hardwareUs=m.TimeStamp;record.checksum=m.Checksum;record.classicChecksum=m.ChecksumType==cstClassic;
@@ -427,7 +426,7 @@ void ChannelWorker::receive() {
                 if(frame.error)m_canTransport->linkFailed("CAN 总线错误或状态帧");
                 else m_canTransport->receiveFrame(frame);
             }
-            FrameRecord r;stampFrame(r,m_traceClock);
+            FrameRecord r;stampFrame(r);
             r.typed=true;r.id=m.ID;r.extended=frame.extended;r.fd=frame.fd;r.rtr=frame.rtr;r.payload=frame.data;
             r.echo=echo;r.hardwareUs=event.hardwareUs;r.error=frame.error||frame.fd||m.LEN>8;r.errorFlags=m.MSGTYPE;
             r.channel=m_settings.softwareId;r.direction=echo?"TX ECHO":"RX";r.identifier=QString("0x%1").arg(m.ID,0,16).toUpper();

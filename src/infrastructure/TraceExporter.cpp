@@ -49,13 +49,18 @@ QByteArray csv(const FrameBatch &rows){
 bool TraceExporter::write(const QString &path,const FrameBatch &input,QString &error,QString format){
     error.clear();if(format.isEmpty())format=QFileInfo(path).suffix().toLower();
     if(format!="csv"&&format!="asc"&&format!="blf"){error="请选择 CSV、ASC 或 BLF 扩展名。";return false;}
-    FrameBatch rows=input;
-    if(format!="csv")std::stable_sort(rows.begin(),rows.end(),[](const auto&a,const auto&b){return a.timeUs<b.timeUs;});
+    const auto byTime=[](const auto&a,const auto&b){return a.timeUs<b.timeUs;};
+    // Capture history is already ordered. Keep it shared/const unless sorting
+    // is actually needed; mutable Qt container iteration would detach it.
+    FrameBatch sorted;
+    const bool reorder=format!="csv"&&!std::is_sorted(input.cbegin(),input.cend(),byTime);
+    if(reorder){sorted=input;std::stable_sort(sorted.begin(),sorted.end(),byTime);}
+    const auto &rows=reorder?sorted:input;
     QMap<QString,int> channels;
-    for(const auto &r:rows){
+    if(format!="csv")for(const auto &r:rows){
         const auto key=QString::number(int(r.bus))+":"+r.channel;
         if(!channels.contains(key))channels[key]=channels.size()+1;
-        if(format!="csv"&&!r.noResponse&&!r.error&&!r.rtr&&(r.payload.size()!=r.length||r.length>(r.fd?64:8)||r.length<0)){
+        if(!r.noResponse&&!r.error&&!r.rtr&&(r.payload.size()!=r.length||r.length>(r.fd?64:8)||r.length<0)){
             error="报文长度不完整，无法导出："+r.channel+" / "+r.identifier;return false;
         }
     }

@@ -184,6 +184,7 @@ void ChannelPage::build() {
     auto historyRange=[this,historyScroll]{
         auto *model=m_vm->frames();const qint64 maximum=qMax(qint64(0),model->historyCount()-FrameTableModel::Capacity);
         historyScroll->setVisible(model->paused()&&maximum>0);
+        if(!model->paused())return;
         if(!historyScroll->isSliderDown()){
             QSignalBlocker blocker(historyScroll);const qint64 span=qMax(qint64(0),model->historyCount()-model->windowSize());
             const int range=int(qMin(span,qint64(1000000000)));
@@ -213,6 +214,7 @@ void ChannelPage::build() {
     connect(m_table,&QTreeView::expanded,this,[expanded](const QModelIndex &i){expanded->insert(i.data(Qt::UserRole+2).toString());});
     connect(m_table,&QTreeView::collapsed,this,[expanded](const QModelIndex &i){expanded->remove(i.data(Qt::UserRole+2).toString());});
     connect(m_vm->frames(),&QAbstractItemModel::modelReset,this,[this,proxy,expanded]{
+        if(expanded->isEmpty()||!m_vm->frames()->rolling()||m_vm->frames()->paused())return;
         for(int row=0;row<m_vm->frames()->rowCount();++row){auto source=m_vm->frames()->index(row,0);if(expanded->contains(source.data(Qt::UserRole+2).toString()))m_table->setExpanded(proxy->mapFromSource(source),true);}
     });
     auto historyLayout=new QHBoxLayout;historyLayout->setSpacing(4);historyLayout->addWidget(historyScroll);historyLayout->addWidget(m_table,1);frameLayout->addLayout(historyLayout,1);
