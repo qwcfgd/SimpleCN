@@ -8,6 +8,9 @@
 #include <QTableView>
 #include <QTreeView>
 #include <QTreeWidget>
+#include <QScrollBar>
+#include <QLineEdit>
+#include <QLabel>
 #include <QWheelEvent>
 #include <QFontDatabase>
 #include <QJsonArray>
@@ -19,6 +22,9 @@
 #include "model/DatabaseImporter.h"
 #include "model/SignalCodec.h"
 #include "infrastructure/TraceExporter.h"
+#include "infrastructure/TraceReader.h"
+#include "views/UiLanguageController.h"
+#include "localization/Language.h"
 #include "viewmodels/SignalPlotModel.h"
 #include "views/SignalPlotDialog.h"
 #include "views/SignalPlotCanvas.h"
@@ -46,7 +52,7 @@ private slots:
         auto ext=frame(13000);ext.extended=true;model.append({ext});QCOMPARE(model.rowCount(),3);
         auto other=frame(14000);other.channel="CAN2";model.append({other});QCOMPARE(model.rowCount(),4);
         QCOMPARE(model.history().size(),15);model.setRolling(false);QCOMPARE(model.rowCount(),15);
-        QCOMPARE(model.index(14,1).data().toString(),QString("14"));QCOMPARE(model.index(14,2).data().toString(),QString("1.000"));
+        QCOMPARE(model.index(14,1).data().toString(),QString("0.014"));QCOMPARE(model.index(14,2).data().toString(),QString("0.001"));
         model.setRolling(true);QCOMPARE(model.rowCount(),4);
     }
     void databaseChildrenAndReload(){
@@ -62,12 +68,73 @@ private slots:
         model.setDatabase(imported.database);QCOMPARE(model.rowCount(model.index(0,0)),5);
         model.clear();QCOMPARE(model.rowCount(),0);
     }
-    void boundedHistory(){
+    void boundedDisplayWithCompleteHistory(){
         FrameTableModel model;model.setRolling(true);FrameBatch batch;
         for(int n=0;n<FrameTableModel::Capacity+50;++n)batch.append(frame(n*1000));
-        model.append(batch);QCOMPARE(model.rowCount(),1);QCOMPARE(model.history().size(),FrameTableModel::Capacity);
+        model.append(batch);QCOMPARE(model.rowCount(),1);QCOMPARE(model.history().size(),FrameTableModel::Capacity+50);
         model.setRolling(false);QCOMPARE(model.rowCount(),FrameTableModel::Capacity);
-        QCOMPARE(model.index(0,1).data().toString(),QString("50"));
+        QCOMPARE(model.index(0,1).data().toString(),QString("0.05"));
+    }
+    void completeCachePauseBrowseExportAndClear(){
+        FrameTableModel model;FrameBatch batch;
+        for(int n=0;n<30050;++n)batch.append(frame(qint64(n)*1000));
+        model.append(batch);QCOMPARE(model.historyCount(),qint64(30050));QCOMPARE(model.rowCount(),10000);
+        QCOMPARE(model.index(0,1).data().toString(),QString("20.05"));
+        QCOMPARE(model.index(0,1).data(FrameTableModel::RelativeTimeSecondsRole).toDouble(),20.05);
+        model.setPaused(true);const auto frozen=model.index(9999,1).data();
+        QSignalSpy inserted(&model,&QAbstractItemModel::rowsInserted),changed(&model,&QAbstractItemModel::dataChanged),reset(&model,&QAbstractItemModel::modelReset),recorded(&model,&FrameTableModel::recorded);
+        model.append({frame(30050000),frame(30051000)});
+        QCOMPARE(model.historyCount(),qint64(30052));QCOMPARE(model.index(9999,1).data(),frozen);
+        QCOMPARE(inserted.count(),0);QCOMPARE(changed.count(),0);QCOMPARE(reset.count(),0);QCOMPARE(recorded.count(),1);
+        model.setHistoryStart(0);QCOMPARE(model.rowCount(),10000);QCOMPARE(model.index(0,1).data().toString(),QString("0"));
+        model.setHistoryStart(15000);QCOMPARE(model.index(0,1).data().toString(),QString("15"));QCOMPARE(model.index(9999,1).data().toString(),QString("24.999"));
+        QString error;
+        for(const auto &format:QStringList{"csv","asc","blf"}){
+            const auto path=artifacts()+"/complete-cache."+format;QVERIFY2(model.exportTrace(path,error),qPrintable(error));
+            if(format=="csv"){
+                QFile file(path);QVERIFY(file.open(QIODevice::ReadOnly));const auto bytes=file.readAll();
+                QCOMPARE(bytes.count('\n'),30053);QVERIFY(bytes.contains(QString("时刻/s").toUtf8()));QVERIFY(bytes.contains("\"30.051\""));
+            }else{
+                const auto log=TraceReader::read(path);QVERIFY2(log.error.isEmpty(),qPrintable(log.error));
+                QCOMPARE(log.frames.size(),30052);QCOMPARE(log.frames.first().timeUs,qint64(0));QCOMPARE(log.frames.last().timeUs,qint64(30051000));
+            }
+        }
+        model.setPaused(false);QCOMPARE(model.windowStart(),qint64(20052));QCOMPARE(model.index(9999,1).data().toString(),QString("30.051"));
+        model.setPaused(true);model.clear();QCOMPARE(model.historyCount(),qint64(0));QCOMPARE(model.rowCount(),0);
+        model.append({frame(90000000),frame(91000000)});QCOMPARE(model.historyCount(),qint64(2));QCOMPARE(model.rowCount(),0);
+        model.setPaused(false);QCOMPARE(model.index(0,1).data().toString(),QString("0"));QCOMPARE(model.index(1,1).data().toString(),QString("1"));QCOMPARE(model.index(1,2).data().toString(),QString("1"));
+    }
+    void pauseControlsAndLanguage(){
+        UiLanguageController::instance();auto settings=ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;
+        ChannelViewModel vm(settings);ChannelPage page(&vm);page.resize(1460,980);page.show();QCoreApplication::processEvents();
+        auto *pause=page.findChild<QCheckBox*>("framePause"),*rolling=page.findChild<QCheckBox*>("frameRolling");
+        auto *scroll=page.findChild<QScrollBar*>("frameHistoryScroll");auto *tree=page.findChild<QTreeView*>("frameTable");
+        QVERIFY(pause&&scroll&&tree);QVERIFY(!pause->isChecked());QVERIFY(!scroll->isVisible());
+        FrameBatch batch;for(int n=0;n<20000;++n)batch.append(frame(qint64(n)*1000));vm.frames()->append(batch);
+        pause->setChecked(true);QCoreApplication::processEvents();QVERIFY(scroll->isVisible());QCOMPARE(scroll->maximum(),10000);QCOMPARE(scroll->pageStep(),10000);
+        const int position=tree->verticalScrollBar()->value();const auto shown=tree->model()->index(0,1).data();
+        vm.frames()->append({frame(20000000)});QCOMPARE(tree->model()->index(0,1).data(),shown);QCOMPARE(tree->verticalScrollBar()->value(),position);
+        scroll->setValue(0);QCOMPARE(tree->model()->index(0,1).data().toString(),QString("0"));QCOMPARE(tree->verticalScrollBar()->value(),0);
+        auto *filter=page.findChild<QLineEdit*>("frameFilter");filter->setText("no match");QCOMPARE(tree->model()->rowCount(),0);QCOMPARE(vm.frames()->historyCount(),qint64(20001));filter->clear();
+        Language::instance().setCode("en");QCoreApplication::processEvents();QCOMPARE(pause->text(),QString("Pause updates"));
+        QVERIFY(!pause->toolTip().contains(QString("暂停")));QVERIFY(scroll->toolTip().startsWith("Records "));QCOMPARE(scroll->accessibleName(),QString("Browse recorded frames"));
+        QCOMPARE(tree->model()->headerData(1,Qt::Horizontal).toString(),QString("Relative time/s"));
+        QCOMPARE(tree->model()->headerData(2,Qt::Horizontal).toString(),QString("Delta time/s"));
+        page.grab().save(artifacts()+"/history-paused-en.png");Language::instance().setCode("zh_CN");QCoreApplication::processEvents();QCOMPARE(pause->text(),QString("暂停更新"));
+        page.grab().save(artifacts()+"/history-paused-zh.png");pause->setChecked(false);QVERIFY(!scroll->isVisible());QVERIFY(rolling->isEnabled());
+        rolling->setChecked(true);pause->setChecked(true);QCOMPARE(vm.frames()->rowCount(),10000);QVERIFY(!rolling->isEnabled());
+        pause->setChecked(false);QCOMPARE(vm.frames()->rowCount(),1);QVERIFY(vm.frames()->rolling());
+    }
+    void pausedWindowKeepsSizeWhileCacheGrows(){
+        auto settings=ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;ChannelViewModel vm(settings);ChannelPage page(&vm);page.show();
+        FrameBatch initial;for(int n=0;n<100;++n)initial.append(frame(n*1000));vm.frames()->append(initial);
+        auto *pause=page.findChild<QCheckBox*>("framePause");auto *scroll=page.findChild<QScrollBar*>("frameHistoryScroll");pause->setChecked(true);
+        FrameBatch more;for(int n=100;n<20100;++n)more.append(frame(n*1000));vm.frames()->append(more);
+        QCOMPARE(vm.frames()->rowCount(),100);QCOMPARE(scroll->maximum(),20000);QCOMPARE(scroll->pageStep(),100);QVERIFY(scroll->isVisible());
+        scroll->setSliderDown(true);scroll->setValue(5000);const auto start=vm.frames()->windowStart();
+        vm.frames()->append({frame(20100000)});QCOMPARE(scroll->maximum(),20000);QCOMPARE(vm.frames()->windowStart(),start);
+        scroll->setSliderDown(false);QCOMPARE(vm.frames()->windowStart(),start);QCOMPARE(scroll->maximum(),10101);QCOMPARE(scroll->pageStep(),10000);
+        vm.frames()->clear();QCOMPARE(scroll->maximum(),0);QVERIFY(!scroll->isVisible());
     }
     void multipleCursorDifferencesAndGaps(){
         SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY(vm.importFile(fixture(),error));SignalPlotModel model(&vm);

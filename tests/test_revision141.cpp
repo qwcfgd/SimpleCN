@@ -57,8 +57,8 @@ private slots:
         QVERIFY(vm->start(true,error));QTRY_VERIFY(channel.frames()->history().size()>3);const auto before=channel.frames()->history().last();QElapsedTimer elapsed;elapsed.start();
         QVERIFY(vm->editSignal(frameKey(Bus::Can,291),1,"25",false,error));
         auto updated=[&]{for(const auto&r:channel.frames()->history())if(r.id==291&&r.payload.size()>1&&quint8(r.payload[1])==25)return true;return false;};QTRY_VERIFY(updated());
-        QTest::qWait(1000);const auto after=channel.frames()->history().last();const double shownMs=after.relativeTime.toDouble()-before.relativeTime.toDouble();
-        QVERIFY(shownMs>900);QVERIFY(std::abs(shownMs-elapsed.elapsed())<150);QCOMPARE(after.relativeTime.toDouble(),after.timeUs/1000.0);QVERIFY(!after.relativeTime.contains('.')||!after.relativeTime.endsWith('0'));
+        QTest::qWait(1000);const auto after=channel.frames()->history().last();const double shownSeconds=after.relativeTime.toDouble()-before.relativeTime.toDouble();
+        QVERIFY(shownSeconds>0.9);QVERIFY(std::abs(shownSeconds-elapsed.elapsed()/1000.0)<0.15);QCOMPARE(after.relativeTime.toDouble(),after.timeUs/1000000.0);QVERIFY(!after.relativeTime.contains('.')||!after.relativeTime.endsWith('0'));
         vm->stop();QTRY_VERIFY(!vm->running());
     }
     void enumPhysicalTicks(){

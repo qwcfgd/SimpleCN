@@ -8,6 +8,16 @@
 #include <QDateTime>
 #include <QRegularExpression>
 namespace host {
+namespace {
+QString seconds(double value){
+    if(!std::isfinite(value))return {};
+    auto text=QString::number(value,'f',9);
+    while(text.endsWith('0'))text.chop(1);
+    if(text.endsWith('.'))text.chop(1);
+    return text=="-0"?QString("0"):text;
+}
+}
+
 QModelIndex FrameTableModel::index(int row,int col,const QModelIndex &p) const {
     if(row<0||col<0||col>=9||row>=rowCount(p))return {};
     return createIndex(row,col,p.isValid()?m_details[p.row()].token:quintptr(0));
@@ -20,7 +30,7 @@ QModelIndex FrameTableModel::parent(const QModelIndex &i) const {
 int FrameTableModel::rowCount(const QModelIndex &p) const {
     if(!p.isValid())return m_rows.size();
     if(p.column()!=0||p.internalId()||p.row()>=m_details.size())return 0;
-    return m_rolling&&!m_details[p.row()].children.isEmpty()?m_details[p.row()].children.size()+1:0;
+    return merged()&&!m_details[p.row()].children.isEmpty()?m_details[p.row()].children.size()+1:0;
 }
 QVariant FrameTableModel::data(const QModelIndex &i,int role) const {
     if(!i.isValid()||i.column()<0||i.column()>=9)return {};
@@ -37,26 +47,27 @@ QVariant FrameTableModel::data(const QModelIndex &i,int role) const {
     if(i.row()<0||i.row()>=m_rows.size())return {};
     const auto &r=m_rows[i.row()];
     if(role==Qt::UserRole+2)return key(r);
-    if(role==NibbleAgeRole&&m_rolling&&i.column()==7)return m_details[i.row()].ages;
+    if(role==RelativeTimeSecondsRole)return r.relativeSeconds;
+    if(role==NibbleAgeRole&&merged()&&i.column()==7)return m_details[i.row()].ages;
     if(role==Qt::ForegroundRole)return QColor(r.error?"#C93838":(r.warning?"#9A6700":"#29425D"));
 
     if(role==Qt::ToolTipRole||role==Qt::DisplayRole){
-        switch(i.column()){case 0:return r.timestamp;case 1:return r.relativeTime;case 2:return r.intervalMs;
+        switch(i.column()){case 0:return r.timestamp;case 1:return seconds(r.relativeSeconds);case 2:return r.intervalSeconds;
         case 3:return r.channel;case 4:return r.direction;case 5:return r.identifier;case 6:return r.length;case 7:return r.data;case 8:return Language::text(r.status);}
     }return {};
 }
 QVariant FrameTableModel::headerData(int c,Qt::Orientation o,int role) const {
     if(o==Qt::Horizontal&&c==1&&role==Qt::ToolTipRole)
-        return Language::text("时刻单位为 ms：1 秒 = 1000 ms；从首条记录起算。小数部分省略末尾无效的 0。");
+        return Language::text("时刻单位为 s：从首条记录起算，省略小数末尾无效的 0。");
     if(o!=Qt::Horizontal||role!=Qt::DisplayRole)return {};
-    return Language::text(QStringList{"时间","时刻/ms","绝对时间/ms","软件通道","方向","ID","长度","数据","状态"}.value(c));
+    return Language::text(QStringList{"时间","时刻/s","绝对时间/s","软件通道","方向","ID","长度","数据","状态"}.value(c));
 }
 QString FrameTableModel::key(const FrameRecord &r) const {
     return r.channel+":"+signal::frameKey(r.bus,r.id,r.extended);
 }
 FrameTableModel::Detail FrameTableModel::detail(const FrameRecord &r,quintptr token) const {
-    Detail d;d.token=token;if(!m_rolling)return d;for(int n=0;n<r.payload.size()*2;++n)d.ages.append(0);
-    if(!m_rolling||!m_database||m_database->bus!=r.bus)return d;
+    Detail d;d.token=token;if(!merged())return d;for(int n=0;n<r.payload.size()*2;++n)d.ages.append(0);
+    if(!merged()||!m_database||m_database->bus!=r.bus)return d;
     const int frameIndex=m_frameLookup.value(quint64(r.id)|(r.extended?(quint64(1)<<32):0),-1);
     if(frameIndex>=0){const auto &f=m_database->frames[frameIndex];
         QVector<signal::RawValue> values;QString error;
@@ -71,11 +82,22 @@ FrameTableModel::Detail FrameTableModel::detail(const FrameRecord &r,quintptr to
     }return d;
 }
 void FrameTableModel::setDatabase(signal::Database db){if(m_database==db)return;m_database=std::move(db);m_frameLookup.clear();
-    if(m_database)for(int n=0;n<m_database->frames.size();++n){const auto &f=m_database->frames[n];m_frameLookup[quint64(f.id)|(f.extended?(quint64(1)<<32):0)]=n;}rebuild();}
-void FrameTableModel::setRolling(bool on){if(on==m_rolling)return;m_rolling=on;rebuild();}
+    if(m_database)for(int n=0;n<m_database->frames.size();++n){const auto &f=m_database->frames[n];m_frameLookup[quint64(f.id)|(f.extended?(quint64(1)<<32):0)]=n;}if(!m_paused)rebuild();}
+void FrameTableModel::setRolling(bool on){if(on==m_rolling)return;m_rolling=on;if(!m_paused)rebuild();}
+void FrameTableModel::setPaused(bool on){
+    if(m_paused==on)return;m_paused=on;
+    if(!on){m_windowStart=qMax(qint64(0),historyCount()-Capacity);m_windowSize=int(qMin(qint64(Capacity),historyCount()));}
+    if(!on||m_rolling)rebuild();emit historyChanged();
+}
+void FrameTableModel::setHistoryStart(qint64 first){
+    if(!m_paused)return;
+    m_windowStart=qBound(qint64(0),first,qMax(qint64(0),historyCount()-Capacity));
+    m_windowSize=int(qMin(qint64(Capacity),historyCount()-m_windowStart));
+    rebuild();emit historyChanged();
+}
 void FrameTableModel::rebuild(){
     beginResetModel();m_rows.clear();m_details.clear();m_keys.clear();
-    for(const auto &r:m_history){const auto k=key(r);int n=m_rolling?m_keys.value(k,-1):-1;
+    for(qint64 at=m_windowStart;at<m_windowStart+m_windowSize;++at){const auto &r=m_history.at(at);const auto k=key(r);int n=merged()?m_keys.value(k,-1):-1;
         if(n<0){n=m_rows.size();m_keys[k]=n;m_rows.append(r);m_details.append(detail(r,m_nextToken++));}
         else {auto d=detail(r,m_details[n].token);const auto before=m_rows[n].payload.toHex(),after=r.payload.toHex();
             for(int a=0;a<after.size();++a)if(!r.error&&!r.noResponse&&!m_rows[n].error&&!m_rows[n].noResponse&&a<before.size()&&before[a]==after[a])d.ages[a]=qMin(10,m_details[n].ages.value(a).toInt()+1);
@@ -90,21 +112,22 @@ void FrameTableModel::append(const FrameBatch &input){
         ok=ok&&std::isfinite(rawUs)&&rawUs>=0&&rawUs<double(std::numeric_limits<qint64>::max());
         if(ok){if(!m_hasRelativeOrigin){m_relativeOriginUs=rawUs;m_hasRelativeOrigin=true;}
             r.captureUs=qRound64(rawUs);r.timeUs=qRound64(rawUs-m_relativeOriginUs);
-            r.intervalMs=QString::number(m_hasPrevious?(rawUs-m_previousUs)/1000.0:0.0,'f',3);
+            r.intervalSeconds=seconds(m_hasPrevious?(rawUs-m_previousUs)/1000000.0:0.0);
             m_previousUs=rawUs;m_hasPrevious=true;
-            // Keep capture/export timing in microseconds; format the monitor in
-            // milliseconds without padding or scientific notation.
-            r.relativeTime=QString::number((rawUs-m_relativeOriginUs)/1000.0,'f',6);
-            while(r.relativeTime.endsWith('0'))r.relativeTime.chop(1);
-            if(r.relativeTime.endsWith('.'))r.relativeTime.chop(1);
-            if(r.relativeTime=="-0")r.relativeTime="0";
+            r.relativeSeconds=(rawUs-m_relativeOriginUs)/1000000.0;
+            r.relativeTime=seconds(r.relativeSeconds);
             if(!QRegularExpression("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$").match(r.timestamp).hasMatch())r.timestamp=QDateTime::currentDateTime().toString("HH:mm:ss.zzz");
-        }else{r.intervalMs.clear();m_hasPrevious=false;}
+        }else{r.relativeSeconds=std::numeric_limits<double>::quiet_NaN();r.relativeTime.clear();r.intervalSeconds.clear();m_hasPrevious=false;}
         if(!r.typed){r.id=r.identifier.toUInt(nullptr,16);r.payload=QByteArray::fromHex(r.data.toLatin1());r.typed=true;}
         if(!r.epochMs)r.epochMs=QDateTime::currentMSecsSinceEpoch();if(!m_startedEpochMs)m_startedEpochMs=r.epochMs;
     }
-    m_history+=batch;if(m_history.size()>Capacity)m_history.remove(0,m_history.size()-Capacity);
+    // History is session-owned and is released only by clear()/destruction.
+    // Capacity limits the view, never the recorded/exportable collection.
+    m_history+=batch;
     emit recorded(batch);
+    if(m_paused){emit historyChanged();return;}
+    m_windowStart=qMax(qint64(0),historyCount()-Capacity);m_windowSize=int(qMin(qint64(Capacity),historyCount()));
+    emit historyChanged();
     if(!m_rolling){
         if(batch.size()>Capacity)batch=batch.mid(batch.size()-Capacity);
         int remove=qMax(0,int(m_rows.size()+batch.size())-Capacity);
@@ -120,7 +143,7 @@ void FrameTableModel::append(const FrameBatch &input){
             const auto p=index(n,0);if(rowCount(p))emit dataChanged(index(0,0,p),index(rowCount(p)-1,8,p));}
     }
 }
-void FrameTableModel::clear(){beginResetModel();m_rows.clear();m_history.clear();m_details.clear();m_keys.clear();m_relativeOriginUs=0;m_startedEpochMs=0;m_hasRelativeOrigin=false;m_previousUs=0;m_hasPrevious=false;endResetModel();emit cleared();}
+void FrameTableModel::clear(){beginResetModel();m_rows.clear();m_history=FrameBatch();m_details.clear();m_keys.clear();m_windowStart=0;m_windowSize=0;m_relativeOriginUs=0;m_startedEpochMs=0;m_hasRelativeOrigin=false;m_previousUs=0;m_hasPrevious=false;endResetModel();emit cleared();emit historyChanged();}
 bool FrameTableModel::exportCsv(const QString &p,QString &e) const{return TraceExporter::write(p,m_history,e,"csv");}
 bool FrameTableModel::exportTrace(const QString &p,QString &e) const{return TraceExporter::write(p,m_history,e);}
 }

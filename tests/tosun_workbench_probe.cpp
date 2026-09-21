@@ -36,9 +36,9 @@ int main(int argc,char **argv){
     }
     waitFor([&]{return wall.elapsed()>=1250;},1500);const auto after=rx.frames()->history().last();
     const double rtDelta=after.relativeTime.toDouble()-before.relativeTime.toDouble();const qint64 elapsed=wall.elapsed();
-    const bool timeOk=std::abs(rtDelta-elapsed)<150&&rtDelta>1000;
+    const bool timeOk=std::abs(rtDelta-elapsed/1000.0)<0.15&&rtDelta>1;
     sender->stop();const bool stopped=waitFor([&]{return !sender->running();});
     tx.toggleConnection();rx.toggleConnection();const bool closed=waitFor([&]{return !tx.connected()&&!rx.connected()&&!tx.pending()&&!rx.pending();});
-    QJsonObject report{{"wallMs",double(elapsed)},{"captureDeltaUs",double(after.captureUs-before.captureUs)},{"rtDeltaMs",rtDelta},{"firstRtMs",before.relativeTime},{"lastRtMs",after.relativeTime},{"unitVerified",timeOk},{"stopVerified",stopped},{"closeVerified",closed},{"rxRecords",rx.frames()->history().size()}};
+    QJsonObject report{{"wallMs",double(elapsed)},{"captureDeltaUs",double(after.captureUs-before.captureUs)},{"rtDeltaSeconds",rtDelta},{"firstRtSeconds",before.relativeTime},{"lastRtSeconds",after.relativeTime},{"unitVerified",timeOk},{"stopVerified",stopped},{"closeVerified",closed},{"rxRecords",rx.frames()->history().size()}};
     out<<QString::fromUtf8(QJsonDocument(report).toJson())<<Qt::endl;return timeOk&&stopped&&closed?0:7;
 }

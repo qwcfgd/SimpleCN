@@ -17,12 +17,19 @@ Developed with assistance from OpenAI Codex.
 
 </div>
 
-## New in V1.4.2: native file dialogs and millisecond timestamps
+## Message monitor follow-up
+
+- Relative and delta time now use seconds, with trailing fractional zeros omitted.
+- Keep and export all frames since startup or the last clear. Only the table window is limited to 10,000 records.
+- Pause updates defaults to off. While paused, recording continues and a left history scrollbar can load any window from the full cache. Resume returns to current data. New controls, counters and tooltips support 简中 / Eng. See the [monitor guide](docs/Trace-and-Graphics.md).
+- All 16 suites ultimately passed on each Qt version, including complete exports of over 30,000 records, paused browsing and bilingual UI checks. Physical hardware testing was omitted for this follow-up at the user's request.
+
+## New in V1.4.2: native Windows file dialogs
 
 - Use modern native Windows open/save dialogs for firmware, DBC / LDF, CDD, replay and channel configuration imports, and message / runtime log exports.
 - Remove the V1.4.1 custom top address bar. Use the system address bar and file-name field, retaining initial paths, filters, cancellation and file processing.
 - Application-provided dialog titles and the rest of the UI retain 简中 / Eng support. Windows controls the language of native buttons, navigation and system prompts.
-- Display monitor relative time (rt) in milliseconds without trailing fractional zeros: `1000000 μs → 1000 ms`, `1001250 μs → 1001.25 ms`. Significant fractional precision is retained.
+- The current follow-up uses seconds as requested: `1000000 μs → 1 s`, `1001250 μs → 1.00125 s`. Significant fractional precision is retained.
 
 ## Fixes in V1.4.1
 
@@ -37,7 +44,7 @@ Developed with assistance from OpenAI Codex.
 - Resize and drag columns in CAN message, LIN frame and signal tables. Layouts are saved per software channel in project configuration.
 - Single-click a transmit raw/physical value to edit. Enum editors accept text, provide completion and accept it with Tab. Raw values outside the enum table remain valid; undefined enum labels display `-`.
 - Arrange plots within the available height without a vertical scrollbar. Enum axes and grids adapt to zoom; tick labels appear only for defined enum values. The signal list’s y column displays matching enum labels; cursor differences remain numeric.
-- Display rt in milliseconds with up to six decimal places, omitting trailing fractional zeros, including fractional-microsecond input: `1200123.674 μs → 1200.123674 ms`. Recording starts at zero.
+- Display rt in seconds, omitting trailing fractional zeros, including fractional-microsecond input: `1200123.674 μs → 1.200123674 s`. Recording starts at zero.
 
 ## Features
 
@@ -45,7 +52,7 @@ Developed with assistance from OpenAI Codex.
 | --- | --- |
 | Channels | Multiple CAN / LIN software channels, simulation and hardware modes, independent tasks, project saving and unsaved-change prompts. |
 | Signal transmission | Import DBC / LDF; edit raw, physical and enum values; create messages, schedules and frames without a database; repeated and periodic transmission. |
-| Message monitor | t / rt / dt columns, filtering, follow mode, in-place updates by ID, nibble change colors and decoded signal expansion. Latest 10,000 records. |
+| Message monitor | t / rt / dt columns, filtering, follow mode, in-place updates by ID, nibble change colors and decoded signal expansion. Complete session cache, pause and history browsing; up to 10,000 records per display window. |
 | Logs and replay | Export ASC / BLF / CSV; replay ASC / BLF with channel mapping, enabled-message overrides and additional messages. |
 | Graphics | Signal groups, drag ordering, All / Marked / GrayNoMarked, Fit / arrange / All axes, cursor differences, grids and zoom. Up to 1,000 rendered points per signal, resampled for the viewport. Gaps longer than 5 seconds are not connected. |
 | UDS and download | Import CDD, select ECU / variant, generate service requests and parameters, simulated CAN / LIN download, configurable online LIN download and external security-access integration. |
@@ -69,7 +76,7 @@ These V1.3 screenshots use simulated channels and synthetic signals; they are no
 - **CAN FD:** supported in relevant log handling and simulated replay, but real CAN FD transmission/reception is not enabled.
 - **ECU download:** CAN download currently supports simulation only. Online LIN download requires target-specific settings and an authorized security-access implementation.
 
-V1.4.2 Release builds and all 16 CTest suites ultimately passed with both Qt 5.15.19 and Qt 6.8.4. Native open/save dialogs, Unicode/space paths and cancellation were checked on the Windows desktop. Both builds received real frames on TOSUN CAN1 at 500 kbit/s and verified millisecond rt values without trailing fractional zeros. This release did not validate live transmit editing, LIN ECU traffic or physical downloads. See the [release notes](docs/Release-1.4.2.md) for details and reruns.
+V1.4.2 Release builds and all 16 CTest suites ultimately passed with both Qt 5.15.19 and Qt 6.8.4. Native open/save dialogs, Unicode/space paths and cancellation were checked on the Windows desktop. Both builds received real frames on TOSUN CAN1 at 500 kbit/s and verified the initial millisecond rt values without trailing fractional zeros; the current follow-up switches display to seconds as requested. This release did not validate live transmit editing, LIN ECU traffic or physical downloads. See the [release notes](docs/Release-1.4.2.md) for details and reruns.
 
 ## Quick start
 

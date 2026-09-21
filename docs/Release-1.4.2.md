@@ -1,5 +1,7 @@
 # Qt-GeneralController V1.4.2
 
+> 后续修订：用户确认原来的毫秒显示正确，最新要求改为秒。当前主线的时刻/s、绝对时间/s、完整会话缓存、暂停历史浏览及回归结果见 [报文监视](Trace-and-Graphics.md)。后续修订按用户要求不进行实机测试。下文记录初次 V1.4.2 的变更及当时验证数据。
+
 GitHub 仓库已更名为 [SimpleCN](https://github.com/qwcfgd/SimpleCN)。本次保持应用名称及固定工程 / 构建路径不变。
 
 ## 文件选择

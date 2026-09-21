@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QFileInfo>
 #include <QJsonObject>
+#include <limits>
 #include "domain/ChannelDefaults.h"
 #include "domain/SignalTypes.h"
 namespace host {
@@ -22,7 +23,9 @@ struct FrameRecord {
     QString timestamp,channel,direction,identifier,data,status;
     int length=0;bool error=false,warning=false;
     QString relativeTime;
-    QString intervalMs;
+    // Display time has an explicit unit; raw capture values never reach the view.
+    double relativeSeconds=std::numeric_limits<double>::quiet_NaN();
+    QString intervalSeconds;
     // Numeric capture data is retained independently of display formatting.
     signal::Bus bus=signal::Bus::Can;
     quint32 id=0;

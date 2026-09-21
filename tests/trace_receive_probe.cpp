@@ -7,6 +7,9 @@
 #include <QJsonObject>
 #include <QTreeView>
 #include <QDir>
+#include <QCheckBox>
+#include <QScrollBar>
+#include <chrono>
 #include <cmath>
 #include "infrastructure/TosunHardware.h"
 #include "views/ChannelPage.h"
@@ -33,23 +36,33 @@ int main(int argc,char **argv){
     if(!waitFor([&]{return vm.frames()->history().size()>1;})){
         vm.toggleConnection();waitFor([&]{return !vm.connected()&&!vm.pending();});out<<"No received frames"<<Qt::endl;return 5;
     }
-    const auto before=vm.frames()->history().last();QElapsedTimer wall;wall.start();
-    waitFor([&]{return wall.elapsed()>=3000;},3500);const qint64 elapsed=wall.elapsed();const auto after=vm.frames()->history().last();
+    const auto before=vm.frames()->history().last();const auto wall=std::chrono::steady_clock::now();
+    auto wallMs=[&]{return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-wall).count();};
+    waitFor([&]{return wallMs()>=3000;},3500);const qint64 elapsed=wallMs();const auto after=vm.frames()->history().last();
     const double delta=after.relativeTime.toDouble()-before.relativeTime.toDouble();
     auto *table=page.findChild<QTreeView*>("frameTable");const auto last=table->model()->index(table->model()->rowCount()-1,1);
     const QString displayed=last.data().toString();
     bool formatOk=true;int received=0;for(const auto &record:vm.frames()->history()){
         if(!record.echo&&!record.error&&!record.simulated)++received;
         if(record.relativeTime.contains('.')&&record.relativeTime.endsWith('0'))formatOk=false;
-        if(std::abs(record.relativeTime.toDouble()-record.timeUs/1000.0)>0.000001)formatOk=false;
+        if(std::abs(record.relativeTime.toDouble()-record.timeUs/1000000.0)>0.000001)formatOk=false;
     }
-    const bool timeOk=delta>2000&&std::abs(delta-elapsed)<250;
+    const bool timeOk=delta>2&&std::abs(delta-elapsed/1000.0)<0.25;
     const QString directory=QDir(args[4]).absolutePath();QDir().mkpath(directory);table->scrollToBottom();QCoreApplication::processEvents();
     const bool captured=page.grab().save(directory+"/hardware-monitor.png");
+    auto *pause=page.findChild<QCheckBox*>("framePause");pause->setChecked(true);
+    const auto frozen=table->model()->index(table->model()->rowCount()-1,1).data();const int position=table->verticalScrollBar()->value();
+    const auto countBeforePause=vm.frames()->historyCount();
+    const bool continued=waitFor([&]{return vm.frames()->historyCount()>countBeforePause+4;});
+    const bool frozenOk=frozen==table->model()->index(table->model()->rowCount()-1,1).data()&&position==table->verticalScrollBar()->value();
+    page.grab().save(directory+"/hardware-paused.png");pause->setChecked(false);
+    const bool resumed=table->model()->index(table->model()->rowCount()-1,1).data().toDouble()>frozen.toDouble();
+    vm.frames()->clear();const bool restarted=waitFor([&]{return vm.frames()->historyCount()>1;})&&vm.frames()->index(0,1).data().toString()=="0";
     vm.toggleConnection();const bool closed=waitFor([&]{return !vm.connected()&&!vm.pending();});
     const QJsonObject report{{"wallMs",double(elapsed)},{"captureDeltaUs",double(after.captureUs-before.captureUs)},
-        {"hardwareDeltaUs",double(after.hardwareUs-before.hardwareUs)},{"displayDeltaMs",delta},{"lastDisplayMs",displayed},
-        {"unitVerified",timeOk},{"trimmedFormatVerified",formatOk},{"receivedFrames",received},{"screenshot",captured},{"closed",closed}};
+        {"hardwareDeltaUs",double(after.hardwareUs-before.hardwareUs)},{"displayDeltaSeconds",delta},{"lastDisplaySeconds",displayed},
+        {"unitVerified",timeOk},{"trimmedFormatVerified",formatOk},{"receivedFrames",received},{"screenshot",captured},{"closed",closed},
+        {"recordedWhilePaused",continued},{"viewFrozen",frozenOk},{"resumed",resumed},{"clearRestartedAtZero",restarted}};
     out<<QString::fromUtf8(QJsonDocument(report).toJson())<<Qt::endl;
-    return timeOk&&formatOk&&received>1&&captured&&closed?0:6;
+    return timeOk&&formatOk&&received>1&&captured&&closed&&continued&&frozenOk&&resumed&&restarted?0:6;
 }

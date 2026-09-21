@@ -141,19 +141,19 @@ private slots:
         FrameTableModel model;FrameRecord record;record.timestamp="12:34:56.789";record.relativeTime="1000000";
         model.append({record});QCOMPARE(model.columnCount(),9);
         QCOMPARE(model.headerData(0,Qt::Horizontal).toString(),QString("时间"));
-        QCOMPARE(model.headerData(2,Qt::Horizontal).toString(),QString("绝对时间/ms"));
-        QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.000"));
+        QCOMPARE(model.headerData(2,Qt::Horizontal).toString(),QString("绝对时间/s"));
+        QCOMPARE(model.data(model.index(0,2)).toString(),QString("0"));
         record.relativeTime="1001250";model.append({record});
         record.relativeTime="1003751";model.append({record});
-        QCOMPARE(model.data(model.index(1,2)).toString(),QString("1.250"));
-        QCOMPARE(model.data(model.index(2,1)).toString(),QString("3.751"));
-        QCOMPARE(model.data(model.index(2,2)).toString(),QString("2.501"));
+        QCOMPARE(model.data(model.index(1,2)).toString(),QString("0.00125"));
+        QCOMPARE(model.data(model.index(2,1)).toString(),QString("0.003751"));
+        QCOMPARE(model.data(model.index(2,2)).toString(),QString("0.002501"));
         QString error;const auto path=m_temp.path()+"/intervals.csv";QVERIFY(model.exportCsv(path,error));
         QFile csv(path);QVERIFY(csv.open(QIODevice::ReadOnly));const auto bytes=csv.readAll();
-        QVERIFY(bytes.contains(QString("绝对时间/ms").toUtf8()));QVERIFY(bytes.contains("\"3.751\",\"2.501\""));
+        QVERIFY(bytes.contains(QString("绝对时间/s").toUtf8()));QVERIFY(bytes.contains("\"0.003751\",\"0.002501\""));
         model.clear();model.append({record});
         QCOMPARE(model.data(model.index(0,1)).toString(),QString("0"));
-        QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.000"));
+        QCOMPARE(model.data(model.index(0,2)).toString(),QString("0"));
     }
     void boundedFramesLiteralFilterAndExport() {
         FrameTableModel firstFrame;FrameRecord first;
@@ -165,9 +165,9 @@ private slots:
             frames.append({QString::number(i),"=SUM(A1)","RX","0x20","12 34","有效响应",2});
         model.append(frames);QCOMPARE(model.rowCount(),FrameTableModel::Capacity);
         QVERIFY(QRegularExpression("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$").match(model.data(model.index(0,0)).toString()).hasMatch());
-        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.02"));
-        QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.001"));
-        QCOMPARE(model.headerData(1,Qt::Horizontal).toString(),QString("时刻/ms"));
+        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.00002"));
+        QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.000001"));
+        QCOMPARE(model.headerData(1,Qt::Horizontal).toString(),QString("时刻/s"));
         QCOMPARE(model.headerData(5,Qt::Horizontal).toString(),QString("ID"));
         QCOMPARE(model.data(model.index(0,0),Qt::TextAlignmentRole).toInt(),int(Qt::AlignLeft|Qt::AlignVCenter));
         QSortFilterProxyModel proxy;proxy.setSourceModel(&model);proxy.setFilterKeyColumn(-1);proxy.setFilterFixedString("[");
@@ -254,7 +254,7 @@ private slots:
         int resets=0;const auto resetPrefix=settings.nad.rightJustified(2,'0').toUpper()+" 02 11 01";
         for(const auto &args:frames)for(const auto &f:qvariant_cast<FrameBatch>(args[0])){
             QVERIFY(QRegularExpression("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$").match(f.timestamp).hasMatch());
-            QVERIFY(QRegularExpression("^\\d+$").match(f.relativeTime).hasMatch());
+            QVERIFY(f.captureUs>=0);QVERIFY(f.relativeTime.isEmpty());
             QVERIFY(f.direction!="SIM HEADER");
             if(f.direction=="SIM TX"&&f.data.startsWith(resetPrefix))++resets;
         }

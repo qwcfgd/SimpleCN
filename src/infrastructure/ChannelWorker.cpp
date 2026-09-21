@@ -7,7 +7,7 @@ using namespace communication;
 static void stampFrame(FrameRecord &record,const QElapsedTimer &clock){
     const auto now=QDateTime::currentDateTime();record.epochMs=now.toMSecsSinceEpoch();
     record.timestamp=now.toString("HH:mm:ss.zzz");
-    Q_UNUSED(clock);record.captureUs=captureTimeUs();record.relativeTime=QString::number(record.captureUs);
+    Q_UNUSED(clock);record.captureUs=captureTimeUs();
 }
 class PreviewBackend final : public HardwareBackend {
 public:

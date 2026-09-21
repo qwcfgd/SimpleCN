@@ -69,3 +69,8 @@ python scripts/check_mvvm_boundaries.py
 ## V1.4.2 复核
 
 文件对话框恢复为 View 层的原生 QFileDialog 调用，标题在调用前经 Language::text 翻译；移除 PathFileDialog 自绘类与应用 / 语言控制器中的全局禁用设置。路径选择结果继续交给既有 ViewModel 处理。时刻/ms 的去尾零处理留在 FrameTableModel，保留底层 captureUs / timeUs、硬件时间戳、协议与回放单位。原生桌面与硬件接收探针只构建在 qttemp，不进入 CTest 自动弹窗或程序发布目录。
+
+
+## 报文监视后续修订
+
+FrameTableModel 保留完整会话缓存，同时管理最多 10,000 条的显示窗口、暂停状态与历史位置；暂停不阻断 recorded 信号，图像和后台记录继续。ChannelPage 只绑定暂停控件和按比例定位的滚动条，导出继续由 TraceExporter 处理完整缓存。新增控件、统计、提示与秒单位表头接入现有 Language / UiLanguageController。时刻改用显式 relativeSeconds 数值与秒格式，采集线程仅提供数值 captureUs，不再将原始微秒塞进显示字符串；协议和回放单位不变。

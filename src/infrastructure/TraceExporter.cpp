@@ -41,8 +41,8 @@ QByteArray csv(const FrameBatch &rows){
     QByteArray b("\xEF\xBB\xBF");
     const auto escape=[](QString s){if(!s.isEmpty()&&QString("=+-@").contains(s.front()))s.prepend('\'');s.replace('"',"\"\"");return "\""+s+"\"";};
     auto line=[&](const QStringList &cells){QStringList out;for(auto s:cells)out<<escape(s);b+=(out.join(',')+"\r\n").toUtf8();};
-    line({"时间","时刻/ms","绝对时间/ms","软件通道","方向","ID","长度","数据","状态"});
-    for(const auto &r:rows)line({r.timestamp,r.relativeTime,r.intervalMs,r.channel,r.direction,r.identifier,QString::number(r.length),r.data,r.status});
+    line({"时间","时刻/s","绝对时间/s","软件通道","方向","ID","长度","数据","状态"});
+    for(const auto &r:rows)line({r.timestamp,r.relativeTime,r.intervalSeconds,r.channel,r.direction,r.identifier,QString::number(r.length),r.data,r.status});
     return b;
 }
 }

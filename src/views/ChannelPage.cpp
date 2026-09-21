@@ -161,17 +161,48 @@ void ChannelPage::build() {
     auto proxy=new FrameFilterProxy(this);proxy->setRecursiveFilteringEnabled(true);proxy->setSourceModel(m_vm->frames());proxy->setFilterKeyColumn(-1);proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
     m_table->setModel(proxy);m_table->header()->setStretchLastSection(true);
     const QList<int> widths={110,95,95,65,45,150,80,205,120};for(int i=0;i<widths.size();++i)m_table->setColumnWidth(i,widths[i]);
+    auto historyScroll=new QScrollBar(Qt::Vertical);historyScroll->setObjectName("frameHistoryScroll");
+    historyScroll->setAccessibleName("历史报文浏览");historyScroll->setVisible(false);
+    // The thumb represents the loaded history window, not the tree viewport.
+    historyScroll->setStyleSheet("QScrollBar:vertical { width: 12px; margin: 0px; background: #F2F5F9; } QScrollBar::handle:vertical { background: #12889C; min-height: 1px; border-radius: 0px; } QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }");
     auto displayActions=new QHBoxLayout;
-    auto t=new QCheckBox("t"),rt=new QCheckBox("rt"),dt=new QCheckBox("dt"),rolling=new QCheckBox("滚动显示");
+    auto t=new QCheckBox("t"),rt=new QCheckBox("rt"),dt=new QCheckBox("dt"),rolling=new QCheckBox("滚动显示"),pause=new QCheckBox("暂停更新");
+    pause->setObjectName("framePause");pause->setChecked(false);pause->setToolTip("暂停表格更新，后台继续记录；拖动左侧滚动条浏览历史报文");
     t->setObjectName("frameTimeT");rt->setObjectName("frameTimeRt");dt->setObjectName("frameTimeDt");rolling->setObjectName("frameRolling");
-    t->setToolTip("当前系统时间");rt->setToolTip("从记录开始为 0 ms 的时刻");dt->setToolTip("相邻记录时间差 / ms");
+    t->setToolTip("当前系统时间");rt->setToolTip("从记录开始为 0 s 的时刻");dt->setToolTip("相邻记录时间差 / s");
     rolling->setToolTip("同一软件通道、总线类型和 ID 原位更新；半字节连续不变 10 帧后变灰");rt->setChecked(true);
-    for(auto box:{t,rt,dt,rolling})displayActions->addWidget(box);displayActions->addStretch();
-    exportButton->setToolTip("导出最近 10,000 条历史缓存，不受同 ID 合并和列显隐影响");
+    for(auto box:{t,rt,dt,rolling,pause})displayActions->addWidget(box);displayActions->addStretch();
+    exportButton->setToolTip("导出启动或上次清空后的全部缓存报文，不受暂停、筛选或显示窗口影响");
     auto titleItem=frameLayout->takeAt(0);displayActions->insertWidget(0,titleItem->widget());delete titleItem;frameLayout->insertLayout(0,displayActions);
     auto timeColumns=[this,t,rt,dt]{m_table->setColumnHidden(0,!t->isChecked());m_table->setColumnHidden(1,!rt->isChecked());m_table->setColumnHidden(2,!dt->isChecked());m_table->setTreePosition(t->isChecked()?0:rt->isChecked()?1:dt->isChecked()?2:3);};
     for(auto box:{t,rt,dt})connect(box,&QCheckBox::toggled,this,timeColumns);timeColumns();
-    connect(rolling,&QCheckBox::toggled,this,[this](bool on){m_vm->frames()->setRolling(on);m_follow->setEnabled(!on);});
+    connect(rolling,&QCheckBox::toggled,this,[this,pause](bool on){m_vm->frames()->setRolling(on);m_follow->setEnabled(!on&&!pause->isChecked());});
+    connect(pause,&QCheckBox::toggled,this,[this,rolling](bool on){
+        m_vm->frames()->setPaused(on);rolling->setEnabled(!on);m_follow->setEnabled(!on&&!rolling->isChecked());
+        if(!on&&m_follow->isChecked()&&!rolling->isChecked())m_table->scrollToBottom();
+    });
+    auto historyRange=[this,historyScroll]{
+        auto *model=m_vm->frames();const qint64 maximum=qMax(qint64(0),model->historyCount()-FrameTableModel::Capacity);
+        historyScroll->setVisible(model->paused()&&maximum>0);
+        if(!historyScroll->isSliderDown()){
+            QSignalBlocker blocker(historyScroll);const qint64 span=qMax(qint64(0),model->historyCount()-model->windowSize());
+            const int range=int(qMin(span,qint64(1000000000)));
+            historyScroll->setRange(0,range);
+            historyScroll->setPageStep(span?int(qRound64(double(model->windowSize())*range/span)):model->windowSize());
+            historyScroll->setValue(maximum?int(qRound64(double(model->windowStart())*range/maximum)):0);
+            historyScroll->setProperty("historyMaximum",maximum);
+        }
+        const qint64 first=model->windowSize()?model->windowStart()+1:0,last=model->windowStart()+model->windowSize();
+        historyScroll->setToolTip(Language::text("缓存第 %1–%2 条 / 共 %3 条").arg(first).arg(last).arg(model->historyCount()));
+    };
+    connect(historyScroll,&QScrollBar::valueChanged,this,[this,historyScroll](int value){
+        const auto maximum=historyScroll->property("historyMaximum").toLongLong();
+        m_vm->frames()->setHistoryStart(historyScroll->maximum()?qRound64(double(value)*maximum/historyScroll->maximum()):0);
+        m_table->scrollToTop();
+    });
+    connect(historyScroll,&QScrollBar::sliderReleased,this,historyRange);
+    connect(m_vm->frames(),&FrameTableModel::historyChanged,this,historyRange);
+    connect(&Language::instance(),&Language::changed,this,historyRange);historyRange();
     auto savingDisplay=std::make_shared<bool>(false);
     auto saveDisplay=[this,t,rt,dt,rolling,filter,savingDisplay]{if(*savingDisplay)return;auto ui=m_vm->signalTransmission()->working().uiSettings;ui["monitor"]=QJsonObject{{"t",t->isChecked()},{"rt",rt->isChecked()},{"dt",dt->isChecked()},{"rolling",rolling->isChecked()},{"follow",m_follow->isChecked()},{"filter",filter->text()}};m_vm->signalTransmission()->setUiSettings(ui);};
     for(auto *box:{t,rt,dt,rolling,m_follow})connect(box,&QCheckBox::toggled,this,saveDisplay);connect(filter,&QLineEdit::textChanged,this,saveDisplay);
@@ -184,7 +215,7 @@ void ChannelPage::build() {
     connect(m_vm->frames(),&QAbstractItemModel::modelReset,this,[this,proxy,expanded]{
         for(int row=0;row<m_vm->frames()->rowCount();++row){auto source=m_vm->frames()->index(row,0);if(expanded->contains(source.data(Qt::UserRole+2).toString()))m_table->setExpanded(proxy->mapFromSource(source),true);}
     });
-    frameLayout->addWidget(m_table,1);
+    auto historyLayout=new QHBoxLayout;historyLayout->setSpacing(4);historyLayout->addWidget(historyScroll);historyLayout->addWidget(m_table,1);frameLayout->addLayout(historyLayout,1);
     auto logActions=new QHBoxLayout;auto clearLog=new QPushButton("清空");auto exportLog=new QPushButton("导出");
     logActions->addWidget(label(QString("最近 %1 条事件").arg(ChannelPageInitialValues::logCapacity)),1);logActions->addWidget(clearLog);logActions->addWidget(exportLog);logLayout->addLayout(logActions);
     m_log=new QPlainTextEdit;m_log->setObjectName("eventLog");m_log->setReadOnly(true);m_log->setMaximumBlockCount(ChannelPageInitialValues::logCapacity);
@@ -203,9 +234,10 @@ void ChannelPage::build() {
     connect(exportButton,&QPushButton::clicked,this,&ChannelPage::exportFrames);
     connect(clearLog,&QPushButton::clicked,m_vm,&ChannelViewModel::clearLogs);
     connect(exportLog,&QPushButton::clicked,this,&ChannelPage::exportLogs);
-    const auto count=[this,proxy](){m_count->setText(QString("%1 / %2 条").arg(proxy->rowCount()).arg(m_vm->frames()->rowCount()));};
-    connect(proxy,&QAbstractItemModel::rowsInserted,this,[this,count](){count();if(m_follow->isChecked()&&!m_vm->frames()->rolling())m_table->scrollToBottom();});
+    const auto count=[this,proxy](){m_count->setText(Language::text("显示 %1 / 缓存 %2 条").arg(proxy->rowCount()).arg(m_vm->frames()->historyCount()));};
+    connect(proxy,&QAbstractItemModel::rowsInserted,this,[this,count](){count();if(m_follow->isChecked()&&!m_vm->frames()->rolling()&&!m_vm->frames()->paused())m_table->scrollToBottom();});
     connect(proxy,&QAbstractItemModel::rowsRemoved,this,count);connect(proxy,&QAbstractItemModel::modelReset,this,count);
+    connect(m_vm->frames(),&FrameTableModel::historyChanged,this,count);connect(&Language::instance(),&Language::changed,this,count);count();
     for(auto e:{m_flashPath,m_appPath,m_flashAddress,m_appAddress})
         connect(e,&QLineEdit::textChanged,this,&ChannelPage::applyForm);
     connect(m_rxdEnabled,&QCheckBox::toggled,this,&ChannelPage::applyForm);
