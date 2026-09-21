@@ -8,7 +8,6 @@
 #include "localization/Language.h"
 #include "views/MainWindow.h"
 int main(int argc,char **argv){
-    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication app(argc,argv);QApplication::setStyle("Fusion");
     app.setApplicationName(host::MainWindowInitialValues::applicationName);app.setApplicationVersion(host::MainWindowInitialValues::version);
     app.setOrganizationName(host::MainWindowInitialValues::organizationName);app.setFont(QFont(host::MainWindowInitialValues::fontFamily,host::MainWindowInitialValues::fontSize));

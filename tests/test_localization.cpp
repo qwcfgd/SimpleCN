@@ -76,7 +76,11 @@ private slots:
     void fractionalMicroseconds(){
         FrameTableModel model;FrameRecord start;start.relativeTime="0";FrameRecord next;next.relativeTime="1200123.674";model.append({start,next});
         QCOMPARE(model.index(1,1).data().toString(),QString("1200.123674"));
-        model.clear();start.captureUs=1000;next.captureUs=1201123;model.append({start,next});QCOMPARE(model.index(1,1).data().toString(),QString("1200.123000"));
+        model.clear();start.captureUs=1000;next.captureUs=1201123;model.append({start,next});QCOMPARE(model.index(1,1).data().toString(),QString("1200.123"));
+        model.clear();start.captureUs=0;next.captureUs=1000000;model.append({start,next});
+        QCOMPARE(model.index(0,1).data().toString(),QString("0"));QCOMPARE(model.index(1,1).data().toString(),QString("1000"));
+        next.captureUs=1000010;model.append({next});QCOMPARE(model.index(2,1).data().toString(),QString("1000.01"));
+        next.captureUs=1000000000000LL;model.append({next});QCOMPARE(model.index(3,1).data().toString(),QString("1000000000"));
     }
     void singleClickEditing(){
         SignalTransmitViewModel vm(signal::Bus::Can);QString error;

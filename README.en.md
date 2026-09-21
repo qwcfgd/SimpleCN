@@ -4,25 +4,32 @@
 
 **CAN / LIN signals, messages and diagnostics in one workbench**
 
-[简体中文](README.md) · English
+[简体中文](README.md) · English · [GitHub: SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.4.1-2563eb)
+![Version](https://img.shields.io/badge/version-1.4.2-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 Developed with assistance from OpenAI Codex.
 
-[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.4.1 release notes (Chinese)](docs/Release-1.4.1.md)
+[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.4.2 release notes (Chinese)](docs/Release-1.4.2.md)
 
 </div>
+
+## New in V1.4.2: native file dialogs and millisecond timestamps
+
+- Use modern native Windows open/save dialogs for firmware, DBC / LDF, CDD, replay and channel configuration imports, and message / runtime log exports.
+- Remove the V1.4.1 custom top address bar. Use the system address bar and file-name field, retaining initial paths, filters, cancellation and file processing.
+- Application-provided dialog titles and the rest of the UI retain 简中 / Eng support. Windows controls the language of native buttons, navigation and system prompts.
+- Display monitor relative time (rt) in milliseconds without trailing fractional zeros: `1000000 μs → 1000 ms`, `1001250 μs → 1001.25 ms`. Significant fractional precision is retained.
 
 ## Fixes in V1.4.1
 
 - Preserve in-progress raw, physical and enum edits during transmission, incoming frames, status updates and language changes; committed values update subsequent payloads.
 - Keep physical coordinates for enum signals. Defined positions show enum labels; other ticks show integers, with matching grid lines.
-- Add a pasteable address bar to firmware, database and replay file pickers, including full paths, folders, Unicode/spaces and Ctrl+L. Unify all three work-area backgrounds.
-- Clarify rt milliseconds: one second corresponds to about 1000 ms. Six decimal places with three trailing zeros are normal for microsecond capture precision. Hardware acceptance was not completed because the device was removed.
+- Unify all three work-area backgrounds. The custom address bar introduced in this version was removed in V1.4.2 in favor of native Windows path input.
+- Clarify rt milliseconds: one second corresponds to about 1000 ms. V1.4.1 hardware acceptance was pending when the device was removed; V1.4.2 also removes trailing fractional zeros.
 
 ## New in V1.4
 
@@ -30,7 +37,7 @@ Developed with assistance from OpenAI Codex.
 - Resize and drag columns in CAN message, LIN frame and signal tables. Layouts are saved per software channel in project configuration.
 - Single-click a transmit raw/physical value to edit. Enum editors accept text, provide completion and accept it with Tab. Raw values outside the enum table remain valid; undefined enum labels display `-`.
 - Arrange plots within the available height without a vertical scrollbar. Enum axes and grids adapt to zoom; tick labels appear only for defined enum values. The signal list’s y column displays matching enum labels; cursor differences remain numeric.
-- Display rt in milliseconds with six decimal places, including fractional-microsecond input: `1200123.674 μs → 1200.123674 ms`. Recording starts at zero.
+- Display rt in milliseconds with up to six decimal places, omitting trailing fractional zeros, including fractional-microsecond input: `1200123.674 μs → 1200.123674 ms`. Recording starts at zero.
 
 ## Features
 
@@ -62,7 +69,7 @@ These V1.3 screenshots use simulated channels and synthetic signals; they are no
 - **CAN FD:** supported in relevant log handling and simulated replay, but real CAN FD transmission/reception is not enabled.
 - **ECU download:** CAN download currently supports simulation only. Online LIN download requires target-specific settings and an authorized security-access implementation.
 
-V1.4.1 Release builds and all 16 CTest suites passed with both Qt 5.15.19 and Qt 6.8.4. Tests use simulation and mock SDKs; they do not replace real ECU acceptance.
+V1.4.2 Release builds and all 16 CTest suites ultimately passed with both Qt 5.15.19 and Qt 6.8.4. Native open/save dialogs, Unicode/space paths and cancellation were checked on the Windows desktop. Both builds received real frames on TOSUN CAN1 at 500 kbit/s and verified millisecond rt values without trailing fractional zeros. This release did not validate live transmit editing, LIN ECU traffic or physical downloads. See the [release notes](docs/Release-1.4.2.md) for details and reruns.
 
 ## Quick start
 
@@ -118,7 +125,7 @@ Release copies, ZIPs and SHA256 files are written under `qttemp/Qt-GeneralContro
 
 ## Documentation
 
-Most detailed documentation is currently in Chinese: [user guide](docs/User-Guide.md), [trace and graphics](docs/Trace-and-Graphics.md), [workbench and replay](docs/Signal-Workbench-Replay.md), [CDD / UDS](docs/CDD-UDS.md), [V1.4.1 changes](docs/Release-1.4.1.md), [MVVM review](docs/MVVM-Audit.md), [hardware scope](docs/Tosun-Hardware.md).
+Most detailed documentation is currently in Chinese: [user guide](docs/User-Guide.md), [trace and graphics](docs/Trace-and-Graphics.md), [workbench and replay](docs/Signal-Workbench-Replay.md), [CDD / UDS](docs/CDD-UDS.md), [V1.4.2 changes](docs/Release-1.4.2.md), [MVVM review](docs/MVVM-Audit.md), [hardware scope](docs/Tosun-Hardware.md).
 
 ## License
 

@@ -23,7 +23,6 @@
 #include <QTextCursor>
 namespace host {
 UiLanguageController::UiLanguageController():QObject(qApp){
-    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     qApp->installEventFilter(this);
     connect(&Language::instance(),&Language::changed,this,[this]{refresh();});
 }

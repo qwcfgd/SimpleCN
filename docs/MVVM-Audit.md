@@ -64,3 +64,8 @@ python scripts/check_mvvm_boundaries.py
 ## V1.4.1 复核
 
 运行状态刷新与发送草稿解耦，模型仅在可编辑状态变化时刷新相关展示；编辑器初始化后保留草稿，提交继续走 ViewModel 校验和 worker 负载更新。枚举刻度生成和文件路径导航封装在 View 中。在线诊断工具仅用于人工回环验收，不加入 CTest 或主程序依赖。
+
+
+## V1.4.2 复核
+
+文件对话框恢复为 View 层的原生 QFileDialog 调用，标题在调用前经 Language::text 翻译；移除 PathFileDialog 自绘类与应用 / 语言控制器中的全局禁用设置。路径选择结果继续交给既有 ViewModel 处理。时刻/ms 的去尾零处理留在 FrameTableModel，保留底层 captureUs / timeUs、硬件时间戳、协议与回放单位。原生桌面与硬件接收探针只构建在 qttemp，不进入 CTest 自动弹窗或程序发布目录。

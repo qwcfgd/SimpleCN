@@ -1,3 +1,4 @@
+#include "localization/Language.h"
 #include "SignalTransmitPage.h"
 #include "SignalPlotDialog.h"
 #include "viewmodels/SignalTableModels.h"
@@ -14,7 +15,6 @@
 #include <QSplitter>
 #include <QSortFilterProxyModel>
 #include <QFileDialog>
-#include "PathFileDialog.h"
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QSpinBox>
@@ -43,7 +43,7 @@ SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent
     m_import=button("导入…","signalImport");m_reload=button("重新加载","signalReload");files->addWidget(m_path,1);files->addWidget(m_import);files->addWidget(m_reload);configuration->addLayout(files);
     auto *replay=new QHBoxLayout;m_replayPath=new QLineEdit;m_replayPath->setObjectName("signalReplayPath");m_replayPath->setReadOnly(true);m_replayPath->setPlaceholderText("信号回放源文件（ASC / BLF）");
     m_replayImport=button("导入…","signalReplayImport");m_replayReset=button("重置","signalReplayReset");m_replayMap=button("通道映射…","signalReplayMapping");replay->addWidget(m_replayPath,1);replay->addWidget(m_replayImport);replay->addWidget(m_replayReset);replay->addWidget(m_replayMap);configuration->addLayout(replay);
-    connect(m_replayImport,&QPushButton::clicked,this,[this]{const auto path=PathFileDialog::getOpenFileName(m_configurationDialog,"导入信号回放源",m_replayPath->text(),"日志 (*.blf *.asc *.BLF *.ASC)");if(!path.isEmpty())m_vm->importReplay(path);});
+    connect(m_replayImport,&QPushButton::clicked,this,[this]{const auto path=QFileDialog::getOpenFileName(m_configurationDialog,Language::text("导入信号回放源"),m_replayPath->text(),Language::text("日志 (*.blf *.asc *.BLF *.ASC)"));if(!path.isEmpty())m_vm->importReplay(path);});
     connect(m_replayReset,&QPushButton::clicked,m_vm,&SignalTransmitViewModel::resetReplay);connect(m_replayMap,&QPushButton::clicked,this,&SignalTransmitPage::editReplayMapping);
     m_summary=plain("");m_summary->setObjectName("signalDatabaseSummary");configuration->addWidget(m_summary);
     m_rolePanel=new QWidget;auto*roles=new QHBoxLayout(m_rolePanel);roles->setContentsMargins(0,0,0,0);
@@ -77,7 +77,7 @@ SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent
     connect(m_search,&QLineEdit::textChanged,proxy,&QSortFilterProxyModel::setFilterFixedString);
     connect(m_tree->selectionModel(),&QItemSelectionModel::currentChanged,this,[this,proxy](const QModelIndex&i){const auto source=proxy->mapToSource(i.sibling(i.row(),0));const auto key=source.data(Qt::UserRole).toString();if(!key.isEmpty()){for(int row=0;row<m_plan->model()->rowCount();++row)if((m_canModel?m_canModel->key(row):m_linModel->key(row))==key){m_plan->selectRow(row);break;}}});
     connect(m_plan->selectionModel(),&QItemSelectionModel::currentRowChanged,this,[this](const QModelIndex&i){selectFrame(m_canModel?m_canModel->key(i.row()):m_linModel->key(i.row()));});
-    connect(m_import,&QPushButton::clicked,this,[this]{const auto path=PathFileDialog::getOpenFileName(m_configurationDialog,"导入只读信号数据库",m_path->text(),m_canModel?"DBC (*.dbc *.DBC)":"LDF (*.ldf *.LDF)");if(!path.isEmpty())m_vm->importAsync(path);});
+    connect(m_import,&QPushButton::clicked,this,[this]{const auto path=QFileDialog::getOpenFileName(m_configurationDialog,Language::text("导入只读信号数据库"),m_path->text(),m_canModel?"DBC (*.dbc *.DBC)":"LDF (*.ldf *.LDF)");if(!path.isEmpty())m_vm->importAsync(path);});
     connect(m_reload,&QPushButton::clicked,this,[this]{m_vm->importAsync(m_vm->database()->path);});
     connect(m_valueModel,&SignalValueTableModel::validation,this,&SignalTransmitPage::feedback);
     m_plan->setContextMenuPolicy(Qt::CustomContextMenu);

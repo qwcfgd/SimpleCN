@@ -13,7 +13,6 @@
 #include <QCheckBox>
 #include <QSplitter>
 #include <QHeaderView>
-#include <QFileDialog>
 #include <QSortFilterProxyModel>
 #include <QSignalBlocker>
 #include <QApplication>

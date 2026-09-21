@@ -138,6 +138,16 @@ host_deploy(test_revision141)
 add_test(NAME revision141 COMMAND test_revision141 -o "${CMAKE_CURRENT_BINARY_DIR}/revision141-results.xml,xml")
 set_tests_properties(revision141 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
 
+# Opt-in native desktop probe with a bounded Windows driver; never run by CTest.
+if(WIN32)
+    add_executable(native_file_dialog_probe native_file_dialog_probe.cpp)
+    target_link_libraries(native_file_dialog_probe PRIVATE bootloader_ui user32 gdi32)
+    host_deploy(native_file_dialog_probe)
+    add_executable(trace_receive_probe trace_receive_probe.cpp)
+    target_link_libraries(trace_receive_probe PRIVATE bootloader_ui)
+    host_deploy(trace_receive_probe)
+endif()
+
 # Explicit CAN1/CAN2 operator test, never registered with CTest; never opens LIN.
 add_executable(tosun_workbench_probe tosun_workbench_probe.cpp)
 target_link_libraries(tosun_workbench_probe PRIVATE bootloader_ui)

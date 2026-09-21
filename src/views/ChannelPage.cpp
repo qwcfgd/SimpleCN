@@ -27,7 +27,6 @@
 #include <QHeaderView>
 #include <QSortFilterProxyModel>
 #include <QFileDialog>
-#include "PathFileDialog.h"
 #include <QInputDialog>
 #include <QSignalBlocker>
 #include <QTimer>
@@ -391,7 +390,7 @@ void ChannelPage::render() {
 void ChannelPage::browseImage(bool flash) {
     const QString current=flash?m_vm->settings().flashPath:m_vm->settings().applicationPath;
     const QString start=current.isEmpty()?QDir::homePath():QFileInfo(current).absolutePath();
-    const QString path=PathFileDialog::getOpenFileName(this,"选择镜像",start,"Firmware (*.bin *.hex *.BIN *.HEX)");
+    const QString path=QFileDialog::getOpenFileName(this,Language::text("选择镜像"),start,"Firmware (*.bin *.hex *.BIN *.HEX)");
     if(!path.isEmpty())m_vm->chooseImage(flash,path);
 }
 void ChannelPage::exportFrames(){
@@ -399,12 +398,12 @@ void ChannelPage::exportFrames(){
     auto user=qEnvironmentVariable("USERNAME");if(user.isEmpty())user=qEnvironmentVariable("USER");if(user.isEmpty())user="user";
     const auto epoch=m_vm->frames()->startedEpochMs();const auto stamp=QDateTime::fromMSecsSinceEpoch(epoch?epoch:QDateTime::currentMSecsSinceEpoch()).toString("yyyyMMdd_HHmmss_zzz");
     QString name="Qt-GeneralController_"+m_vm->settings().softwareId+"_"+user+"_"+stamp;name.replace(QRegularExpression("[<>:\"/\\\\|?*]"),"_");
-    auto file=QFileDialog::getSaveFileName(this,"导出当前缓存报文",name,"BLF (*.blf);;ASC (*.asc);;CSV (*.csv)",&filter);
+    auto file=QFileDialog::getSaveFileName(this,Language::text("导出当前缓存报文"),name,"BLF (*.blf);;ASC (*.asc);;CSV (*.csv)",&filter);
     if(file.isEmpty())return;if(QFileInfo(file).suffix().isEmpty())file+=filter.startsWith("BLF")?".blf":filter.startsWith("CSV")?".csv":".asc";QString error;
     m_vm->log(m_vm->frames()->exportTrace(file,error)?"已导出报文："+file:error);
 }
 void ChannelPage::exportLogs(){
-    const auto file=QFileDialog::getSaveFileName(this,"导出运行日志",m_vm->settings().softwareId+"-log.txt","Text (*.txt)");
+    const auto file=QFileDialog::getSaveFileName(this,Language::text("导出运行日志"),m_vm->settings().softwareId+"-log.txt","Text (*.txt)");
     if(file.isEmpty())return;QString error;m_vm->log(m_vm->exportLogs(file,error)?"已导出日志："+file:error);
 }
 }

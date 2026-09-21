@@ -46,7 +46,7 @@ private slots:
         auto ext=frame(13000);ext.extended=true;model.append({ext});QCOMPARE(model.rowCount(),3);
         auto other=frame(14000);other.channel="CAN2";model.append({other});QCOMPARE(model.rowCount(),4);
         QCOMPARE(model.history().size(),15);model.setRolling(false);QCOMPARE(model.rowCount(),15);
-        QCOMPARE(model.index(14,1).data().toString(),QString("14.000000"));QCOMPARE(model.index(14,2).data().toString(),QString("1.000"));
+        QCOMPARE(model.index(14,1).data().toString(),QString("14"));QCOMPARE(model.index(14,2).data().toString(),QString("1.000"));
         model.setRolling(true);QCOMPARE(model.rowCount(),4);
     }
     void databaseChildrenAndReload(){
@@ -67,7 +67,7 @@ private slots:
         for(int n=0;n<FrameTableModel::Capacity+50;++n)batch.append(frame(n*1000));
         model.append(batch);QCOMPARE(model.rowCount(),1);QCOMPARE(model.history().size(),FrameTableModel::Capacity);
         model.setRolling(false);QCOMPARE(model.rowCount(),FrameTableModel::Capacity);
-        QCOMPARE(model.index(0,1).data().toString(),QString("50.000000"));
+        QCOMPARE(model.index(0,1).data().toString(),QString("50"));
     }
     void multipleCursorDifferencesAndGaps(){
         SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY(vm.importFile(fixture(),error));SignalPlotModel model(&vm);

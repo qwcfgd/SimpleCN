@@ -1,3 +1,4 @@
+#include "localization/Language.h"
 #include "UdsSettingsDialog.h"
 #include "viewmodels/ChannelViewModel.h"
 #include "viewmodels/DiagnosticDraftViewModel.h"
@@ -14,7 +15,6 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QFileDialog>
-#include "PathFileDialog.h"
 #include <QSignalBlocker>
 #include <QKeyEvent>
 #include <QIntValidator>
@@ -131,7 +131,7 @@ void editUdsSettings(ChannelViewModel *vm,QWidget *parent,bool download){
         ChannelSettings entered;if(collect(entered))draft=entered;populate();select(true);path->setText(db.path);path->setModified(false);path->setToolTip(db.path);
     };
     showSettings();populate();if(!db.ecus.isEmpty())select(false);
-    QObject::connect(browse,&QPushButton::clicked,&dialog,[&]{const auto name=PathFileDialog::getOpenFileName(&dialog,"选择 CDD",path->text(),"CANdela (*.cdd *.CDD)");if(!name.isEmpty()){path->setText(name);load();}});
+    QObject::connect(browse,&QPushButton::clicked,&dialog,[&]{const auto name=QFileDialog::getOpenFileName(&dialog,Language::text("选择 CDD"),path->text(),"CANdela (*.cdd *.CDD)");if(!name.isEmpty()){path->setText(name);load();}});
     QObject::connect(path,&QLineEdit::editingFinished,&dialog,[&]{if(path->isModified())load();});
     QObject::connect(path,&QLineEdit::returnPressed,&dialog,load);
     QObject::connect(ecu,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[&]{if(!loading){fillVariants();select(true);}});

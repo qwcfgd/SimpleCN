@@ -10,7 +10,7 @@
 #include <QTemporaryDir>
 #include <QFontDatabase>
 #include "views/SignalTransmitPage.h"
-#include "views/PathFileDialog.h"
+#include <QFileDialog>
 #include "views/SignalPlotCanvas.h"
 #include "views/MainWindow.h"
 #include "views/UiLanguageController.h"
@@ -58,7 +58,7 @@ private slots:
         QVERIFY(vm->editSignal(frameKey(Bus::Can,291),1,"25",false,error));
         auto updated=[&]{for(const auto&r:channel.frames()->history())if(r.id==291&&r.payload.size()>1&&quint8(r.payload[1])==25)return true;return false;};QTRY_VERIFY(updated());
         QTest::qWait(1000);const auto after=channel.frames()->history().last();const double shownMs=after.relativeTime.toDouble()-before.relativeTime.toDouble();
-        QVERIFY(shownMs>900);QVERIFY(std::abs(shownMs-elapsed.elapsed())<150);QCOMPARE(after.relativeTime,QString::number(after.timeUs/1000.0,'f',6));
+        QVERIFY(shownMs>900);QVERIFY(std::abs(shownMs-elapsed.elapsed())<150);QCOMPARE(after.relativeTime.toDouble(),after.timeUs/1000.0);QVERIFY(!after.relativeTime.contains('.')||!after.relativeTime.endsWith('0'));
         vm->stop();QTRY_VERIFY(!vm->running());
     }
     void enumPhysicalTicks(){
@@ -68,17 +68,16 @@ private slots:
         QCOMPARE(labels.value(-1),QString("-1"));QCOMPARE(labels.value(1),QString("1"));QCOMPARE(labels.value(3),QString("3"));QCOMPARE(labels.value(4),QString("4"));
         for(const auto &tick:SignalPlotCanvas::enumTicks({},0,100000,100)){QCOMPARE(std::floor(tick.value),tick.value);QVERIFY(!tick.text.isEmpty());}
     }
-    void pasteFilePaths_data(){QTest::addColumn<QString>("extension");for(auto ext:{"bin","hex","dbc","ldf","cdd"})QTest::newRow(ext)<<QString(ext);}
-    void pasteFilePaths(){
-        QFETCH(QString,extension);QTemporaryDir dir;const auto folder=dir.filePath("路径 space");QVERIFY(QDir().mkpath(folder));const auto name=folder+"/测试 file."+extension;
-        QFile file(name);QVERIFY(file.open(QIODevice::WriteOnly));file.write("test");file.close();Language::instance().setCode("en");
-        PathFileDialog dialog(nullptr,"选择镜像",dir.path(),"Files (*."+extension+")");dialog.show();QCoreApplication::processEvents();auto *address=dialog.findChild<QLineEdit*>("fileAddress");QVERIFY(address);QTest::keyClick(&dialog,Qt::Key_L,Qt::ControlModifier);QCoreApplication::processEvents();QCOMPARE(QApplication::focusWidget(),address);
-        auto paste=[&](const QString&text){address->setFocus();address->selectAll();QApplication::clipboard()->setText(text);QTest::keyClick(address,Qt::Key_V,Qt::ControlModifier);QTest::keyClick(address,Qt::Key_Return);QCoreApplication::processEvents();};
-        paste(folder);QCOMPARE(QDir::cleanPath(dialog.directory().absolutePath()),QDir::cleanPath(folder));QVERIFY(dialog.isVisible());
-        paste(folder+"/missing."+extension);QVERIFY(dialog.findChild<QLabel*>("fileAddressError")->isVisible());QVERIFY(dialog.isVisible());
-        paste('"'+name+'"');QVERIFY(!dialog.findChild<QLabel*>("fileAddressError")->isVisible());QCOMPARE(dialog.selectedFiles().first(),name);QVERIFY(dialog.isVisible());
-        if(extension=="cdd")dialog.grab().save(QCoreApplication::applicationDirPath()+"/revision141-file-picker.png");
-        dialog.accept();QCOMPARE(dialog.result(),int(QDialog::Accepted));
+    void nativeDialogPolicySurvivesLanguageChanges(){
+        // Never show a native modal dialog in unattended CTest. Exercise the
+        // global policy and construction without entering the Windows loop.
+        for(const auto *code:{"zh_CN","en","zh_CN"}){
+            Language::instance().setCode(code);UiLanguageController::instance().refresh();
+            QVERIFY(!QApplication::testAttribute(Qt::AA_DontUseNativeDialogs));
+            QFileDialog dialog(nullptr,Language::text("选择镜像"),QString(),"Firmware (*.bin *.hex *.BIN *.HEX)");
+            QVERIFY(!dialog.testOption(QFileDialog::DontUseNativeDialog));
+            QVERIFY(!dialog.findChild<QLineEdit*>("fileAddress"));
+        }
     }
     void consistentPageBackground(){
         QTemporaryDir dir;MainWindow window(dir.filePath("project.json"),true);window.resize(1440,950);window.show();QCoreApplication::processEvents();

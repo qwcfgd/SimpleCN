@@ -146,26 +146,26 @@ private slots:
         record.relativeTime="1001250";model.append({record});
         record.relativeTime="1003751";model.append({record});
         QCOMPARE(model.data(model.index(1,2)).toString(),QString("1.250"));
-        QCOMPARE(model.data(model.index(2,1)).toString(),QString("3.751000"));
+        QCOMPARE(model.data(model.index(2,1)).toString(),QString("3.751"));
         QCOMPARE(model.data(model.index(2,2)).toString(),QString("2.501"));
         QString error;const auto path=m_temp.path()+"/intervals.csv";QVERIFY(model.exportCsv(path,error));
         QFile csv(path);QVERIFY(csv.open(QIODevice::ReadOnly));const auto bytes=csv.readAll();
-        QVERIFY(bytes.contains(QString("绝对时间/ms").toUtf8()));QVERIFY(bytes.contains("\"3.751000\",\"2.501\""));
+        QVERIFY(bytes.contains(QString("绝对时间/ms").toUtf8()));QVERIFY(bytes.contains("\"3.751\",\"2.501\""));
         model.clear();model.append({record});
-        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.000000"));
+        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0"));
         QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.000"));
     }
     void boundedFramesLiteralFilterAndExport() {
         FrameTableModel firstFrame;FrameRecord first;
         first.timestamp="12:34:56.789";first.relativeTime="123456";firstFrame.append({first});
         QCOMPARE(firstFrame.data(firstFrame.index(0,0)).toString(),QString("12:34:56.789"));
-        QCOMPARE(firstFrame.data(firstFrame.index(0,1)).toString(),QString("0.000000"));
+        QCOMPARE(firstFrame.data(firstFrame.index(0,1)).toString(),QString("0"));
         FrameTableModel model;FrameBatch frames;
         for(int i=0;i<FrameTableModel::Capacity+20;++i)
             frames.append({QString::number(i),"=SUM(A1)","RX","0x20","12 34","有效响应",2});
         model.append(frames);QCOMPARE(model.rowCount(),FrameTableModel::Capacity);
         QVERIFY(QRegularExpression("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$").match(model.data(model.index(0,0)).toString()).hasMatch());
-        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.020000"));
+        QCOMPARE(model.data(model.index(0,1)).toString(),QString("0.02"));
         QCOMPARE(model.data(model.index(0,2)).toString(),QString("0.001"));
         QCOMPARE(model.headerData(1,Qt::Horizontal).toString(),QString("时刻/ms"));
         QCOMPARE(model.headerData(5,Qt::Horizontal).toString(),QString("ID"));
@@ -489,7 +489,7 @@ private slots:
         QVERIFY(!page->findChild<QWidget*>("downloadPanel")->findChild<QScrollArea*>());
         QVERIFY(page->findChild<QScrollArea*>("udsScrollArea"));
         auto version=window.findChild<QLabel*>("versionBadge");QVERIFY(version);QVERIFY(!version->isVisible());
-        QCOMPARE(window.windowTitle(),QString("Qt-GeneralController V1.4.1"));
+        QCOMPARE(window.windowTitle(),QString("Qt-GeneralController V1.4.2"));
         QVERIFY(window.grab().save(artifactDir()+"/bootloader-1366.png"));
         QFile metadata(artifactDir()+"/display.json");QVERIFY(metadata.open(QIODevice::WriteOnly));
         metadata.write(QJsonDocument(QJsonObject{{"dpr",dpr},{"clientWidth",window.width()},{"clientHeight",window.height()},{"qt",qVersion()}}).toJson());

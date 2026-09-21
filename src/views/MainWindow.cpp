@@ -19,7 +19,6 @@
 #include <QScopedValueRollback>
 #include <QTabBar>
 #include <QFileDialog>
-#include "PathFileDialog.h"
 #include <QMenu>
 #include <QPointer>
 #include <QTimer>
@@ -195,7 +194,7 @@ void MainWindow::createChannelDialog(ChannelViewModel*channel) {
     connect(type,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[&]{if(!name->isModified())name->setText(nextChannelName(type->currentIndex()?communication::Bus::Lin:communication::Bus::Can));reset();});
     connect(save,&QPushButton::clicked,&dialog,[&]{if(target&&!apply())return;QString message;const bool ok=m_configuration.save(m_channels,message);if(ok)m_configuration.markSaved(m_channels);showError(ok?QString("已保存 %1 个软件通道").arg(m_channels.size()):message);});
     connect(load,&QPushButton::clicked,&dialog,[&]{
-        const auto path=PathFileDialog::getOpenFileName(&dialog,"载入已保存通道",QCoreApplication::applicationDirPath()+"/config","JSON (*.json)");if(path.isEmpty())return;
+        const auto path=QFileDialog::getOpenFileName(&dialog,Language::text("载入已保存通道"),QCoreApplication::applicationDirPath()+"/config","JSON (*.json)");if(path.isEmpty())return;
         QVector<ChannelSettings> settings;QString message;if(!m_configuration.load(path,m_channels,settings,message)){showError(message);return;}pendingLoad=path;dialog.reject();
     });
     connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);connect(buttons,&QDialogButtonBox::accepted,&dialog,[&]{if(apply())dialog.accept();});dialog.exec();

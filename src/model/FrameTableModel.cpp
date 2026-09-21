@@ -47,7 +47,7 @@ QVariant FrameTableModel::data(const QModelIndex &i,int role) const {
 }
 QVariant FrameTableModel::headerData(int c,Qt::Orientation o,int role) const {
     if(o==Qt::Horizontal&&c==1&&role==Qt::ToolTipRole)
-        return Language::text("时刻单位为 ms：1 秒 = 1000 ms；从首条记录起算。采集精度为微秒时，末尾三位为 0。");
+        return Language::text("时刻单位为 ms：1 秒 = 1000 ms；从首条记录起算。小数部分省略末尾无效的 0。");
     if(o!=Qt::Horizontal||role!=Qt::DisplayRole)return {};
     return Language::text(QStringList{"时间","时刻/ms","绝对时间/ms","软件通道","方向","ID","长度","数据","状态"}.value(c));
 }
@@ -91,7 +91,13 @@ void FrameTableModel::append(const FrameBatch &input){
         if(ok){if(!m_hasRelativeOrigin){m_relativeOriginUs=rawUs;m_hasRelativeOrigin=true;}
             r.captureUs=qRound64(rawUs);r.timeUs=qRound64(rawUs-m_relativeOriginUs);
             r.intervalMs=QString::number(m_hasPrevious?(rawUs-m_previousUs)/1000.0:0.0,'f',3);
-            m_previousUs=rawUs;m_hasPrevious=true;r.relativeTime=QString::number((rawUs-m_relativeOriginUs)/1000.0,'f',6);
+            m_previousUs=rawUs;m_hasPrevious=true;
+            // Keep capture/export timing in microseconds; format the monitor in
+            // milliseconds without padding or scientific notation.
+            r.relativeTime=QString::number((rawUs-m_relativeOriginUs)/1000.0,'f',6);
+            while(r.relativeTime.endsWith('0'))r.relativeTime.chop(1);
+            if(r.relativeTime.endsWith('.'))r.relativeTime.chop(1);
+            if(r.relativeTime=="-0")r.relativeTime="0";
             if(!QRegularExpression("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$").match(r.timestamp).hasMatch())r.timestamp=QDateTime::currentDateTime().toString("HH:mm:ss.zzz");
         }else{r.intervalMs.clear();m_hasPrevious=false;}
         if(!r.typed){r.id=r.identifier.toUInt(nullptr,16);r.payload=QByteArray::fromHex(r.data.toLatin1());r.typed=true;}
