@@ -1,23 +1,25 @@
 <div align="center">
 
-# Qt-GeneralController
+# SimpleCN
 
 **CAN / LIN signals, messages and diagnostics in one workbench**
 
 [简体中文](README.md) · English · [GitHub: SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.4.2-2563eb)
+![Version](https://img.shields.io/badge/version-1.4.3-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 Developed with assistance from OpenAI Codex.
 
-[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.4.2 release notes (Chinese)](docs/Release-1.4.2.md)
+[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.4.3 release notes (Chinese)](docs/Release-1.4.3.md)
 
 </div>
 
-## Message monitor follow-up
+## V1.4.3: SimpleCN and message monitor updates
+
+The window title is SimpleCN. The home page displays SimpleCN V1.4.3 and SIMPLE CONTROLLER FOR CAN/LIN.
 
 - Relative and delta time now use seconds, with trailing fractional zeros omitted.
 - Keep and export all frames since startup or the last clear. Only the table window is limited to 10,000 records.

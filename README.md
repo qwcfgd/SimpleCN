@@ -1,23 +1,25 @@
 <div align="center">
 
-# Qt-GeneralController
+# SimpleCN
 
 **CAN / LIN 信号、报文与诊断工作台**
 
 简体中文 · [English](README.en.md) · [GitHub：SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.4.2-2563eb)
+![Version](https://img.shields.io/badge/version-1.4.3-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 从数据库信号编辑，到报文监视、日志回放和图像观测，在同一工作台完成。由 OpenAI Codex 协助开发。
 
-[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.4.2 更新](docs/Release-1.4.2.md) · [许可说明](docs/Licensing.md)
+[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.4.3 更新](docs/Release-1.4.3.md) · [许可说明](docs/Licensing.md)
 
 </div>
 
-## 报文监视后续更新
+## V1.4.3：SimpleCN 与报文监视更新
+
+程序标题为 SimpleCN，主页显示 SimpleCN V1.4.3，标语为 SIMPLE CONTROLLER FOR CAN/LIN。
 
 - 时刻与相邻时间差均按秒显示（时刻/s、绝对时间/s），保留有效小数并去掉尾零。
 - 缓存和导出保留启动或上次清空后的全部报文，表格每次最多载入 10,000 条。
