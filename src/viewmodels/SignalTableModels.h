@@ -7,7 +7,7 @@ namespace host {
 class SignalValueTableModel : public QAbstractTableModel {
     Q_OBJECT
 public:
-    enum { EnumOptionsRole=Qt::UserRole+1, EnumValueRole, PhysicalEditableRole };
+    enum { EnumOptionsRole=Qt::UserRole+1, EnumValueRole, PhysicalEditableRole, EnumRawRole };
     SignalValueTableModel(SignalTransmitViewModel*,QObject*parent=nullptr);
     void setFrame(const QString&);
     QString frameKey()const{return m_key;}

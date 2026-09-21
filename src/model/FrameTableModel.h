@@ -40,9 +40,10 @@ private:
     QHash<quint64,int> m_frameLookup;
     bool m_rolling=false;
     quintptr m_nextToken=1;
-    qint64 m_relativeOriginUs=0,m_startedEpochMs=0;
+    double m_relativeOriginUs=0;
+    qint64 m_startedEpochMs=0;
     bool m_hasRelativeOrigin=false;
-    qint64 m_previousUs=0;
+    double m_previousUs=0;
     bool m_hasPrevious=false;
 };
 }

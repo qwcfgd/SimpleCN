@@ -1,3 +1,4 @@
+#include "localization/Language.h"
 #include "SignalPlotModel.h"
 #include "SignalTransmitViewModel.h"
 #include "model/SignalCodec.h"
@@ -18,17 +19,18 @@ SignalPlotModel::SignalPlotModel(SignalTransmitViewModel *vm,QObject *parent):QA
 }
 QVariant SignalPlotModel::headerData(int c,Qt::Orientation o,int role) const {
     if(role!=Qt::DisplayRole)return {};if(o==Qt::Vertical)return c+1;
-    return QStringList{"颜色","信号名称","报文 / ID","原始值","信号值","单位","y","dy"}.value(c);
+    return Language::text(QStringList{"颜色","信号名称","报文 / ID","原始值","信号值","单位","y","dy"}.value(c));
 }
 QVariant SignalPlotModel::data(const QModelIndex &i,int role) const {
     if(!i.isValid()||i.row()>=m_series.size())return {};const auto &s=m_series[i.row()];
     if(role==Qt::DecorationRole&&i.column()==0)return s.color;
-    if(role==Qt::ToolTipRole)return s.frameKey+" / "+s.name+"\n"+s.status;
+    if(role==Qt::ToolTipRole)return s.frameKey+" / "+s.name+"\n"+Language::text(s.status);
     if(role!=Qt::DisplayRole)return {};
     switch(i.column()){
     case 0:return s.marked?"●":"";case 1:return s.name;case 2:return s.frameName+" / 0x"+QString::number(s.id,16).toUpper();
     case 3:return s.raw;case 4:return s.physical;case 5:return s.unit;
-    case 6:return m_cursor||m_difference?valueAt(i.row(),m_t1).text:s.physical;
+    case 6:{const auto reading=m_cursor||m_difference?valueAt(i.row(),m_t1):Reading{!s.points.empty()&&s.points.back().valid,s.points.empty()?0:s.points.back().value,s.physical,s.unit};
+        return reading.valid&&s.labels.contains(reading.value)?s.labels.value(reading.value):reading.text;}
     case 7:return m_difference?differenceAt(i.row(),m_t1,m_t2):QString();
     }return {};
 }
@@ -44,7 +46,7 @@ bool SignalPlotModel::addSignal(const QString &key,const QString &name){
         for(const auto &existing:m_series){const double dr=candidate.red()-existing.color.red(),dg=candidate.green()-existing.color.green(),db=candidate.blue()-existing.color.blue();distance=qMin(distance,dr*dr+dg*dg+db*db);}
         if(distance>bestDistance){bestDistance=distance;bestHue=hue;}}
     s.color=QColor::fromHsv(bestHue,200,185);
-    for(auto it=frame->fields[field].labels.begin();it!=frame->fields[field].labels.end();++it){bool ok=false;const double value=SignalCodec::physicalText(frame->fields[field],{it.key(),{}}).toDouble(&ok);if(ok)s.labels[value]=it.value();}s.raw=s.physical="—";s.status="等待采样";
+    for(auto it=frame->fields[field].labels.begin();it!=frame->fields[field].labels.end();++it){bool ok=false;const auto &definition=frame->fields[field];const double value=(definition.conversion?SignalCodec::physicalText(definition,{it.key(),{}}):SignalCodec::rawText(definition,{it.key(),{}})).toDouble(&ok);if(ok)s.labels[value]=it.value();}s.raw=s.physical="—";s.status="等待采样";
     if(0.2126*s.color.red()+0.7152*s.color.green()+0.0722*s.color.blue()>140)s.color=s.color.darker(135);
     beginInsertRows({},m_series.size(),m_series.size());m_series.append(s);endInsertRows();
     // Backfill only the newly added series, without replaying existing samples.
@@ -93,7 +95,7 @@ void SignalPlotModel::ingest(const FrameBatch &batch,int onlyRow,bool replay){
             if(active){
                 const auto raw=values.value(s.field);s.raw=SignalCodec::rawText(field,raw);s.physical=SignalCodec::physicalText(field,raw);
                 for(const auto &range:field.ranges)if(raw.bits>=range.first&&raw.bits<=range.last){p.unit=range.unit;break;}
-                p.exact=s.physical;p.value=s.physical.toDouble(&p.valid);p.valid=p.valid&&!field.array&&std::isfinite(p.value);
+                p.exact=!field.conversion&&!field.labels.isEmpty()?s.raw:s.physical;p.value=p.exact.toDouble(&p.valid);p.valid=p.valid&&!field.array&&std::isfinite(p.value);
                 s.status=p.valid?(r.simulated?"模拟采样":r.request?"驱动发送请求（非硬件确认）":r.echo?"硬件回读":"接收采样"):"非数值信号，无法绘制";
             }else {s.raw=s.physical="—";s.status=decoded?"非活动分支":error.isEmpty()?r.status:error;}
             s.unit=p.unit;

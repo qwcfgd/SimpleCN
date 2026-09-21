@@ -1,3 +1,6 @@
+#include "localization/Language.h"
+#include <cmath>
+#include <limits>
 #include "FrameTableModel.h"
 #include "SignalCodec.h"
 #include "infrastructure/TraceExporter.h"
@@ -27,7 +30,7 @@ QVariant FrameTableModel::data(const QModelIndex &i,int role) const {
         if(role==Qt::ForegroundRole)return QColor("#526779");
         if(role==Qt::DisplayRole||role==Qt::ToolTipRole){
             if(i.column()<5)return {};
-            if(i.row()==0)return QStringList{"信号名称","原始值","信号值","单位"}.value(i.column()-5);
+            if(i.row()==0)return Language::text(QStringList{"信号名称","原始值","信号值","单位"}.value(i.column()-5));
             return m_details[p.row()].children.value(i.row()-1).value(i.column()-5);
         }return {};
     }
@@ -39,12 +42,12 @@ QVariant FrameTableModel::data(const QModelIndex &i,int role) const {
 
     if(role==Qt::ToolTipRole||role==Qt::DisplayRole){
         switch(i.column()){case 0:return r.timestamp;case 1:return r.relativeTime;case 2:return r.intervalMs;
-        case 3:return r.channel;case 4:return r.direction;case 5:return r.identifier;case 6:return r.length;case 7:return r.data;case 8:return r.status;}
+        case 3:return r.channel;case 4:return r.direction;case 5:return r.identifier;case 6:return r.length;case 7:return r.data;case 8:return Language::text(r.status);}
     }return {};
 }
 QVariant FrameTableModel::headerData(int c,Qt::Orientation o,int role) const {
     if(o!=Qt::Horizontal||role!=Qt::DisplayRole)return {};
-    return QStringList{"时间","时刻/ms","绝对时间/ms","软件通道","方向","ID","长度","数据","状态"}.value(c);
+    return Language::text(QStringList{"时间","时刻/ms","绝对时间/ms","软件通道","方向","ID","长度","数据","状态"}.value(c));
 }
 QString FrameTableModel::key(const FrameRecord &r) const {
     return r.channel+":"+signal::frameKey(r.bus,r.id,r.extended);
@@ -80,12 +83,13 @@ void FrameTableModel::rebuild(){
 void FrameTableModel::append(const FrameBatch &input){
     if(input.isEmpty())return;FrameBatch batch=input;
     for(auto &r:batch){
-        bool ok=r.captureUs>=0;qint64 rawUs=r.captureUs;
-        if(!ok)rawUs=r.relativeTime.toLongLong(&ok);if(!ok)rawUs=r.timestamp.toLongLong(&ok);
+        bool ok=r.captureUs>=0;double rawUs=double(r.captureUs);
+        if(!ok)rawUs=r.relativeTime.toDouble(&ok);if(!ok)rawUs=r.timestamp.toDouble(&ok);
+        ok=ok&&std::isfinite(rawUs)&&rawUs>=0&&rawUs<double(std::numeric_limits<qint64>::max());
         if(ok){if(!m_hasRelativeOrigin){m_relativeOriginUs=rawUs;m_hasRelativeOrigin=true;}
-            r.captureUs=rawUs;r.timeUs=rawUs-m_relativeOriginUs;
+            r.captureUs=qRound64(rawUs);r.timeUs=qRound64(rawUs-m_relativeOriginUs);
             r.intervalMs=QString::number(m_hasPrevious?(rawUs-m_previousUs)/1000.0:0.0,'f',3);
-            m_previousUs=rawUs;m_hasPrevious=true;r.relativeTime=QString::number(r.timeUs/1000.0,'f',6);
+            m_previousUs=rawUs;m_hasPrevious=true;r.relativeTime=QString::number((rawUs-m_relativeOriginUs)/1000.0,'f',6);
             if(!QRegularExpression("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$").match(r.timestamp).hasMatch())r.timestamp=QDateTime::currentDateTime().toString("HH:mm:ss.zzz");
         }else{r.intervalMs.clear();m_hasPrevious=false;}
         if(!r.typed){r.id=r.identifier.toUInt(nullptr,16);r.payload=QByteArray::fromHex(r.data.toLatin1());r.typed=true;}

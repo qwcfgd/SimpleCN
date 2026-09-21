@@ -23,6 +23,7 @@
 #include <QTimer>
 #include <QMenu>
 #include <limits>
+#include <QJsonArray>
 namespace host {
 using namespace signal;
 static QLabel*plain(const QString&s){auto*l=new QLabel(s);l->setTextFormat(Qt::PlainText);l->setWordWrap(true);return l;}
@@ -61,7 +62,10 @@ SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent
     m_activeSchedule=new QComboBox;m_activeSchedule->setObjectName("signalActiveSchedule");auto*planPanel=new QWidget;auto*planLayout=new QVBoxLayout(planPanel);planLayout->setContentsMargins(0,0,0,0);if(m_linModel){auto*scheduleRow=new QHBoxLayout;auto*label=plain("调度表");label->setBuddy(m_activeSchedule);scheduleRow->addWidget(label);scheduleRow->addWidget(m_activeSchedule,1);planLayout->addLayout(scheduleRow);}else m_activeSchedule->setParent(this);m_activeSchedule->setVisible(m_linModel!=nullptr);planLayout->addWidget(m_plan);
     split->addWidget(planPanel);split->setSizes({220,780});root->addWidget(split,1);
     m_editor=new QWidget;auto*editor=new QVBoxLayout(m_editor);editor->setContentsMargins(0,0,0,0);editor->setSpacing(4);
-    m_values=new QTableView;m_values->setObjectName("signalValues");m_valueModel=new SignalValueTableModel(vm,this);m_values->setModel(m_valueModel);m_values->setItemDelegateForColumn(3,new SignalValueDelegate(m_values));tableStyle(m_values);m_values->setColumnWidth(0,150);m_values->setColumnWidth(1,130);m_values->setColumnWidth(2,130);m_values->setColumnWidth(3,145);editor->addWidget(m_values,1);root->addWidget(m_editor,1);
+    m_values=new QTableView;m_values->setObjectName("signalValues");m_valueModel=new SignalValueTableModel(vm,this);m_values->setModel(m_valueModel);
+    connect(m_values,&QTableView::clicked,this,[this](const QModelIndex &index){
+        if((index.column()==2||index.column()==3)&&(index.flags()&Qt::ItemIsEditable))m_values->edit(index);
+    });m_values->setItemDelegateForColumn(3,new SignalValueDelegate(m_values));tableStyle(m_values);m_values->setColumnWidth(0,150);m_values->setColumnWidth(1,130);m_values->setColumnWidth(2,130);m_values->setColumnWidth(3,145);editor->addWidget(m_values,1);root->addWidget(m_editor,1);
     auto*actions=new QHBoxLayout;m_once=button("多次发送","signalSendOnce");m_start=button("周期发送","signalStart");m_start->setProperty("primary",true);m_stop=button("停止","signalStop");m_back=button("回退：上一步","signalBack");m_restore=button("撤销：恢复配置基准","signalRestore");
     auto*history=new QHBoxLayout;history->addWidget(m_back);history->addWidget(m_restore);history->addStretch();configuration->addLayout(history);
     m_configurationFeedback=plain("");m_configurationFeedback->setObjectName("signalConfigurationFeedback");configuration->addWidget(m_configurationFeedback);configuration->addStretch();
@@ -100,7 +104,26 @@ SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent
     connect(m_schedule,qOverload<int>(&QComboBox::currentIndexChanged),this,[this]{if(m_rendering)return;QString error;if(!m_vm->selectSchedule(m_schedule->currentText(),error))feedback(error);render();});
     connect(m_plan->model(),&QAbstractItemModel::modelReset,this,&SignalTransmitPage::rebuild);
     connect(vm,&SignalTransmitViewModel::structureChanged,this,&SignalTransmitPage::rebuild);connect(vm,&SignalTransmitViewModel::changed,this,&SignalTransmitPage::render);
-    connect(vm,&SignalTransmitViewModel::frameChanged,this,[this](const QString&key){if(key==m_key)renderFrame();});rebuild();
+    connect(vm,&SignalTransmitViewModel::frameChanged,this,[this](const QString&key){if(key==m_key)renderFrame();});
+    for(auto *table:{m_plan,m_values}){auto *header=table->horizontalHeader();header->setStretchLastSection(false);header->setMinimumSectionSize(38);header->setMaximumSectionSize(4096);header->setSectionResizeMode(QHeaderView::Interactive);header->setSectionsMovable(true);}
+    m_plan->setColumnWidth(m_canModel?8:7,260);m_values->setColumnWidth(5,260);restoreTableLayouts();
+    for(auto *table:{m_plan,m_values}){auto *header=table->horizontalHeader();connect(header,&QHeaderView::sectionMoved,this,&SignalTransmitPage::saveTableLayouts);connect(header,&QHeaderView::sectionResized,this,&SignalTransmitPage::saveTableLayouts);}
+    connect(vm,&SignalTransmitViewModel::configurationRestored,this,&SignalTransmitPage::restoreTableLayouts);rebuild();
+}
+void SignalTransmitPage::saveTableLayouts(){
+    if(m_restoringColumns)return;auto ui=m_vm->working().uiSettings;auto tables=ui.value("tableLayouts").toObject();
+    for(auto *table:{m_plan,m_values}){const auto *header=table->horizontalHeader();QJsonArray order,widths;for(int i=0;i<header->count();++i){order.append(header->logicalIndex(i));widths.append(header->sectionSize(i));}
+        tables[table==m_plan?(m_canModel?"canTransmit":"linTransmit"):"signalValues"]=QJsonObject{{"order",order},{"widths",widths}};}
+    ui["tableLayouts"]=tables;m_vm->setUiSettings(ui);
+}
+void SignalTransmitPage::restoreTableLayouts(){
+    QScopedValueRollback<bool> guard(m_restoringColumns,true);const auto tables=m_vm->working().uiSettings.value("tableLayouts").toObject();
+    for(auto *table:{m_plan,m_values}){auto *header=table->horizontalHeader();QSignalBlocker blocker(header);
+        const auto saved=tables.value(table==m_plan?(m_canModel?"canTransmit":"linTransmit"):"signalValues").toObject();const auto order=saved.value("order").toArray(),widths=saved.value("widths").toArray();
+        if(order.size()!=header->count()||widths.size()!=header->count())continue;QSet<int> seen;bool valid=true;
+        for(int i=0;i<order.size();++i){const int logical=order[i].toInt(-1),width=widths[i].toInt(-1);if(logical<0||logical>=header->count()||seen.contains(logical)||width<38||width>4096||order[i].toDouble()!=logical||widths[i].toDouble()!=width){valid=false;break;}seen.insert(logical);}
+        if(!valid)continue;for(int visual=0;visual<header->count();++visual){header->moveSection(header->visualIndex(order[visual].toInt()),visual);header->resizeSection(visual,widths[visual].toInt());}
+    }
 }
 void SignalTransmitPage::feedback(const QString&text){m_validation->setText(text);m_validation->setVisible(!text.isEmpty());m_configurationFeedback->setText(text);}
 void SignalTransmitPage::selectFrame(const QString&key){if(key.isEmpty()||!m_vm->frame(key))return;m_key=key;m_valueModel->setFrame(key);renderFrame();}
@@ -109,9 +132,6 @@ void SignalTransmitPage::rebuild(){QScopedValueRollback<bool>guard(m_rendering,t
     m_schedule->clear();m_activeSchedule->clear();for(const auto&s:m_vm->working().schedules){m_schedule->addItem(s.name);m_activeSchedule->addItem(s.name);}m_schedule->setCurrentText(m_vm->working().schedule);m_activeSchedule->setCurrentText(m_vm->working().schedule);
     m_canNode->clear();m_canNode->addItem("请选择节点",QString());for(const auto&node:m_vm->database()->nodes)m_canNode->addItem(node,node);
     m_canNode->setCurrentIndex(m_canNode->findData(m_vm->working().canNode));m_canDirection->setCurrentText(m_vm->working().canDirection);
-    auto*header=m_plan->horizontalHeader();header->setStretchLastSection(false);header->setMinimumSectionSize(38);
-    header->setSectionResizeMode(QHeaderView::ResizeToContents);header->setSectionResizeMode(m_canModel?8:7,QHeaderView::Stretch);
-    m_values->horizontalHeader()->setStretchLastSection(false);m_values->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);m_values->horizontalHeader()->setSectionResizeMode(5,QHeaderView::Stretch);
     m_tree->header()->setStretchLastSection(false);m_tree->header()->setSectionResizeMode(0,QHeaderView::Stretch);m_tree->header()->setSectionResizeMode(1,QHeaderView::Fixed);m_tree->setColumnWidth(1,85);m_tree->expandToDepth(0);int selected=-1;
     for(int row=0;row<m_plan->model()->rowCount();++row)if((m_canModel?m_canModel->key(row):m_linModel->key(row))==m_key){selected=row;break;}
     if(selected<0 && m_plan->model()->rowCount()>0)selected=0;
@@ -163,7 +183,7 @@ void SignalTransmitPage::editReplayMapping(){
     layout->addWidget(plain("无：排除此日志通道。多个日志通道可映射到同一个软件通道；一次操作统一控制全部映射目标。"));
     auto *table=new QTableWidget;table->setColumnCount(2);table->setHorizontalHeaderLabels({"日志通道","目标软件通道"});table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);layout->addWidget(table);
     const auto channels=m_vm->replayLog().channels;const auto mapping=m_vm->working().replaySettings.value("mapping").toObject();table->setRowCount(channels.size());
-    for(int n=0;n<channels.size();++n){auto *item=new QTableWidgetItem(channels[n]);item->setFlags(item->flags()&~Qt::ItemIsEditable);table->setItem(n,0,item);auto *target=new QComboBox;target->addItem("无",QString());if(m_vm->replayTargets)for(const auto &name:m_vm->replayTargets(channels[n].startsWith("CAN:")?signal::Bus::Can:signal::Bus::Lin))target->addItem(name,name);target->setCurrentIndex(qMax(0,target->findData(mapping.value(channels[n]).toString())));table->setCellWidget(n,1,target);}
+    for(int n=0;n<channels.size();++n){auto *item=new QTableWidgetItem(channels[n]);item->setFlags(item->flags()&~Qt::ItemIsEditable);table->setItem(n,0,item);auto *target=new QComboBox;target->setProperty("translateFirstOption",true);target->addItem("无",QString());if(m_vm->replayTargets)for(const auto &name:m_vm->replayTargets(channels[n].startsWith("CAN:")?signal::Bus::Can:signal::Bus::Lin))target->addItem(name,name);target->setCurrentIndex(qMax(0,target->findData(mapping.value(channels[n]).toString())));table->setCellWidget(n,1,target);}
     auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel);layout->addWidget(buttons);connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
     if(dialog.exec()!=QDialog::Accepted)return;QJsonObject result;for(int n=0;n<channels.size();++n)result[channels[n]]=qobject_cast<QComboBox*>(table->cellWidget(n,1))->currentData().toString();m_vm->setReplayMapping(result);
 }

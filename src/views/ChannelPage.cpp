@@ -1,4 +1,5 @@
 #include "ChannelPage.h"
+#include "localization/Language.h"
 #include "SignalTransmitPage.h"
 #include "UdsDiagnosticPage.h"
 #include "UdsSettingsDialog.h"
@@ -22,6 +23,7 @@
 #include <QPlainTextEdit>
 #include <QSplitter>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QHeaderView>
 #include <QSortFilterProxyModel>
 #include <QFileDialog>
@@ -67,7 +69,8 @@ ChannelPage::ChannelPage(ChannelViewModel *vm,QWidget *parent):QWidget(parent),m
     connect(vm,&ChannelViewModel::changed,this,&ChannelPage::render);
 
     connect(vm,&ChannelViewModel::settingsChanged,this,[this](){if(!m_applying)loadSettings();});
-    connect(vm,&ChannelViewModel::logAdded,m_log,&QPlainTextEdit::appendPlainText);
+    connect(vm,&ChannelViewModel::logAdded,m_log,[this](const QString &line){m_log->appendPlainText(Language::text(line));});
+    connect(&Language::instance(),&Language::changed,this,[this]{const int scroll=m_log->verticalScrollBar()->value();const bool follow=scroll==m_log->verticalScrollBar()->maximum();QStringList lines;for(const auto &line:m_vm->logs())lines.append(Language::text(line));m_log->setPlainText(lines.join('\n'));m_log->verticalScrollBar()->setValue(follow?m_log->verticalScrollBar()->maximum():scroll);});
     connect(vm,&ChannelViewModel::logsCleared,m_log,&QPlainTextEdit::clear);
     auto timer=new QTimer(this);timer->setInterval(ChannelPageInitialValues::elapsedRefreshMs);
     connect(timer,&QTimer::timeout,this,[this](){if(m_vm->taskState()==TaskState::Running && m_elapsed.isValid())

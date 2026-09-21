@@ -41,12 +41,12 @@ def main():
         shutil.copy2(build/"dll"/name, output/"dll"/name)
     (output/"qt.conf").write_text("[Paths]\nPrefix=.\nPlugins=.\n", encoding="utf-8")
     (output/"docs").mkdir()
-    for name in ("User-Guide.md", "Release-1.3.md", "Tosun-Hardware.md", "Trace-and-Graphics.md", "Signal-Workbench-Replay.md",
+    for name in ("User-Guide.md", "Release-1.4.md", "Tosun-Hardware.md", "Trace-and-Graphics.md", "Signal-Workbench-Replay.md",
                  "CDD-UDS.md", "Default-Configuration.md", "Licensing.md", "Signal-Transmission-Implementation.md", "Logic-Review-Fixes.md"):
         shutil.copy2(ROOT/"docs"/name, output/"docs"/name)
     shutil.copytree(ROOT/"docs/licenses", output/"docs/licenses")
     (output/"README.txt").write_text(
-        "Qt-GeneralController V1.3\n\n"
+        "Qt-GeneralController V1.4\n\n"
         "启动 QtBootloader.exe。首次包含 CAN01 和 LIN01，不自动连接。\n"
         "完整说明：docs/User-Guide.md\n"
         "发布包仅包含应用及运行依赖；测试、调试与模拟素材保存在 build/qttemp。\n"
@@ -54,7 +54,7 @@ def main():
         "请保留整个目录；不要只复制 exe。保存配置需要目录可写。\n",
         encoding="utf-8-sig")
     inventory = {
-        "applicationLicense": "LGPL-3.0-only", "applicationVersion": "1.3.0", "uiVersion": "Qt-GeneralController V1.3",
+        "applicationLicense": "LGPL-3.0-only", "applicationVersion": "1.4.0", "uiVersion": "Qt-GeneralController V1.4",
         "qtMajor": int(args.qt_major), "architecture": "Windows x64",
         "buildType": "Release", "physicalDownloadEnabled": False, "physicalDownloadBuses": [], "physicalECUValidated": False,
         "components": ["Qt runtime and plugins", "MinGW runtime",

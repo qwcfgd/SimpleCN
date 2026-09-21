@@ -489,7 +489,7 @@ private slots:
         QVERIFY(!page->findChild<QWidget*>("downloadPanel")->findChild<QScrollArea*>());
         QVERIFY(page->findChild<QScrollArea*>("udsScrollArea"));
         auto version=window.findChild<QLabel*>("versionBadge");QVERIFY(version);QVERIFY(!version->isVisible());
-        QCOMPARE(window.windowTitle(),QString("Qt-GeneralController V1.3"));
+        QCOMPARE(window.windowTitle(),QString("Qt-GeneralController V1.4"));
         QVERIFY(window.grab().save(artifactDir()+"/bootloader-1366.png"));
         QFile metadata(artifactDir()+"/display.json");QVERIFY(metadata.open(QIODevice::WriteOnly));
         metadata.write(QJsonDocument(QJsonObject{{"dpr",dpr},{"clientWidth",window.width()},{"clientHeight",window.height()},{"qt",qVersion()}}).toJson());

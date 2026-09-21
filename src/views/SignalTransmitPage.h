@@ -10,6 +10,7 @@ class SignalTransmitPage : public QWidget {
 public:explicit SignalTransmitPage(SignalTransmitViewModel*,QWidget*parent=nullptr);
 private:
     void rebuild();void render();void selectFrame(const QString&);void renderFrame();
+    void restoreTableLayouts();void saveTableLayouts();bool m_restoringColumns=false;
     void editCustom();void editSchedules();void feedback(const QString&);
     SignalTransmitViewModel*m_vm;bool m_rendering=false;QString m_key;
     QLineEdit*m_path,*m_search,*m_replayPath;

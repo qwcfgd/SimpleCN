@@ -4,16 +4,24 @@
 
 **CAN / LIN 信号、报文与诊断工作台**
 
-![Version](https://img.shields.io/badge/version-1.3.0-2563eb)
+简体中文 · [English](README.en.md)
+
+![Version](https://img.shields.io/badge/version-1.4.0-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 从数据库信号编辑，到报文监视、日志回放和图像观测，在同一工作台完成，基于Codex。
 
-[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.3 更新](docs/Release-1.3.md) · [许可说明](docs/Licensing.md)
+[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.4 更新](docs/Release-1.4.md) · [许可说明](docs/Licensing.md)
 
 </div>
+
+## V1.4 交互更新
+
+主标题右侧通过 **简中 / Eng** 即时切换界面语言，记住上次选择；数据库名称、枚举名称和用户输入保留原文。待发送报文、待发送帧及信号表支持拖动表头调整列顺序、拖动边界调整列宽，并随项目配置保存；发送 raw / 物理值单击即可编辑。枚举下拉支持文本输入、自动补全与 Tab 接受补全；原始值可设为枚举表以外的值，未定义枚举显示“-”。
+
+图像 arrange 布局在当前窗口高度内显示所有曲线，枚举 Y 轴按缩放生成刻度与参考格，命中枚举的刻度及左侧 y 列显示枚举名称。报文 rt 保留六位小数，以毫秒显示（例如 `1200123.674 μs → 1200.123674 ms`）。
 
 ## 功能一览
 
@@ -55,7 +63,7 @@
 
 ## 硬件与支持范围
 
-| 场景 | V1.3 范围 |
+| 场景 | V1.4 范围 |
 | --- | --- |
 | 模拟模式 | 无硬件即可使用模拟通道；日志尽可能快速重现，保留 Sim Tx / Sim Rx 区分。 |
 | PEAK | PCAN / PLIN 后端；需要匹配的厂商驱动及 API。 |
@@ -64,7 +72,7 @@
 | CAN FD | 日志读写和模拟回放可处理相关记录；当前不开放真实 CAN FD 收发。 |
 | ECU 下载 | CAN 下载目前仅支持模拟；LIN 在线下载需实际目标参数及授权的安全访问算法。 |
 
-**验证范围：** V1.3 已完成 Qt 5.15.19 / Qt 6.8.4 的 Release 构建，两套各 14 项验证通过；TC1016P 的 CAN1 / CAN2 外部回环已验证。真实 LIN ECU 收发尚未完成验收，模拟 SDK 结果不能替代实机验收。详见 [同星硬件适配](docs/Tosun-Hardware.md)。
+**验证范围：** V1.4 已完成 Qt 5.15.19 / Qt 6.8.4 的 Release 构建，两套各 15 项验证通过；TC1016P 的 CAN1 / CAN2 外部回环已验证。真实 LIN ECU 收发尚未完成验收，模拟 SDK 结果不能替代实机验收。详见 [同星硬件适配](docs/Tosun-Hardware.md)。
 
 ## 快速上手
 
@@ -128,7 +136,7 @@ ctest --preset qt6 -R release_runtime
 | [报文与图像观测](docs/Trace-and-Graphics.md) | 时间列、导出、曲线、光标与采样规则 |
 | [工作台与回放](docs/Signal-Workbench-Replay.md) | CAN / LIN 编辑、发送次数、映射与覆盖 |
 | [CDD / UDS](docs/CDD-UDS.md) | 数据库诊断服务与参数 |
-| [1.3 发布说明](docs/Release-1.3.md) | 主要更新、验证结果与边界 |
+| [1.4 发布说明](docs/Release-1.4.md) | 主要更新、验证结果与边界 |
 | [逻辑修复记录](docs/Logic-Review-Fixes.md) | 定版前问题与回归验证 |
 | [MVVM 检查](docs/MVVM-Audit.md) | 架构职责与调整记录 |
 

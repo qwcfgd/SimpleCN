@@ -56,3 +56,7 @@ python scripts/check_mvvm_boundaries.py
 检查覆盖下层对 View/ViewModel 的反向包含、界面对 SDK/worker 的直接依赖、View 的基础设施依赖及直接业务解析调用、ViewModel 创建 QWidget 等规则。规则检查不能代替代码审查或行为测试。
 
 现有工程仍把多层源码编入一个 `bootloader_ui` 静态库，且 `ChannelModel` 作为线程桥接器直接组合 worker。它们不破坏当前 MVVM 数据流；后续若需要替换运行后端或独立测试更多基础设施，可进一步拆分构建目标和注入接口。
+
+## V1.4 复核
+
+语言目录与 Language 服务只用于显示转换，UiLanguageController 负责控件文本及动态弹窗，不重建页面或改写业务数据。表格列布局由 View 读取表头状态，经 SignalTransmitViewModel 的 uiSettings 随项目保存；列视觉位置不参与 ID、信号或负载寻址。编辑委托通过模型角色提交原始值/物理值，继续由 SignalCodec 校验并编码。图像枚举标签仅改变 y 列展示，差分保留数值计算；画布布局和刻度仍留在 View。硬件驱动、回放、调度层未增加界面依赖。

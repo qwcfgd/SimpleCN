@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 #include "ChannelHardwareEditor.h"
+#include "UiLanguageController.h"
+#include "localization/Language.h"
 #include <memory>
 #include "ui_MainWindow.h"
 #include <QFile>
@@ -38,6 +40,12 @@ MainWindow::MainWindow(const QString &settingsPath,bool simulation,QWidget *pare
     QMainWindow(parent),ui(new Ui::MainWindow),m_configuration(settingsPath),m_simulation(simulation) {
     connect(&m_replay,&ReplayViewModel::notice,this,[this](const QString &text){ui->statusbar->showMessage(text,10000);});
     initHostResources();ui->setupUi(this);ui->heroSubtitle->hide();setStyleSheet(styleSheetText());setWindowIcon(QIcon(":/Bootloader.ico"));
+    UiLanguageController::instance();
+    auto *language=new QComboBox(this);language->setObjectName("languageSelector");language->addItem("简中","zh_CN");language->addItem("Eng","en");
+    language->setMinimumWidth(82);language->setMaximumWidth(110);language->setToolTip("语言");language->setAccessibleName("语言");language->setCurrentIndex(Language::instance().english()?1:0);
+    ui->heroLayout->addWidget(language,0,Qt::AlignBottom);
+    connect(language,qOverload<int>(&QComboBox::currentIndexChanged),this,[language]{Language::instance().setCode(language->currentData().toString());});
+    connect(&Language::instance(),&Language::changed,language,[language]{QSignalBlocker blocker(language);language->setCurrentIndex(Language::instance().english()?1:0);});
     ui->mainLayout->setContentsMargins(0,10,16,8);ui->heroLayout->setContentsMargins(16,0,0,0);
     ui->versionBadge->setText(MainWindowInitialValues::versionLabel);
     ui->heroTitle->setText(MainWindowInitialValues::title);ui->eyebrow->setText(MainWindowInitialValues::description);

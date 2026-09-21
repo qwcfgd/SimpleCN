@@ -1,4 +1,5 @@
 #include "UdsDiagnosticPage.h"
+#include "localization/Language.h"
 #include "UdsSettingsDialog.h"
 #include "viewmodels/DiagnosticDraftViewModel.h"
 #include <QBoxLayout>
@@ -41,7 +42,7 @@ UdsDiagnosticPage::UdsDiagnosticPage(ChannelViewModel *vm,QWidget *parent):QWidg
     auto parameterPanel=new QWidget;auto parameterLayout=new QVBoxLayout(parameterPanel);parameterLayout->setContentsMargins(0,0,0,0);parameterLayout->setSpacing(3);
     auto requestPanel=new QWidget;auto requestLayout=new QVBoxLayout(requestPanel);requestLayout->setContentsMargins(0,0,0,0);requestLayout->setSpacing(3);
     auto options=new QHBoxLayout;auto parameterHeading=plain("请求参数");parameterHeading->setObjectName("sectionTitle");options->addWidget(parameterHeading,1);m_suppress=new QCheckBox("抑制正响应");m_suppress->setObjectName("udsSuppressResponse");options->addWidget(m_suppress);parameterLayout->addLayout(options);
-    m_parameters=new QTableWidget;m_parameters->setObjectName("udsParameterTable");m_parameters->setColumnCount(3);m_parameters->setHorizontalHeaderLabels({"字段","输入值","类型 / 约束"});
+    m_parameters=new QTableWidget;m_parameters->setObjectName("udsParameterTable");m_parameters->setColumnCount(3);m_parameters->setProperty("translatedColumns",QVariantList{2});m_parameters->setHorizontalHeaderLabels({"字段","输入值","类型 / 约束"});
     m_parameters->verticalHeader()->hide();m_parameters->setColumnWidth(0,150);m_parameters->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Stretch);m_parameters->horizontalHeader()->setSectionResizeMode(2,QHeaderView::Stretch);
     m_parameters->setMinimumHeight(60);parameterLayout->addWidget(m_parameters,1);
     auto rawHeading=plain("报文（RAW）");rawHeading->setObjectName("sectionTitle");rawHeading->setAlignment(Qt::AlignLeft|Qt::AlignVCenter);requestLayout->addWidget(rawHeading);
@@ -68,6 +69,7 @@ UdsDiagnosticPage::UdsDiagnosticPage(ChannelViewModel *vm,QWidget *parent):QWidg
     });
     connect(vm,&ChannelViewModel::diagnosticDatabaseChanged,this,&UdsDiagnosticPage::refreshDatabase);
     connect(vm,&ChannelViewModel::changed,this,&UdsDiagnosticPage::render);
+    connect(&Language::instance(),&Language::changed,this,&UdsDiagnosticPage::render);
     refreshDatabase();render();
 }
 int UdsDiagnosticPage::sourceRow()const {auto i=m_services->currentIndex();return i.isValid()?m_proxy->mapToSource(i).row():-1;}
@@ -119,6 +121,6 @@ void UdsDiagnosticPage::render(){
     m_send->setEnabled(m_vm->diagnosticBusy()||(m_error.isEmpty()&&!m_bytes.isEmpty()&&hint.isEmpty()&&s&&s->physical));m_copy->setEnabled(m_error.isEmpty()&&!m_bytes.isEmpty());
     m_validation->setText(!m_error.isEmpty()?m_error:(!hint.isEmpty()?hint:QString("%1 字节 · %2").arg(m_bytes.size()).arg(m_vm->settings().simulation?"模拟响应仅用于功能验证":"物理寻址")));
     m_validation->setStyleSheet(m_error.isEmpty()?QString():"color:#A33A2B;");
-    if(m_response->toPlainText()!=m_vm->diagnosticResult())m_response->setPlainText(m_vm->diagnosticResult());
+    const auto response=Language::text(m_vm->diagnosticResult());if(m_response->toPlainText()!=response)m_response->setPlainText(response);
 }
 }

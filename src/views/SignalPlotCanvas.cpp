@@ -1,3 +1,4 @@
+#include "localization/Language.h"
 #include "SignalPlotCanvas.h"
 #include <QPainter>
 #include <QPainterPath>
@@ -5,6 +6,8 @@
 #include <QWheelEvent>
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <numeric>
 namespace host {
 namespace {
 QPointF wheelPosition(QWheelEvent *e){
@@ -23,7 +26,7 @@ QPointF mousePosition(QMouseEvent *e){
 }
 }
 SignalPlotCanvas::SignalPlotCanvas(SignalPlotModel *model,QWidget *parent):QWidget(parent),m_model(model){
-    setObjectName("signalPlotCanvas");setMinimumSize(400,300);setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);
+    setObjectName("signalPlotCanvas");setMinimumSize(400,1);setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);
     setToolTip("滚轮：X 轴缩放时间，Y 轴缩放数值，绘图区同时缩放 XY；启用光标后拖动光标，关闭后拖动平移");
 }
 QVector<int> SignalPlotCanvas::visibleRows() const {QVector<int> rows;for(int n=0;n<m_model->series().size();++n)if(m_display!=Marked||m_model->series()[n].marked)rows.append(n);return rows;}
@@ -34,9 +37,10 @@ QVector<int> SignalPlotCanvas::axisRows() const {
     return axes;
 }
 QRectF SignalPlotCanvas::area(int panel,int panels,int axisCount) const {
-    const double left=80*qMax(1,axisCount),top=28.0+panel*(height()-56.0)/qMax(1,panels);
-    const double gap=m_axes==Arrange?52.0:32.0;
-    return {left,top,qMax(20.0,width()-left-24.0),qMax(20.0,(height()-56.0)/qMax(1,panels)-gap)};
+    const double left=80*qMax(1,axisCount);
+    if(m_axes==Arrange){const double slot=qMax(1.0,(height()-20.0)/qMax(1,panels));const double topPad=qMin(28.0,slot*0.25),bottomPad=qMin(52.0,slot*0.35);
+        return {left,panel*slot+topPad,qMax(20.0,width()-left-24.0),qMax(1.0,slot-topPad-bottomPad)};}
+    return {left,28.0,qMax(20.0,width()-left-24.0),qMax(1.0,height()-88.0)};
 }
 QString SignalPlotCanvas::rangeKey(int row) const {return m_axes==Fit?"shared":m_model->series()[m_model->representative(row)].key;}
 QPair<double,double> SignalPlotCanvas::yRange(int row,const QVector<int>&rows) const {
@@ -62,7 +66,7 @@ void SignalPlotCanvas::fit(){m_yRanges.clear();double lo=0,hi=10;bool have=false
     m_x0=qMax(0.0,lo);m_x1=qMax(m_x0+0.001,hi);m_follow=false;emit followChanged(false);update();emit viewChanged();}
 void SignalPlotCanvas::refresh(){
     if(m_autoRevision!=m_model->revision()){m_autoRanges.clear();m_autoRevision=m_model->revision();}
-    auto rows=visibleRows();setMinimumHeight(m_axes==Arrange?qMax(300,int(axisRows().size())*180):300);
+    auto rows=visibleRows();
     setMinimumWidth(m_axes==AllAxes?qMax(400,int(axisRows().size())*80+260):400);
     if(m_follow){double end=0;for(int n:rows){const auto &p=m_model->series()[n].points;if(!p.empty())end=qMax(end,p.back().us/1e6);}
         double span=qMax(0.001,m_x1-m_x0);m_x1=qMax(span,end);m_x0=m_x1-span;}
@@ -71,9 +75,10 @@ void SignalPlotCanvas::refresh(){
 void SignalPlotCanvas::paintEvent(QPaintEvent *){
     QPainter p(this);p.setRenderHint(QPainter::Antialiasing);p.fillRect(rect(),QColor("#FAFCFE"));
     const auto rows=visibleRows();const auto axes=axisRows();
-    if(rows.isEmpty()){p.setPen(QColor("#64748B"));p.drawText(rect(),Qt::AlignCenter,m_model->rowCount()?"当前无选中信号":"右键信号列表，添加数据库信号");return;}
+    if(rows.isEmpty()){p.setPen(QColor("#64748B"));p.drawText(rect(),Qt::AlignCenter,m_model->rowCount()?Language::text("当前无选中信号"):Language::text("右键信号列表，添加数据库信号"));return;}
     const int panels=m_axes==Arrange?axes.size():1;
     for(int panel=0;panel<panels;++panel){
+        p.save();if(m_axes==Arrange){const double slot=qMax(1.0,(height()-20.0)/panels);p.setClipRect(QRectF(0,panel*slot,width(),slot));}
         const auto a=area(panel,panels,m_axes==AllAxes?axes.size():1);p.setPen(QColor("#CBD5E1"));p.drawRect(a);
         const double xSpan=m_x1-m_x0;const double xScale=xSpan<0.001?1e6:xSpan<1?1000:1;
         const QString xUnit=xSpan<0.001?"μs":xSpan<1?"ms":"s";
@@ -91,15 +96,25 @@ void SignalPlotCanvas::paintEvent(QPaintEvent *){
             const double scale=magnitude>=1e6?1e-6:magnitude>=1e3?0.001:magnitude>0&&magnitude<0.001?1e6:magnitude>0&&magnitude<1?1000:1;
             const QString prefix=scale==1e-6?"M":scale==0.001?"k":scale==1e6?"μ":scale==1000?"m":"";
             p.setPen(series.color);p.drawLine(QPointF(x,a.top()),QPointF(x,a.bottom()));
-            p.drawText(QRectF(x-78,a.top()-23,76,20),Qt::AlignRight,series.labels.isEmpty()?prefix+(series.unit.isEmpty()?"值":series.unit):"枚举");
+            p.drawText(QRectF(x-78,a.top()-23,76,20),Qt::AlignRight,series.labels.isEmpty()?prefix+(series.unit.isEmpty()?Language::text("值"):series.unit):Language::text("枚举"));
             auto tick=[&](double value,const QString &label,bool major){const double y=a.bottom()-(value-range.first)/span*a.height();if(y<a.top()||y>a.bottom())return;
                 p.setPen(series.color);p.drawLine(QPointF(x-(major?6:3),y),QPointF(x,y));if(major)p.drawText(QRectF(x-78,y-9,69,18),Qt::AlignRight|Qt::AlignVCenter,label);
                 if(m_grid&&major&&ax==0){p.setPen(QPen(QColor("#CFD8E4"),1,Qt::DashLine));p.drawLine(QPointF(a.left(),y),QPointF(a.right(),y));}};
-            if(!series.labels.isEmpty()){for(auto it=series.labels.begin();it!=series.labels.end();++it)tick(it.key(),it.value(),true);}
+            if(!series.labels.isEmpty()){
+                double unit=1.0;
+                if(series.labels.size()>1){qint64 divisor=0;auto before=series.labels.begin();for(auto it=std::next(before);it!=series.labels.end();++it){const double gap=it.key()-before.key();if(gap<1e9)divisor=std::gcd(divisor,qRound64(gap*1e9));before=it;}if(divisor>0)unit=divisor/1e9;}
+                const double step=unit*qMax(1.0,std::ceil(span/qMax(1.0,a.height()/24.0)/unit));
+                const double anchor=series.labels.firstKey();
+                const double first=std::ceil((range.first-anchor)/step),last=std::floor((range.second-anchor)/step);
+                for(int ordinal=0;ordinal<2000&&first+ordinal<=last;++ordinal){const double value=anchor+(first+ordinal)*step;QString label;
+                    auto match=series.labels.lowerBound(value-unit*1e-8);if(match!=series.labels.end()&&std::abs(match.key()-value)<unit*1e-7)label=match.value();
+                    tick(value,label,true);
+                }
+            }
             else{const double minor=majorStep(span,a.height()/45.0)/5;const qint64 first=qint64(std::ceil(range.first/minor)),last=qint64(std::floor(range.second/minor));
                 for(qint64 k=first;k<=last&&k-first<2000;++k)tick(k*minor,QString::number(k*minor*scale,'g',6),k%5==0);}
         }
-        if(m_axes==Arrange){p.setPen(m_model->series()[axes[panel]].color);p.drawText(QRectF(a.left()+8,a.top()-23,a.width(),20),(m_model->series()[axes[panel]].group.isEmpty()?m_model->series()[axes[panel]].name:m_model->series()[axes[panel]].groupName));}
+        if(m_axes==Arrange&&a.height()>=40){p.setPen(m_model->series()[axes[panel]].color);p.drawText(QRectF(a.left()+8,a.top()-23,a.width(),20),(m_model->series()[axes[panel]].group.isEmpty()?m_model->series()[axes[panel]].name:m_model->series()[axes[panel]].groupName));}
         for(int n:rows){if(m_axes==Arrange&&m_model->representative(n)!=axes[panel])continue;const auto &s=m_model->series()[n];const auto range=yRange(n,rows);
             const auto map=[&](const SignalPlotModel::Point &pt){return QPointF(a.left()+(pt.us/1e6-m_x0)/(m_x1-m_x0)*a.width(),a.bottom()-(pt.value-range.first)/(range.second-range.first)*a.height());};
             p.save();p.setClipRect(a.adjusted(0,-1,1,1));const QColor color=m_display==GrayNoMarked&&!s.marked?QColor("#B8BEC7"):s.color;
@@ -113,13 +128,14 @@ void SignalPlotCanvas::paintEvent(QPaintEvent *){
             p.setPen(QPen(k?QColor("#D97706"):QColor("#7C3AED"),1.5,Qt::DashLine));p.drawLine(QPointF(x,a.top()),QPointF(x,a.bottom()));
             p.drawText(QPointF(x+4,a.top()+15),k?"C2":"C1");
         }
+        p.restore();
     }
-    p.setPen(QColor("#526174"));p.drawText(QRectF(width()-130,height()-19,110,18),Qt::AlignRight,"时间");
+    p.setPen(QColor("#526174"));p.drawText(QRectF(width()-130,height()-19,110,18),Qt::AlignRight,Language::text("时间"));
 }
 void SignalPlotCanvas::wheelEvent(QWheelEvent *e){
     const auto rows=visibleRows();if(rows.isEmpty()){e->ignore();return;}const auto axes=axisRows();
     const auto pos=wheelPosition(e);const int panels=m_axes==Arrange?axes.size():1;
-    int panel=qBound(0,int((pos.y()-28)/((height()-56.0)/panels)),panels-1);
+    int panel=qBound(0,int(pos.y()/qMax(1.0,(height()-20.0)/panels)),panels-1);
     const auto a=area(panel,panels,m_axes==AllAxes?axes.size():1);
     const bool overX=pos.y()>a.bottom(),overY=pos.x()<a.left();
     const double factor=std::pow(1.2,-e->angleDelta().y()/120.0);
