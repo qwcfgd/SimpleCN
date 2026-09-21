@@ -46,6 +46,8 @@ QVariant FrameTableModel::data(const QModelIndex &i,int role) const {
     }return {};
 }
 QVariant FrameTableModel::headerData(int c,Qt::Orientation o,int role) const {
+    if(o==Qt::Horizontal&&c==1&&role==Qt::ToolTipRole)
+        return Language::text("时刻单位为 ms：1 秒 = 1000 ms；从首条记录起算。采集精度为微秒时，末尾三位为 0。");
     if(o!=Qt::Horizontal||role!=Qt::DisplayRole)return {};
     return Language::text(QStringList{"时间","时刻/ms","绝对时间/ms","软件通道","方向","ID","长度","数据","状态"}.value(c));
 }

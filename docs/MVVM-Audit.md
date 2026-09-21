@@ -60,3 +60,7 @@ python scripts/check_mvvm_boundaries.py
 ## V1.4 复核
 
 语言目录与 Language 服务只用于显示转换，UiLanguageController 负责控件文本及动态弹窗，不重建页面或改写业务数据。表格列布局由 View 读取表头状态，经 SignalTransmitViewModel 的 uiSettings 随项目保存；列视觉位置不参与 ID、信号或负载寻址。编辑委托通过模型角色提交原始值/物理值，继续由 SignalCodec 校验并编码。图像枚举标签仅改变 y 列展示，差分保留数值计算；画布布局和刻度仍留在 View。硬件驱动、回放、调度层未增加界面依赖。
+
+## V1.4.1 复核
+
+运行状态刷新与发送草稿解耦，模型仅在可编辑状态变化时刷新相关展示；编辑器初始化后保留草稿，提交继续走 ViewModel 校验和 worker 负载更新。枚举刻度生成和文件路径导航封装在 View 中。在线诊断工具仅用于人工回环验收，不加入 CTest 或主程序依赖。

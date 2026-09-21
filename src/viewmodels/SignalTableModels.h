@@ -18,7 +18,7 @@ public:
     Qt::ItemFlags flags(const QModelIndex&)const override;
     bool setData(const QModelIndex&,const QVariant&,int role=Qt::EditRole)override;
 signals:void validation(QString);
-private:SignalTransmitViewModel*m_vm;QString m_key;
+private:SignalTransmitViewModel*m_vm;QString m_key;bool m_canEdit=false;
 };
 class SignalValueDelegate : public QStyledItemDelegate {
 public:

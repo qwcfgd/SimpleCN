@@ -42,3 +42,7 @@ QScrollBar::handle:vertical { background: #C6D4E1; border-radius: 4px; min-heigh
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 
 QComboBox::down-arrow { image: url(:/chevron-down.svg); width: 10px; height: 10px; }
+
+/* All three work areas share the same canvas, including the UDS viewport. */
+QWidget#udsDiagnosticPage, QWidget#signalTransmitPage,
+QScrollArea#udsScrollArea, QScrollArea#udsScrollArea > QWidget { background: white; }

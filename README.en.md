@@ -6,16 +6,23 @@
 
 [简体中文](README.md) · English
 
-![Version](https://img.shields.io/badge/version-1.4.0-2563eb)
+![Version](https://img.shields.io/badge/version-1.4.1-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 Developed with assistance from OpenAI Codex.
 
-[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.4 release notes (Chinese)](docs/Release-1.4.md)
+[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.4.1 release notes (Chinese)](docs/Release-1.4.1.md)
 
 </div>
+
+## Fixes in V1.4.1
+
+- Preserve in-progress raw, physical and enum edits during transmission, incoming frames, status updates and language changes; committed values update subsequent payloads.
+- Keep physical coordinates for enum signals. Defined positions show enum labels; other ticks show integers, with matching grid lines.
+- Add a pasteable address bar to firmware, database and replay file pickers, including full paths, folders, Unicode/spaces and Ctrl+L. Unify all three work-area backgrounds.
+- Clarify rt milliseconds: one second corresponds to about 1000 ms. Six decimal places with three trailing zeros are normal for microsecond capture precision. Hardware acceptance was not completed because the device was removed.
 
 ## New in V1.4
 
@@ -55,7 +62,7 @@ These V1.3 screenshots use simulated channels and synthetic signals; they are no
 - **CAN FD:** supported in relevant log handling and simulated replay, but real CAN FD transmission/reception is not enabled.
 - **ECU download:** CAN download currently supports simulation only. Online LIN download requires target-specific settings and an authorized security-access implementation.
 
-V1.4 Release builds and all 15 CTest suites passed with both Qt 5.15.19 and Qt 6.8.4. Tests use simulation and mock SDKs; they do not replace real ECU acceptance.
+V1.4.1 Release builds and all 16 CTest suites passed with both Qt 5.15.19 and Qt 6.8.4. Tests use simulation and mock SDKs; they do not replace real ECU acceptance.
 
 ## Quick start
 
@@ -111,7 +118,7 @@ Release copies, ZIPs and SHA256 files are written under `qttemp/Qt-GeneralContro
 
 ## Documentation
 
-Most detailed documentation is currently in Chinese: [user guide](docs/User-Guide.md), [trace and graphics](docs/Trace-and-Graphics.md), [workbench and replay](docs/Signal-Workbench-Replay.md), [CDD / UDS](docs/CDD-UDS.md), [V1.4 changes](docs/Release-1.4.md), [MVVM review](docs/MVVM-Audit.md), [hardware scope](docs/Tosun-Hardware.md).
+Most detailed documentation is currently in Chinese: [user guide](docs/User-Guide.md), [trace and graphics](docs/Trace-and-Graphics.md), [workbench and replay](docs/Signal-Workbench-Replay.md), [CDD / UDS](docs/CDD-UDS.md), [V1.4.1 changes](docs/Release-1.4.1.md), [MVVM review](docs/MVVM-Audit.md), [hardware scope](docs/Tosun-Hardware.md).
 
 ## License
 

@@ -130,3 +130,16 @@ target_compile_definitions(test_localization PRIVATE TEST_SOURCE_DIR="${CMAKE_CU
 host_deploy(test_localization)
 add_test(NAME localization COMMAND test_localization -o "${CMAKE_CURRENT_BINARY_DIR}/localization-results.xml,xml")
 set_tests_properties(localization PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+
+add_executable(test_revision141 test_revision141.cpp)
+target_link_libraries(test_revision141 PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
+target_compile_definitions(test_revision141 PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+host_deploy(test_revision141)
+add_test(NAME revision141 COMMAND test_revision141 -o "${CMAKE_CURRENT_BINARY_DIR}/revision141-results.xml,xml")
+set_tests_properties(revision141 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+
+# Explicit CAN1/CAN2 operator test, never registered with CTest; never opens LIN.
+add_executable(tosun_workbench_probe tosun_workbench_probe.cpp)
+target_link_libraries(tosun_workbench_probe PRIVATE bootloader_ui)
+target_compile_definitions(tosun_workbench_probe PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+host_deploy(tosun_workbench_probe)

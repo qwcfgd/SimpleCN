@@ -10,7 +10,11 @@ using namespace signal;
 SignalValueTableModel::SignalValueTableModel(SignalTransmitViewModel*vm,QObject*p):QAbstractTableModel(p),m_vm(vm){
     connect(vm,&SignalTransmitViewModel::structureChanged,this,[this]{beginResetModel();endResetModel();});
     connect(vm,&SignalTransmitViewModel::frameChanged,this,[this](const QString&key){if(key==m_key&&rowCount())emit dataChanged(index(0,0),index(rowCount()-1,6));});
-    connect(vm,&SignalTransmitViewModel::changed,this,[this]{if(rowCount())emit dataChanged(index(0,0),index(rowCount()-1,6));});
+    m_canEdit=vm->canData();
+    connect(vm,&SignalTransmitViewModel::changed,this,[this]{
+        const bool editable=m_vm->canData();if(editable==m_canEdit)return;m_canEdit=editable;
+        if(rowCount())emit dataChanged(index(0,0),index(rowCount()-1,6),{Qt::ForegroundRole});
+    });
 }
 void SignalValueTableModel::setFrame(const QString&key){if(m_key==key)return;beginResetModel();m_key=key;endResetModel();}
 int SignalValueTableModel::rowCount(const QModelIndex&p)const{const auto*f=m_vm->frame(m_key);return !p.isValid()&&f?f->fields.size():0;}
@@ -56,6 +60,10 @@ QWidget*SignalValueDelegate::createEditor(QWidget*parent,const QStyleOptionViewI
     auto*self=const_cast<SignalValueDelegate*>(this);connect(combo,qOverload<int>(&QComboBox::activated),self,[self,combo]{emit self->commitData(combo);emit self->closeEditor(combo);});return combo;
 }
 void SignalValueDelegate::setEditorData(QWidget*editor,const QModelIndex&i)const{
+    // A live RX/status refresh must never replace an in-progress draft. Each
+    // editor gets its initial value once; committing still goes through setData.
+    if(editor->property("signalDraftInitialized").toBool())return;
+    editor->setProperty("signalDraftInitialized",true);
     auto*combo=qobject_cast<QComboBox*>(editor);if(!combo){QStyledItemDelegate::setEditorData(editor,i);return;}
     const int selected=combo->findData(i.data(SignalValueTableModel::EnumValueRole));
     if(selected>=0)combo->setCurrentIndex(selected);else if(combo->isEditable())combo->setEditText(i.data(Qt::EditRole).toString());else{combo->addItem(i.data().toString());combo->setCurrentIndex(combo->count()-1);}

@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <numeric>
 namespace host {
 namespace {
 QPointF wheelPosition(QWheelEvent *e){
@@ -28,6 +27,23 @@ QPointF mousePosition(QMouseEvent *e){
 SignalPlotCanvas::SignalPlotCanvas(SignalPlotModel *model,QWidget *parent):QWidget(parent),m_model(model){
     setObjectName("signalPlotCanvas");setMinimumSize(400,1);setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);
     setToolTip("滚轮：X 轴缩放时间，Y 轴缩放数值，绘图区同时缩放 XY；启用光标后拖动光标，关闭后拖动平移");
+}
+QVector<SignalPlotCanvas::AxisTick> SignalPlotCanvas::enumTicks(const QMap<double,QString>&labels,double low,double high,double pixels){
+    QVector<AxisTick> result;if(!std::isfinite(low)||!std::isfinite(high)||high<=low)return result;
+    // Ordinary ticks stay on integers in the existing physical coordinate system.
+    // Explicit enum values (including fractional physical values) keep their labels.
+    const double raw=qMax(1.0,(high-low)/qMax(1.0,pixels/45.0));
+    const double base=std::pow(10.0,std::floor(std::log10(raw))),normalized=raw/base;
+    const double step=(normalized<=1?1:normalized<=2?2:normalized<=5?5:10)*base;
+    if(!std::isfinite(step)||step<=0)return result;
+    QMap<double,QString> ticks;const double first=std::ceil(low/step);
+    for(int n=0;n<2000;++n){const double value=(first+n)*step;if(value>high)break;ticks[value]=QString::number(value==0?0:value,'f',0);}
+    for(auto it=labels.lowerBound(low);it!=labels.end()&&it.key()<=high;++it){
+        auto near=ticks.lowerBound(it.key()-step*1e-9);
+        if(near!=ticks.end()&&std::abs(near.key()-it.key())<=step*1e-9)ticks.erase(near);
+        ticks[it.key()]=it.value();
+    }
+    for(auto it=ticks.begin();it!=ticks.end();++it)result.append({it.key(),it.value()});return result;
 }
 QVector<int> SignalPlotCanvas::visibleRows() const {QVector<int> rows;for(int n=0;n<m_model->series().size();++n)if(m_display!=Marked||m_model->series()[n].marked)rows.append(n);return rows;}
 QVector<int> SignalPlotCanvas::axisRows() const {
@@ -101,15 +117,7 @@ void SignalPlotCanvas::paintEvent(QPaintEvent *){
                 p.setPen(series.color);p.drawLine(QPointF(x-(major?6:3),y),QPointF(x,y));if(major)p.drawText(QRectF(x-78,y-9,69,18),Qt::AlignRight|Qt::AlignVCenter,label);
                 if(m_grid&&major&&ax==0){p.setPen(QPen(QColor("#CFD8E4"),1,Qt::DashLine));p.drawLine(QPointF(a.left(),y),QPointF(a.right(),y));}};
             if(!series.labels.isEmpty()){
-                double unit=1.0;
-                if(series.labels.size()>1){qint64 divisor=0;auto before=series.labels.begin();for(auto it=std::next(before);it!=series.labels.end();++it){const double gap=it.key()-before.key();if(gap<1e9)divisor=std::gcd(divisor,qRound64(gap*1e9));before=it;}if(divisor>0)unit=divisor/1e9;}
-                const double step=unit*qMax(1.0,std::ceil(span/qMax(1.0,a.height()/24.0)/unit));
-                const double anchor=series.labels.firstKey();
-                const double first=std::ceil((range.first-anchor)/step),last=std::floor((range.second-anchor)/step);
-                for(int ordinal=0;ordinal<2000&&first+ordinal<=last;++ordinal){const double value=anchor+(first+ordinal)*step;QString label;
-                    auto match=series.labels.lowerBound(value-unit*1e-8);if(match!=series.labels.end()&&std::abs(match.key()-value)<unit*1e-7)label=match.value();
-                    tick(value,label,true);
-                }
+                for(const auto &mark:enumTicks(series.labels,range.first,range.second,a.height()))tick(mark.value,mark.text,true);
             }
             else{const double minor=majorStep(span,a.height()/45.0)/5;const qint64 first=qint64(std::ceil(range.first/minor)),last=qint64(std::floor(range.second/minor));
                 for(qint64 k=first;k<=last&&k-first<2000;++k)tick(k*minor,QString::number(k*minor*scale,'g',6),k%5==0);}

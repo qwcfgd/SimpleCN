@@ -2,8 +2,8 @@ IDI_APP_ICON ICON "../Bootloader.ico"
 
 #include <windows.h>
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,4,0,0
- PRODUCTVERSION 1,4,0,0
+ FILEVERSION 1,4,1,0
+ PRODUCTVERSION 1,4,1,0
  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -13,10 +13,10 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "FileDescription", "Qt-GeneralController V1.4\0"
-            VALUE "FileVersion", "1.4.0.0\0"
+            VALUE "FileDescription", "Qt-GeneralController V1.4.1\0"
+            VALUE "FileVersion", "1.4.1.0\0"
             VALUE "ProductName", "Qt-GeneralController\0"
-            VALUE "ProductVersion", "1.4.0\0"
+            VALUE "ProductVersion", "1.4.1\0"
             VALUE "OriginalFilename", "QtBootloader.exe\0"
         END
     END

@@ -14,6 +14,7 @@
 #include <QSplitter>
 #include <QSortFilterProxyModel>
 #include <QFileDialog>
+#include "PathFileDialog.h"
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QSpinBox>
@@ -30,7 +31,7 @@ static QLabel*plain(const QString&s){auto*l=new QLabel(s);l->setTextFormat(Qt::P
 static QPushButton*button(const QString&text,const char*name){auto*b=new QPushButton(text);b->setObjectName(name);return b;}
 static void tableStyle(QTableView*t){t->setAlternatingRowColors(true);t->setSelectionBehavior(QAbstractItemView::SelectRows);t->setSelectionMode(QAbstractItemView::SingleSelection);t->verticalHeader()->hide();t->horizontalHeader()->setStretchLastSection(true);t->verticalHeader()->setDefaultSectionSize(27);}
 SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent):QWidget(parent),m_vm(vm){
-    setObjectName("signalTransmitPage");auto*root=new QVBoxLayout(this);root->setContentsMargins(10,6,10,6);root->setSpacing(5);
+    setObjectName("signalTransmitPage");setAttribute(Qt::WA_StyledBackground,true);auto*root=new QVBoxLayout(this);root->setContentsMargins(10,6,10,6);root->setSpacing(5);
     m_configurationDialog=new QDialog(this);m_configurationDialog->setObjectName("signalSettingsDialog");m_configurationDialog->setWindowTitle("通信配置");m_configurationDialog->resize(800,480);
     auto*configuration=new QVBoxLayout(m_configurationDialog);
     auto*heading=new QHBoxLayout;auto*title=plain("报文工作台");title->setObjectName("sectionTitle");title->setWordWrap(false);heading->addWidget(title);heading->addStretch();
@@ -42,7 +43,7 @@ SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent
     m_import=button("导入…","signalImport");m_reload=button("重新加载","signalReload");files->addWidget(m_path,1);files->addWidget(m_import);files->addWidget(m_reload);configuration->addLayout(files);
     auto *replay=new QHBoxLayout;m_replayPath=new QLineEdit;m_replayPath->setObjectName("signalReplayPath");m_replayPath->setReadOnly(true);m_replayPath->setPlaceholderText("信号回放源文件（ASC / BLF）");
     m_replayImport=button("导入…","signalReplayImport");m_replayReset=button("重置","signalReplayReset");m_replayMap=button("通道映射…","signalReplayMapping");replay->addWidget(m_replayPath,1);replay->addWidget(m_replayImport);replay->addWidget(m_replayReset);replay->addWidget(m_replayMap);configuration->addLayout(replay);
-    connect(m_replayImport,&QPushButton::clicked,this,[this]{const auto path=QFileDialog::getOpenFileName(m_configurationDialog,"导入信号回放源",m_replayPath->text(),"日志 (*.blf *.asc *.BLF *.ASC)");if(!path.isEmpty())m_vm->importReplay(path);});
+    connect(m_replayImport,&QPushButton::clicked,this,[this]{const auto path=PathFileDialog::getOpenFileName(m_configurationDialog,"导入信号回放源",m_replayPath->text(),"日志 (*.blf *.asc *.BLF *.ASC)");if(!path.isEmpty())m_vm->importReplay(path);});
     connect(m_replayReset,&QPushButton::clicked,m_vm,&SignalTransmitViewModel::resetReplay);connect(m_replayMap,&QPushButton::clicked,this,&SignalTransmitPage::editReplayMapping);
     m_summary=plain("");m_summary->setObjectName("signalDatabaseSummary");configuration->addWidget(m_summary);
     m_rolePanel=new QWidget;auto*roles=new QHBoxLayout(m_rolePanel);roles->setContentsMargins(0,0,0,0);
@@ -65,7 +66,7 @@ SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent
     m_values=new QTableView;m_values->setObjectName("signalValues");m_valueModel=new SignalValueTableModel(vm,this);m_values->setModel(m_valueModel);
     connect(m_values,&QTableView::clicked,this,[this](const QModelIndex &index){
         if((index.column()==2||index.column()==3)&&(index.flags()&Qt::ItemIsEditable))m_values->edit(index);
-    });m_values->setItemDelegateForColumn(3,new SignalValueDelegate(m_values));tableStyle(m_values);m_values->setColumnWidth(0,150);m_values->setColumnWidth(1,130);m_values->setColumnWidth(2,130);m_values->setColumnWidth(3,145);editor->addWidget(m_values,1);root->addWidget(m_editor,1);
+    });m_values->setItemDelegate(new SignalValueDelegate(m_values));tableStyle(m_values);m_values->setColumnWidth(0,150);m_values->setColumnWidth(1,130);m_values->setColumnWidth(2,130);m_values->setColumnWidth(3,145);editor->addWidget(m_values,1);root->addWidget(m_editor,1);
     auto*actions=new QHBoxLayout;m_once=button("多次发送","signalSendOnce");m_start=button("周期发送","signalStart");m_start->setProperty("primary",true);m_stop=button("停止","signalStop");m_back=button("回退：上一步","signalBack");m_restore=button("撤销：恢复配置基准","signalRestore");
     auto*history=new QHBoxLayout;history->addWidget(m_back);history->addWidget(m_restore);history->addStretch();configuration->addLayout(history);
     m_configurationFeedback=plain("");m_configurationFeedback->setObjectName("signalConfigurationFeedback");configuration->addWidget(m_configurationFeedback);configuration->addStretch();
@@ -76,7 +77,7 @@ SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent
     connect(m_search,&QLineEdit::textChanged,proxy,&QSortFilterProxyModel::setFilterFixedString);
     connect(m_tree->selectionModel(),&QItemSelectionModel::currentChanged,this,[this,proxy](const QModelIndex&i){const auto source=proxy->mapToSource(i.sibling(i.row(),0));const auto key=source.data(Qt::UserRole).toString();if(!key.isEmpty()){for(int row=0;row<m_plan->model()->rowCount();++row)if((m_canModel?m_canModel->key(row):m_linModel->key(row))==key){m_plan->selectRow(row);break;}}});
     connect(m_plan->selectionModel(),&QItemSelectionModel::currentRowChanged,this,[this](const QModelIndex&i){selectFrame(m_canModel?m_canModel->key(i.row()):m_linModel->key(i.row()));});
-    connect(m_import,&QPushButton::clicked,this,[this]{const auto path=QFileDialog::getOpenFileName(m_configurationDialog,"导入只读信号数据库",m_path->text(),m_canModel?"DBC (*.dbc *.DBC)":"LDF (*.ldf *.LDF)");if(!path.isEmpty())m_vm->importAsync(path);});
+    connect(m_import,&QPushButton::clicked,this,[this]{const auto path=PathFileDialog::getOpenFileName(m_configurationDialog,"导入只读信号数据库",m_path->text(),m_canModel?"DBC (*.dbc *.DBC)":"LDF (*.ldf *.LDF)");if(!path.isEmpty())m_vm->importAsync(path);});
     connect(m_reload,&QPushButton::clicked,this,[this]{m_vm->importAsync(m_vm->database()->path);});
     connect(m_valueModel,&SignalValueTableModel::validation,this,&SignalTransmitPage::feedback);
     m_plan->setContextMenuPolicy(Qt::CustomContextMenu);

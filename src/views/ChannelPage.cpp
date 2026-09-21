@@ -27,6 +27,7 @@
 #include <QHeaderView>
 #include <QSortFilterProxyModel>
 #include <QFileDialog>
+#include "PathFileDialog.h"
 #include <QInputDialog>
 #include <QSignalBlocker>
 #include <QTimer>
@@ -390,7 +391,7 @@ void ChannelPage::render() {
 void ChannelPage::browseImage(bool flash) {
     const QString current=flash?m_vm->settings().flashPath:m_vm->settings().applicationPath;
     const QString start=current.isEmpty()?QDir::homePath():QFileInfo(current).absolutePath();
-    const QString path=QFileDialog::getOpenFileName(this,"选择镜像",start,"Firmware (*.bin *.hex *.BIN *.HEX)");
+    const QString path=PathFileDialog::getOpenFileName(this,"选择镜像",start,"Firmware (*.bin *.hex *.BIN *.HEX)");
     if(!path.isEmpty())m_vm->chooseImage(flash,path);
 }
 void ChannelPage::exportFrames(){

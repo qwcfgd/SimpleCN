@@ -6,16 +6,23 @@
 
 简体中文 · [English](README.en.md)
 
-![Version](https://img.shields.io/badge/version-1.4.0-2563eb)
+![Version](https://img.shields.io/badge/version-1.4.1-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
-从数据库信号编辑，到报文监视、日志回放和图像观测，在同一工作台完成，基于Codex。
+从数据库信号编辑，到报文监视、日志回放和图像观测，在同一工作台完成。由 OpenAI Codex 协助开发。
 
-[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.4 更新](docs/Release-1.4.md) · [许可说明](docs/Licensing.md)
+[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.4.1 更新](docs/Release-1.4.1.md) · [许可说明](docs/Licensing.md)
 
 </div>
+
+## V1.4.1 修复
+
+- 发送期间可持续编辑 raw、物理值及枚举；后台收发、计数和语言刷新不会覆盖输入，提交后更新后续发送负载。
+- 枚举图像保留物理坐标：匹配位置显示枚举名称，其余刻度显示整数，参考格同步。
+- 下载、数据库与回放文件选择器增加可粘贴地址栏，支持完整路径、目录、带空格/中文路径及 Ctrl+L；三个任务页面统一底色。
+- rt 明确以毫秒显示：实际经过 1 秒增加约 1000 ms。微秒精度记录显示六位小数时，末尾三位为 0 属于正常精度表现；此次实机验收因设备移除未完成。
 
 ## V1.4 交互更新
 
@@ -63,7 +70,7 @@
 
 ## 硬件与支持范围
 
-| 场景 | V1.4 范围 |
+| 场景 | V1.4.1 范围 |
 | --- | --- |
 | 模拟模式 | 无硬件即可使用模拟通道；日志尽可能快速重现，保留 Sim Tx / Sim Rx 区分。 |
 | PEAK | PCAN / PLIN 后端；需要匹配的厂商驱动及 API。 |
@@ -72,7 +79,7 @@
 | CAN FD | 日志读写和模拟回放可处理相关记录；当前不开放真实 CAN FD 收发。 |
 | ECU 下载 | CAN 下载目前仅支持模拟；LIN 在线下载需实际目标参数及授权的安全访问算法。 |
 
-**验证范围：** V1.4 已完成 Qt 5.15.19 / Qt 6.8.4 的 Release 构建，两套各 15 项验证通过；TC1016P 的 CAN1 / CAN2 外部回环已验证。真实 LIN ECU 收发尚未完成验收，模拟 SDK 结果不能替代实机验收。详见 [同星硬件适配](docs/Tosun-Hardware.md)。
+**验证范围：** V1.4.1 已完成 Qt 5.15.19 / Qt 6.8.4 的 Release 构建，两套各 16 项验证通过。此前版本已验证 TC1016P 的 CAN1 / CAN2 外部回环；本次因设备移除，未完成 V1.4.1 实机回归，在线 rt 问题仍待核验。真实 LIN ECU 收发尚未完成验收，模拟 SDK 结果不能替代实机验收。详见 [同星硬件适配](docs/Tosun-Hardware.md)。
 
 ## 快速上手
 
@@ -136,7 +143,7 @@ ctest --preset qt6 -R release_runtime
 | [报文与图像观测](docs/Trace-and-Graphics.md) | 时间列、导出、曲线、光标与采样规则 |
 | [工作台与回放](docs/Signal-Workbench-Replay.md) | CAN / LIN 编辑、发送次数、映射与覆盖 |
 | [CDD / UDS](docs/CDD-UDS.md) | 数据库诊断服务与参数 |
-| [1.4 发布说明](docs/Release-1.4.md) | 主要更新、验证结果与边界 |
+| [1.4.1 发布说明](docs/Release-1.4.1.md) | 主要更新、验证结果与边界 |
 | [逻辑修复记录](docs/Logic-Review-Fixes.md) | 定版前问题与回归验证 |
 | [MVVM 检查](docs/MVVM-Audit.md) | 架构职责与调整记录 |
 

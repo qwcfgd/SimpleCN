@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(QtController VERSION 1.4.0 LANGUAGES CXX)
+project(QtController VERSION 1.4.1 LANGUAGES CXX)
 if(MINGW)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
 endif()
@@ -77,6 +77,7 @@ target_include_directories(bootloader_protocol PUBLIC "${CMAKE_CURRENT_SOURCE_DI
 target_link_libraries(bootloader_protocol PUBLIC Qt${QT_VERSION_MAJOR}::Core)
 add_library(bootloader_ui STATIC
     src/localization/Language.h src/localization/Language.cpp resources/language.qrc
+    src/views/PathFileDialog.h src/views/PathFileDialog.cpp
     src/views/UiLanguageController.h src/views/UiLanguageController.cpp
     src/infrastructure/BusHardware.h src/infrastructure/BusHardware.cpp
     src/infrastructure/TosunRuntime.h src/infrastructure/TosunRuntime.cpp

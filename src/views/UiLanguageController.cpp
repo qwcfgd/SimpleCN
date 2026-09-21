@@ -86,6 +86,10 @@ void UiLanguageController::refresh(){
     QSet<QAbstractItemModel*> refreshed;
     for(auto *widget:QApplication::allWidgets()){
         translateWidget(widget);widget->update();
+        // Combo popup models hold choices/user data. Emitting dataChanged on
+        // them replaces an editable combo's draft with its selected item text.
+        bool comboPopup=false;for(auto *parent=widget->parentWidget();parent;parent=parent->parentWidget())if(qobject_cast<QComboBox*>(parent)){comboPopup=true;break;}
+        if(comboPopup)continue;
         if(auto *view=qobject_cast<QAbstractItemView*>(widget))if(auto *model=view->model())if(!refreshed.contains(model)){
             refreshed.insert(model);if(model->columnCount())emit model->headerDataChanged(Qt::Horizontal,0,model->columnCount()-1);
             if(model->rowCount()&&model->columnCount())emit model->dataChanged(model->index(0,0),model->index(model->rowCount()-1,model->columnCount()-1),{Qt::DisplayRole,Qt::ToolTipRole});

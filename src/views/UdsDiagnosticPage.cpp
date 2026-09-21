@@ -25,7 +25,7 @@
 namespace host {
 static QLabel *plain(const QString &s){auto l=new QLabel(s);l->setTextFormat(Qt::PlainText);return l;}
 UdsDiagnosticPage::UdsDiagnosticPage(ChannelViewModel *vm,QWidget *parent):QWidget(parent),m_vm(vm){
-    setObjectName("udsDiagnosticPage");auto root=new QVBoxLayout(this);root->setContentsMargins(10,6,10,6);root->setSpacing(5);
+    setObjectName("udsDiagnosticPage");setAttribute(Qt::WA_StyledBackground,true);auto root=new QVBoxLayout(this);root->setContentsMargins(10,6,10,6);root->setSpacing(5);
     m_settings=new QPushButton("UDS 设置…");m_settings->setObjectName("udsSettings");
     m_repeatStatus=plain("");m_repeatStatus->setObjectName("udsRepeatStatus");
     auto split=new QSplitter(Qt::Horizontal);split->setObjectName("udsMainSplit");split->setChildrenCollapsible(false);

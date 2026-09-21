@@ -23,6 +23,8 @@ public:
     void refresh();
     QVector<int> visibleRows() const;
     QPair<double,double> xRange()const{return {m_x0,m_x1};}
+    struct AxisTick { double value; QString text; };
+    static QVector<AxisTick> enumTicks(const QMap<double,QString>&,double low,double high,double pixels);
 signals:
     void viewChanged();
     void cursorsMoved(double,double);

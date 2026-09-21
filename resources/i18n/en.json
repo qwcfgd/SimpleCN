@@ -905,5 +905,10 @@
   "独立软件通道 · 独立 UDS 配置 · 统一下载体验": "Independent software channels · Independent UDS settings · Unified downloads",
   "语言": "Language",
   "简中": "简中",
-  "通道": "Channel "
+  "通道": "Channel ",
+  "路径": "Path",
+  "转到": "Go",
+  "粘贴目录或完整文件路径，按回车定位（Ctrl+L）": "Paste a folder or full file path, then press Enter (Ctrl+L)",
+  "路径不存在或无法访问": "The path does not exist or cannot be accessed",
+  "时刻单位为 ms：1 秒 = 1000 ms；从首条记录起算。采集精度为微秒时，末尾三位为 0。": "Relative time in ms: 1 second = 1000 ms, measured from the first record. With microsecond capture precision, the last three decimal places are zero."
 }
