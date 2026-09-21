@@ -20,12 +20,15 @@ def main():
     required = [build/"QtBootloader.exe", build/"platforms/qwindows.dll",
                 build/"dll/PLinApi.dll", build/"dll/PCANBasic.dll",
                 ROOT/"docs/User-Guide.md", build/"libsignal_dbcppp.dll",
+                ROOT/"LICENSE", ROOT/"LICENSE.GPL", ROOT/"docs/Licensing.md",
                 ROOT/"docs/licenses/dbcppp-MIT.txt", ROOT/"docs/licenses/Boost-1.0.txt"]
     for path in required:
         if not path.is_file():
             parser.error(f"Missing required file: {path}")
     output.mkdir(parents=True)
     shutil.copy2(required[0], output)
+    for name in ("LICENSE", "LICENSE.GPL"):
+        shutil.copy2(ROOT/name, output/name)
     for path in build.glob("*.dll"):
         if path.name != f"Qt{args.qt_major}Test.dll" and (path.name.startswith((f"Qt{args.qt_major}", "libgcc_", "libstdc++", "libwinpthread", "libsignal_dbcppp")) or path.name.lower() in {"d3dcompiler_47.dll", "opengl32sw.dll", "dxcompiler.dll", "dxil.dll"}):
             shutil.copy2(path, output)
@@ -39,7 +42,7 @@ def main():
     (output/"qt.conf").write_text("[Paths]\nPrefix=.\nPlugins=.\n", encoding="utf-8")
     (output/"docs").mkdir()
     for name in ("User-Guide.md", "Release-1.3.md", "Tosun-Hardware.md", "Trace-and-Graphics.md", "Signal-Workbench-Replay.md",
-                 "CDD-UDS.md", "Default-Configuration.md", "Signal-Transmission-Implementation.md", "Logic-Review-Fixes.md"):
+                 "CDD-UDS.md", "Default-Configuration.md", "Licensing.md", "Signal-Transmission-Implementation.md", "Logic-Review-Fixes.md"):
         shutil.copy2(ROOT/"docs"/name, output/"docs"/name)
     shutil.copytree(ROOT/"docs/licenses", output/"docs/licenses")
     (output/"README.txt").write_text(
@@ -51,7 +54,7 @@ def main():
         "请保留整个目录；不要只复制 exe。保存配置需要目录可写。\n",
         encoding="utf-8-sig")
     inventory = {
-        "applicationVersion": "1.3.0", "uiVersion": "Qt-GeneralController V1.3",
+        "applicationLicense": "LGPL-3.0-only", "applicationVersion": "1.3.0", "uiVersion": "Qt-GeneralController V1.3",
         "qtMajor": int(args.qt_major), "architecture": "Windows x64",
         "buildType": "Release", "physicalDownloadEnabled": False, "physicalDownloadBuses": [], "physicalECUValidated": False,
         "components": ["Qt runtime and plugins", "MinGW runtime",
