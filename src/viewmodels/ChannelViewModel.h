@@ -22,6 +22,7 @@ public:
     QString healthDetail()const{return m_healthDetail;}
     QString error()const{return m_error;}
     QString taskText()const{return m_taskText;}
+    bool downloadStartBlocked()const{return m_downloadStartBlocked;}
     QString scanText()const{return m_scanText;}
     int progress()const{return m_progress;}
     TaskState taskState()const{return m_task;}
@@ -71,6 +72,7 @@ signals:
     void diagnosticDatabaseChanged();
     void diagnosticFinished(bool,QByteArray,QString);
 private:
+    QString downloadInputHint()const;
     void selectAvailableHardware();
     ChannelSettings m_settings;
     ChannelModel *m_model;
@@ -85,6 +87,7 @@ private:
     QSet<quint32> m_reserved;
     bool m_lost=false,m_wasConnected=false,m_manualDisconnect=false,m_connecting=false;
     bool m_pending=false,m_scanning=false,m_ready=false,m_backendSimulation=false;
+    bool m_downloadStartBlocked=false;
     QStringList m_logs;
     diag::Database m_database;
     UdsServiceTableModel m_services;

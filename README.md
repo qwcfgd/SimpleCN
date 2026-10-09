@@ -6,16 +6,22 @@
 
 简体中文 · [English](README.en.md) · [GitHub：SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.4.3-2563eb)
+![Version](https://img.shields.io/badge/version-1.44-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 从数据库信号编辑，到报文监视、日志回放和图像观测，在同一工作台完成。由 OpenAI Codex 协助开发。
 
-[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.4.3 更新](docs/Release-1.4.3.md) · [许可说明](docs/Licensing.md)
+[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.44 更新](docs/Release-1.44.md) · [许可说明](docs/Licensing.md)
 
 </div>
+
+## V1.44：下载按钮与独立通信模块
+
+- 连接和所需镜像就绪后，未选择 27 DLL 不再禁用 LIN 在线下载按钮；点击时若 DLL 未加载，任务窗格以红色显示“27 dll未加载”，并阻止启动下载。
+- 下载设置第一行提供 27 DLL 路径及现代 Windows 文件选择按钮；任务窗格显示连接、镜像及运行依赖的具体提示。LIN / CAN 模拟下载使用模拟算法。
+- 通信源码、PEAK API 头文件及 x64 运行库纳入本仓库 `resource/`，不再依赖其他工程的通信目录。详见 [1.44 更新说明](docs/Release-1.44.md)。
 
 ## V1.4.3：SimpleCN 与报文监视更新
 
@@ -109,14 +115,7 @@
 
 ## 从源码构建
 
-需要 Windows x64、CMake / Ninja、匹配的 Qt / MinGW，以及定义 `peak_communication` 和 `peak_deploy` 的外部通信模块。CMake 按顺序查找：
-
-```text
-../Qt-ACTestController/resource/communication
-../communication-provider/resource/communication
-```
-
-模块位于其他位置时，设置 `-DCOMMUNICATION_SOURCE_DIR=<模块目录>`。共享模块需包含项目使用的 LIN 扩展，见 [通信模块说明](docs/Communication-Module.md)。
+需要 Windows x64、CMake / Ninja 和匹配的 Qt / MinGW。通信模块固定编译本仓库 `resource/communication`，相关驱动、类型定义、SDK 头文件和 x64 DLL 均位于 `resource/`；不再使用外部 `COMMUNICATION_SOURCE_DIR`。来源与目录布局见 [通信模块说明](docs/Communication-Module.md)。
 
 ```powershell
 cmake --preset qt6
@@ -160,6 +159,7 @@ ctest --preset qt6 -R release_runtime
 | [工作台与回放](docs/Signal-Workbench-Replay.md) | CAN / LIN 编辑、发送次数、映射与覆盖 |
 | [CDD / UDS](docs/CDD-UDS.md) | 数据库诊断服务与参数 |
 | [1.4.2 发布说明](docs/Release-1.4.2.md) | 主要更新、验证结果与边界 |
+| [1.44 发布说明](docs/Release-1.44.md) | 下载按钮、27 DLL 文件选择与独立通信模块 |
 | [逻辑修复记录](docs/Logic-Review-Fixes.md) | 定版前问题与回归验证 |
 | [MVVM 检查](docs/MVVM-Audit.md) | 架构职责与调整记录 |
 

@@ -1,6 +1,10 @@
-# 共享通讯模块
+# 本项目通信模块
 
-源码位于 communication-provider/resource/communication。两个工程直接编译同一份 driverCan、driverLin 及连接模块；不复制两套维护中的驱动代码。
+从 V1.44 起，本工程独立维护通信代码，不再共享其他项目的源码目录。CMake 固定编译 `resource/communication`，忽略并清理历史外部模块缓存配置。
+
+目录包括 `resource/communication`（通道类型、连接与硬件后端、LIN 调度扩展）、`resource/driverCan`、`resource/driverLin`、`resource/global`（驱动所需公共类型）及 `resource/dll`（厂商 API 头文件、CAN / LIN x64 DLL）。部署仍只将必要 DLL 复制到程序目录的 `dll/`。
+
+恢复来源为 Qt-ACTestController 的 stash `0d1dbc4`，其中通信模块保存在未跟踪文件快照 `ff68988`。检查该工程所有可见分支与 stash 的文件历史后，未发现主分支提交过 `resource/communication`，也未发现其删除提交；因此不能将当前缺失归因于某次主分支删除。驱动和 SDK 从同一 stash 的跟踪树提取；仅调整本项目的头文件与 DLL 相对路径，不修改原工程、不应用或删除其 stash。来源说明见 [resource/README.md](../resource/README.md)。
 
 ## 数据与职责
 
@@ -41,4 +45,4 @@ PeakCanBackend / PeakLinBackend 借用驱动引用，SoftwareChannel 拥有 back
 
 ## 阶段 2 帧头验证补充
 
-sendRaw 支持 dirSubscriberAutoLength，用于请求帧头并识别未知长度响应；仅 Publisher 计算发送校验，Subscriber 不发送数据字段。独立扫描工具 plin_scan 及新 LIN 页复用这一接口，0x3D 仍强制 Classic checksum。无应答与校验 / 总线错误在界面分别显示，详见主工程的 LIN-Frame-Validation.md。
+sendRaw 支持 dirSubscriberAutoLength，用于请求帧头并识别未知长度响应；仅 Publisher 计算发送校验，Subscriber 不发送数据字段。独立扫描工具 plin_scan 及 LIN 页复用这一接口，0x3D 仍强制 Classic checksum。无应答与校验 / 总线错误在界面分别显示。V1.44 已内置诊断调度槽、发送回读确认与帧边界扩展，无需在其他仓库应用历史 patches/ 补丁。

@@ -60,7 +60,7 @@ git -C <共享模块仓库> apply <本仓库>/docs/patches/signal-lin-shared.pat
 FETCHCONTENT_SOURCE_DIR_SIGNAL_DBCPPP=<dbcppp 固定源码>
 FETCHCONTENT_SOURCE_DIR_SIGNAL_MULTIPRECISION=<multiprecision 固定源码>
 FETCHCONTENT_SOURCE_DIR_SIGNAL_BOOST_MATH=<math 固定源码>
-COMMUNICATION_SOURCE_DIR=<共享仓库>/resource/communication
+# V1.44 起固定编译本仓库 resource/communication，不再配置外部通信目录。
 ```
 
 构建预设以用户指定的原工程目录为基准，固定输出到 `C:/Documents/0_Qt/build/Qt-GeneralController-qt5` 与 `C:/Documents/0_Qt/build/Qt-GeneralController-qt6`；可执行文件为各目录下的 `QtBootloader.exe`，不随 Codex worktree 位置变化。主分支同步后已在这两个目录重新配置并完成 Release 编译，CMake 源码目录与依赖缓存均已切回原工程及其上一级构建目录。此前的 `build/signal-qt5` / `build/signal-qt6` 和 worktree 上一级的构建目录均为历史验证目录，后续构建不再使用。Qt 5.15.19 使用 GCC 8.1.0；Qt 6.8.4 对应本机 `mingw1200_64` / `MinGW/12.0.0` 路径，但编译器实际报告 GCC 14.2.0。
@@ -153,7 +153,7 @@ LIN 方向列为“帧头 · 数据发送类型”：主节点为 Tx · Tx / Tx 
 
 诊断帧 60/61 使用 8 字节、经典校验和，并逐槽保留调度顺序、重复项和 delay；不存在显式诊断定义时，标准 MasterReq/SlaveResp 调度引用会创建对应的原始帧。按用户要求，硬件使用 unconditional 槽，不使用会抑制未更新请求的诊断槽类型，见 [PLIN API 文档 §3.7](https://www.peak-system.com/produktcd/Develop/PC%20interfaces/Windows/PLIN-API/PLINAPI_enu.pdf)。旧配置中首版诊断限制会在恢复时迁移。
 
-共享通信驱动 `C:/Documents/0_Qt/Qt-ACTestController/resource/communication/SignalLinExtensions.cpp` 已同步允许诊断 ID 调度和热更新，并校验诊断长度及 checksum。变更副本保存于 `patches/communication-lin-diagnostic-slots.patch`；其他环境需在通信模块所在仓库应用该补丁。未改动该外部仓库中的其他现有改动。
+此前共享通信驱动曾允许诊断 ID 调度和热更新，并校验诊断长度及 checksum；历史变更副本保存在 `patches/communication-lin-diagnostic-slots.patch`。V1.44 已将对应扩展纳入本仓库 `resource/communication/SignalLinExtensions.cpp`，无需修改其他工程或应用该历史补丁。
 
 本次最终验证：Qt 5/6 Release 编译成功，各 10/10 CTest 套件通过；信号界面 28 项、解析/调度 22 项、驱动 7 项各套均通过。testsrc 的 DBC/LDF 源文件保持不变；LDF 可执行诊断调度表全部通过模拟启动，旧诊断配置迁移通过。已检查普通与诊断表截图。日志为对应构建目录 presentation-final-build.log、presentation-final-tests.log，截图为 tests/artifacts/testsrc-*.png。诊断物理总线时序未做实机测量；当前证据来自模拟调度与 PLIN API 驱动桩。
 

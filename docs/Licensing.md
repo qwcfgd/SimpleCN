@@ -8,7 +8,7 @@ Qt-GeneralController 项目自有代码采用 **GNU Lesser General Public Licens
 - [LICENSE.GPL](../LICENSE.GPL)：LGPL v3 引用的 GPL v3 原文，来自 [GNU 官方文本](https://www.gnu.org/licenses/gpl-3.0.txt)。
 - [LICENSE.LGPL](../LICENSE.LGPL)：保留已有文件，与 LICENSE 内容一致。
 
-现有第三方版权声明和许可证优先适用于相应文件。本项目许可不授予外部通信模块、硬件 SDK、私有算法或第三方运行库的额外权利，也不代表已满足任意二进制组合的全部再分发条件。
+现有第三方版权声明和许可证优先适用于相应文件。本项目许可不授予恢复的通信代码所含厂商接口、硬件 SDK、私有算法或第三方运行库的额外权利，也不代表已满足任意二进制组合的全部再分发条件。
 
 ## 第三方组件
 
@@ -18,7 +18,7 @@ Qt-GeneralController 项目自有代码采用 **GNU Lesser General Public Licens
 | dbcppp | 固定提交的 DBC 解析库 | MIT；保留 [许可与版权声明](licenses/dbcppp-MIT.txt)。 |
 | Boost.Multiprecision / Boost.Math 及所需 Boost 头文件 | 编译期高精度运算依赖，不单独部署 Boost Math DLL | Boost Software License 1.0；见 [许可文本](licenses/Boost-1.0.txt)。 |
 | MinGW / GCC 运行库及 winpthreads | 程序运行依赖 | 按工具链所含各组件许可及适用的运行库例外条款分发；不由本项目重新授权。 |
-| 外部 peak_communication 模块 | 从独立提供的源码目录编译 | 按该模块源码及其第三方文件的原有许可使用；本仓库 LICENSE 不替代外部模块许可。 |
+| peak_communication 与 CAN / LIN 驱动 | V1.44 起从本仓库 resource/ 编译；来源见 resource/README.md | 保留恢复源码和厂商文件中的原有版权声明；本仓库 LICENSE 不替代厂商 SDK 许可。 |
 | PEAK PCANBasic / PLIN API、同星 TSMaster / libTSCAN | 厂商硬件接口与动态运行库 | 按厂商许可使用和再分发；不是本项目 LGPL 代码。同星 SDK 由用户另行安装。 |
 
 BLF / 图像功能的开源调研参考项目见 [实现说明](Trace-and-Graphics.md)。参考资料不等于链接依赖，也不将其许可移植到本项目；例如 vector_blf 未链接或复制进项目。

@@ -10,6 +10,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QGridLayout>
+#include <QFormLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -20,6 +21,8 @@
 #include "protocol/PluginKey.h"
 #include "protocol/SimulatedLinEcu.h"
 #include "protocol/LinTransport.h"
+#include "localization/Language.h"
+#include "views/MainWindowDefaults.h"
 using namespace boot;
 using namespace host;
 static QByteArray hex(const char *s){return QByteArray::fromHex(s);}
@@ -54,6 +57,100 @@ class DownloadRevisionTest : public QObject {
         FirmwareImage result;result.segments.append({address,QByteArray(n,char(0x5a))});result.size=n;return result;
     }
 private slots:
+    void initTestCase(){
+        Q_INIT_RESOURCE(resources);
+        QFile theme(":/theme.qss");QVERIFY(theme.open(QIODevice::ReadOnly));
+        qApp->setStyleSheet(QString::fromUtf8(theme.readAll()));
+    }
+    void downloadButtonReadiness_data(){
+        QTest::addColumn<bool>("lin");QTest::addColumn<bool>("connectFirst");
+        QTest::newRow("LIN connect then import")<<true<<true;
+        QTest::newRow("LIN import then connect")<<true<<false;
+        QTest::newRow("CAN connect then import")<<false<<true;
+        QTest::newRow("CAN import then connect")<<false<<false;
+    }
+    void downloadButtonReadiness(){
+        QFETCH(bool,lin);QFETCH(bool,connectFirst);
+        auto settings=ChannelSettings::defaults(lin?communication::Bus::Lin:communication::Bus::Can);
+        settings.simulation=true;settings.downloadProfile["resetWaitMs"]=1;
+        ChannelViewModel vm(settings);ChannelPage page(&vm);
+        auto button=page.findChild<QPushButton*>("startButton");
+        auto hint=page.findChild<QLabel*>("downloadStartHint");QVERIFY(button);QVERIFY(hint);
+        QTRY_VERIFY(vm.canConnect());QVERIFY(!button->isEnabled());QVERIFY(!hint->isHidden());
+        QCOMPARE(hint->text(),QString("请先连接软件通道"));
+        auto connectChannel=[&]{vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());};
+        if(connectFirst)connectChannel();
+        const auto app=temp.filePath(QString("readiness-%1-%2.bin").arg(lin).arg(connectFirst));
+        QFile file(app);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QByteArray(32,1));file.close();
+        QVERIFY(vm.chooseImage(false,app));
+        if(!connectFirst)connectChannel();
+        QVERIFY(!button->isEnabled());QCOMPARE(hint->text(),QString("此配置需要有效的 Flash Driver 镜像"));
+        auto next=vm.settings();next.flashRequired=false;QVERIFY(vm.setSettings(next));
+        QVERIFY(button->isEnabled());QVERIFY(hint->isHidden());
+        next.flashRequired=true;QVERIFY(vm.setSettings(next));QVERIFY(!button->isEnabled());
+        QVERIFY(vm.chooseImage(true,app));QVERIFY(button->isEnabled());QVERIFY(hint->isHidden());
+        QSignalSpy requested(vm.findChild<ChannelModel*>(),&ChannelModel::previewRequested);
+        button->click();QCOMPARE(requested.count(),1);QVERIFY(!button->isEnabled());
+        QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),TaskState::Completed,6000);
+        QTRY_VERIFY(button->isEnabled());QVERIFY(hint->isHidden());
+        auto model=vm.findChild<ChannelModel*>();
+        model->taskChanged(TaskState::Running,0,"busy");QVERIFY(!button->isEnabled());QVERIFY(!hint->isHidden());
+        model->taskChanged(TaskState::Completed,100,"done");QVERIFY(button->isEnabled());
+        vm.toggleConnection();QTRY_VERIFY(!vm.connected()&&!vm.pending());QVERIFY(!button->isEnabled());
+        QCOMPARE(hint->text(),QString("请先连接软件通道"));
+    }
+    void onlineDependenciesRejectBeforeWorker(){
+        auto settings=ChannelSettings::defaults(communication::Bus::Lin);
+        const auto app=temp.filePath("online-preflight.bin");QFile file(app);
+        QVERIFY(file.open(QIODevice::WriteOnly));file.write("image");file.close();
+        settings.applicationPath=app;settings.flashPath=app;
+        ChannelViewModel vm(settings);ChannelPage page(&vm);
+        auto model=vm.findChild<ChannelModel*>();QVERIFY(model);
+        QSignalSpy ready(model,&ChannelModel::ready);QTRY_VERIFY(!ready.isEmpty());
+        // Inject ViewModel state only. No real channel is opened and no request
+        // may reach the worker while online dependencies are missing.
+        model->stateChanged(communication::ConnectionState::Connected,{});
+        model->healthChanged(communication::Health::Ready,{});
+        auto button=page.findChild<QPushButton*>("startButton");
+        auto hint=page.findChild<QLabel*>("downloadStartHint");QVERIFY(button);QVERIFY(hint);
+        QSignalSpy requested(model,&ChannelModel::previewRequested);
+        QVERIFY(button->isEnabled());QVERIFY(!hint->isHidden());
+        QCOMPARE(hint->text(),QString("请配置已授权的安全访问 DLL"));
+        button->click();QCOMPARE(requested.count(),0);QVERIFY(!vm.pending());
+        QCOMPARE(vm.error(),hint->text());QCOMPARE(vm.taskState(),TaskState::Idle);
+        auto task=page.findChild<QLabel*>("taskText");QVERIFY(task);
+        QCOMPARE(task->text(),QString("27 dll未加载"));QVERIFY(vm.downloadStartBlocked());
+        QVERIFY(task->property("downloadStartBlocked").toBool());
+        QCOMPARE(task->palette().color(QPalette::WindowText),QColor("#dc2626"));
+        page.resize(1200,700);page.setAttribute(Qt::WA_DontShowOnScreen);page.show();
+        QDir().mkpath("artifacts");QVERIFY(page.grab().save("artifacts/download-dll-missing.png"));
+        Language::instance().setCode("en");QCOMPARE(Language::text("27 dll未加载"),QString("27 DLL not loaded"));
+        Language::instance().setCode("zh_CN");
+        auto next=vm.settings();next.downloadProfile["keyLibrary"]=temp.filePath("missing.dll");
+        QVERIFY(vm.setSettings(next));QVERIFY(!vm.downloadStartBlocked());QCOMPARE(task->text(),QString("等待开始"));
+        QVERIFY(button->isEnabled());QVERIFY(hint->text().contains("27 DLL"));
+        button->click();QCOMPARE(requested.count(),0);QVERIFY(vm.error().contains("27 DLL"));
+        // An existing directory is not a valid DLL file.
+        next.downloadProfile["keyLibrary"]=temp.path();QVERIFY(vm.setSettings(next));
+        button->click();QCOMPARE(requested.count(),0);QVERIFY(vm.error().contains("27 DLL"));
+        next.downloadProfile["keyLibrary"]=app;QVERIFY(vm.setSettings(next));
+        if(!QFileInfo::exists(QCoreApplication::applicationDirPath()+"/seedkey/SeedkeyBridge32.exe")){
+            QVERIFY(button->isEnabled());QVERIFY(hint->text().contains("SeedkeyBridge32.exe"));
+            button->click();QCOMPARE(requested.count(),0);QVERIFY(vm.error().contains("SeedkeyBridge32.exe"));
+        }
+        model->healthChanged(communication::Health::Removed,{});QVERIFY(!button->isEnabled());
+        QCOMPARE(hint->text(),QString("硬件通道状态异常"));
+    }
+    void onlineCanStillRequiresTargetIntegration(){
+        auto settings=ChannelSettings::defaults(communication::Bus::Can);
+        settings.applicationPath=temp.filePath("online-preflight.bin");settings.flashPath=settings.applicationPath;
+        ChannelViewModel vm(settings);ChannelPage page(&vm);auto model=vm.findChild<ChannelModel*>();
+        QSignalSpy ready(model,&ChannelModel::ready);QTRY_VERIFY(!ready.isEmpty());
+        model->stateChanged(communication::ConnectionState::Connected,{});
+        model->healthChanged(communication::Health::Ready,{});
+        QVERIFY(!vm.canStart());QVERIFY(!page.findChild<QPushButton*>("startButton")->isEnabled());
+        QVERIFY(page.findChild<QLabel*>("downloadStartHint")->text().contains("真实 CAN"));
+    }
     void appAndBootWireSequence_data(){
         QTest::addColumn<QString>("flow");QTest::addColumn<bool>("checked");
         QTest::newRow("APP unchecked")<<QString("app")<<false;
@@ -172,6 +269,12 @@ private slots:
         auto quick=vm->settings();quick.p2Ms=30;quick.p2StarMs=60;QVERIFY(vm->setSettings(quick));
         QTimer::singleShot(30,&window,[&]{
             auto dialog=page->findChild<QDialog*>("downloadSettingsDialog");QVERIFY(dialog);
+            auto keyRow=dialog->findChild<QWidget*>("keyLibraryRow");QVERIFY(keyRow);
+            auto form=qobject_cast<QFormLayout*>(keyRow->parentWidget()->layout());QVERIFY(form);
+            int keyRowIndex=-1;QFormLayout::ItemRole keyRole;
+            form->getWidgetPosition(keyRow,&keyRowIndex,&keyRole);QCOMPARE(keyRowIndex,0);
+            QVERIFY(dialog->findChild<QPushButton*>("browseKeyLibrary"));
+            QVERIFY(dialog->findChild<QLineEdit*>("keyLibrary"));
             auto flow=dialog->findChild<QComboBox*>("downloadFlow");QVERIFY(flow);QCOMPARE(flow->currentData().toString(),QString("app"));
             auto flashRequired=dialog->findChild<QCheckBox*>("flashRequired");QVERIFY(flashRequired);QVERIFY(flashRequired->isChecked());
             QCOMPARE(flashRequired->text(),QString("Flash Driver使能"));

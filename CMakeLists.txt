@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(QtController VERSION 1.4.3 LANGUAGES CXX)
+project(QtController VERSION 1.44 LANGUAGES CXX)
 if(MINGW)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
 endif()
@@ -30,32 +30,10 @@ add_library(signal_runtime STATIC
     src/protocol/LinScheduleRunner.cpp src/protocol/LinScheduleRunner.h
     src/protocol/OperationCoordinator.h)
 target_link_libraries(signal_runtime PUBLIC signal_database)
-set(COMMUNICATION_SOURCE_DIR "" CACHE PATH "Directory containing the external peak_communication CMakeLists.txt")
-if(NOT COMMUNICATION_SOURCE_DIR)
-    # Resolve the shared module independently of the build directory. An explicit
-    # cache value still takes precedence over the supported sibling layouts.
-    foreach(candidate IN ITEMS
-            "${CMAKE_CURRENT_SOURCE_DIR}/../Qt-ACTestController/resource/communication"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../communication-provider/resource/communication")
-        if(EXISTS "${candidate}/CMakeLists.txt")
-            get_filename_component(candidate "${candidate}" REALPATH)
-            set(COMMUNICATION_SOURCE_DIR "${candidate}" CACHE PATH
-                "Directory containing the external peak_communication CMakeLists.txt" FORCE)
-            break()
-        endif()
-    endforeach()
-endif()
-if(NOT EXISTS "${COMMUNICATION_SOURCE_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR
-        "Communication module not found at '${COMMUNICATION_SOURCE_DIR}'. "
-        "Place Qt-ACTestController or communication-provider beside this project, "
-        "or set -DCOMMUNICATION_SOURCE_DIR=<module>/resource/communication.")
-endif()
-message(STATUS "Communication module: ${COMMUNICATION_SOURCE_DIR}")
-add_subdirectory("${COMMUNICATION_SOURCE_DIR}" peak_communication)
-if(NOT TARGET peak_communication OR NOT COMMAND peak_deploy)
-    message(FATAL_ERROR "COMMUNICATION_SOURCE_DIR must define peak_communication and peak_deploy")
-endif()
+# This project owns its communication sources; stale external-module cache
+# settings must never redirect a build back into another project.
+unset(COMMUNICATION_SOURCE_DIR CACHE)
+add_subdirectory(resource/communication peak_communication)
 add_library(cdd_model STATIC
     src/model/CddDatabase.h src/model/CddDatabase.cpp src/model/CddCodec.cpp)
 target_include_directories(cdd_model PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")

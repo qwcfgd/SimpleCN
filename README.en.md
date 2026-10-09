@@ -6,16 +6,22 @@
 
 [简体中文](README.md) · English · [GitHub: SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.4.3-2563eb)
+![Version](https://img.shields.io/badge/version-1.44-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 Developed with assistance from OpenAI Codex.
 
-[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.4.3 release notes (Chinese)](docs/Release-1.4.3.md)
+[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.44 release notes (Chinese)](docs/Release-1.44.md)
 
 </div>
+
+## V1.44: download controls and bundled communication sources
+
+- Once connected with the required images selected, online LIN download stays clickable without a 27 DLL. Clicking shows a red **27 DLL not loaded** task status and prevents the download from starting when the DLL is missing.
+- The first row of download settings contains the 27 DLL path and a native Windows file picker. The task pane explains connection, image and runtime dependency requirements. Simulated CAN / LIN downloads use the simulation algorithm.
+- Communication sources, PEAK API headers and x64 DLLs now live in this repository's `resource/` directory. No sibling project is required. See [V1.44 release notes (Chinese)](docs/Release-1.44.md).
 
 ## V1.4.3: SimpleCN and message monitor updates
 
@@ -92,14 +98,7 @@ Python is not required at runtime. Public fixtures and profiles are for simulati
 
 ## Build from source
 
-Windows x64, CMake / Ninja, matching Qt / MinGW, and an external communication module providing `peak_communication` and `peak_deploy` are required. CMake searches these locations in order:
-
-```text
-../Qt-ACTestController/resource/communication
-../communication-provider/resource/communication
-```
-
-Set `-DCOMMUNICATION_SOURCE_DIR=<module-directory>` if necessary. The module must include the LIN extensions described in [communication module documentation](docs/Communication-Module.md).
+Windows x64, CMake / Ninja and matching Qt / MinGW are required. CMake uses this repository's `resource/communication`; drivers, common types, SDK headers and x64 DLLs are bundled under `resource/`. External `COMMUNICATION_SOURCE_DIR` settings are no longer used. See [communication module documentation](docs/Communication-Module.md).
 
 ```powershell
 cmake --preset qt6

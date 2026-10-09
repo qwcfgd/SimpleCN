@@ -128,7 +128,7 @@ void ChannelPage::build() {
     auto footer=new QHBoxLayout;footer->setSpacing(8);auto statusLayout=new QVBoxLayout;statusLayout->setSpacing(3);auto statusRow=new QHBoxLayout;statusRow->setSpacing(6);
     auto elapsedLabel=label("总耗时");elapsedLabel->setObjectName("muted");statusRow->addWidget(elapsedLabel);m_elapsedText=label("0.0 s");m_elapsedText->setObjectName("muted");statusRow->addWidget(m_elapsedText);
     m_task=label("等待开始");m_task->setWordWrap(true);m_task->setObjectName("taskText");statusRow->addWidget(m_task,1);statusLayout->addLayout(statusRow);
-    m_hint=label("");m_hint->setObjectName("muted");m_hint->setWordWrap(true);statusLayout->addWidget(m_hint);
+    m_hint=label("");m_hint->setObjectName("downloadStartHint");m_hint->setWordWrap(true);statusLayout->addWidget(m_hint);
     m_error=label("");m_error->setObjectName("inlineError");m_error->setWordWrap(true);m_error->hide();statusLayout->addWidget(m_error);
     footer->addLayout(statusLayout,1);
     m_start=new QPushButton("开始下载");m_start->setObjectName("startButton");m_start->setProperty("primary",true);
@@ -281,6 +281,18 @@ void ChannelPage::editDownload() {
     auto outer=new QVBoxLayout(&dialog);auto scroll=new QScrollArea;scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);
     auto content=new QWidget;auto form=new QFormLayout(content);form->setContentsMargins(12,10,12,10);form->setSpacing(10);
     scroll->setWidget(content);outer->addWidget(scroll,1);
+    auto keyLibrary=edit("keyLibrary",32767);keyLibrary->setText(profile.keyLibrary);
+    auto keyRow=new QWidget;keyRow->setObjectName("keyLibraryRow");
+    auto keyLayout=new QHBoxLayout(keyRow);keyLayout->setContentsMargins(0,0,0,0);keyLayout->addWidget(keyLibrary,1);
+    auto browseKey=new QPushButton("文件…");browseKey->setObjectName("browseKeyLibrary");keyLayout->addWidget(browseKey);
+    connect(browseKey,&QPushButton::clicked,&dialog,[&dialog,keyLibrary]{
+        const QDir app(QCoreApplication::applicationDirPath());
+        const auto current=keyLibrary->text().trimmed();
+        const auto start=current.isEmpty()?app.absolutePath():QFileInfo(app.absoluteFilePath(current)).absolutePath();
+        const auto path=QFileDialog::getOpenFileName(&dialog,Language::text("选择 27 DLL"),start,"DLL (*.dll *.DLL)");
+        if(!path.isEmpty())keyLibrary->setText(path);
+    });
+    form->addRow("27 DLL",keyRow);
     auto flow=new QComboBox;flow->setObjectName("downloadFlow");flow->addItem("App下载流程","app");flow->addItem("Boot下载流程","boot");
     flow->setCurrentIndex(profile.flow=="boot"?1:0);
     auto flashRequired=new QCheckBox("Flash Driver使能");flashRequired->setObjectName("flashRequired");
@@ -361,8 +373,6 @@ void ChannelPage::editDownload() {
     auto flashAddress=edit("settingsFlashAddress",10),appAddress=edit("settingsApplicationAddress",10);
     flashAddress->setText(original.flashAddress);appAddress->setText(original.applicationAddress);
     form->addRow("Driver 基址 · hex",flashAddress);form->addRow("App 基址 · hex",appAddress);
-    auto keyLibrary=edit("keyLibrary",32767);keyLibrary->setText(profile.keyLibrary);
-    form->addRow("27 DLL",keyLibrary);
     auto erase=spin("eraseRoutine",0,65535),verifyRid=spin("verifyRoutine",0,65535),dependencyRid=spin("dependencyRoutine",0,65535),did=spin("identityDid",0,65535);
     for(auto value:{erase,verifyRid,dependencyRid,did}){value->setDisplayIntegerBase(16);value->setPrefix("0x");}
     erase->setValue(profile.eraseRoutine);verifyRid->setValue(profile.verifyRoutine);dependencyRid->setValue(profile.dependencyRoutine);did->setValue(profile.identityDid);
@@ -405,13 +415,19 @@ void ChannelPage::render() {
     m_images->setEnabled(!m_vm->busy());m_flashPath->setEnabled(s.flashRequired);m_browseFlash->setEnabled(s.flashRequired);
     m_flashInfo->setEnabled(s.flashRequired);
     m_start->setText(s.simulation?"开始模拟下载":"开始下载");m_start->setEnabled(m_vm->canStart());
-    m_start->setToolTip(m_vm->startHint());m_cancel->setEnabled(m_vm->taskState()==TaskState::Running || m_vm->scanning());
+    const auto hint=m_vm->startHint();
+    m_start->setToolTip(hint);m_cancel->setEnabled(m_vm->taskState()==TaskState::Running || m_vm->scanning());
     m_scan->setEnabled(m_vm->canScan());m_scan->setText(m_vm->scanning()?"正在扫描…":"扫描帧头");
     m_scan->setToolTip(m_vm->scanText().isEmpty()?"仅发送 00–3B、3D 帧头，检测从节点响应":m_vm->scanText());
     m_progress->setValue(m_vm->progress());m_task->setText(m_vm->taskText());
+    const bool blocked=m_vm->downloadStartBlocked();
+    if(m_task->property("downloadStartBlocked").toBool()!=blocked){
+        m_task->setProperty("downloadStartBlocked",blocked);
+        m_task->style()->unpolish(m_task);m_task->style()->polish(m_task);m_task->update();
+    }
     m_flashInfo->setText(imageDescription(s.flashPath));m_appInfo->setText(imageDescription(s.applicationPath));
     m_flashInfo->setToolTip(m_flashInfo->text());m_appInfo->setToolTip(m_appInfo->text());
-    m_hint->clear();m_hint->hide();
+    m_hint->setText(hint);m_hint->setVisible(!hint.isEmpty());
     m_error->setText(m_vm->error());m_error->setVisible(!m_vm->error().isEmpty());
     if(m_vm->taskState()==TaskState::Running && m_lastTask!=TaskState::Running){
         m_elapsed.restart();m_elapsedText->setText("0.0 s");

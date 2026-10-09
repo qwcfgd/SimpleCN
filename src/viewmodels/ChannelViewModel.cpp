@@ -51,6 +51,7 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent):
     connect(m_model,&ChannelModel::framesReceived,&m_frames,&FrameTableModel::append);
     connect(m_model,&ChannelModel::logMessage,this,&ChannelViewModel::log);
     connect(m_model,&ChannelModel::taskChanged,this,[this](TaskState state,int progress,QString text){
+        m_downloadStartBlocked=false;
         m_task=state;m_progress=progress;m_taskText=std::move(text);emit changed();
     });
     connect(m_model,&ChannelModel::scanChanged,this,[this](bool scanning,QString text){
@@ -93,6 +94,7 @@ bool ChannelViewModel::setSettings(const ChannelSettings &s) {
     m_settings=s;
     if(modeChanged && s.hardwareKey==old.value("hardwareKey").toString()){m_settings.hardwareKey.clear();m_settings.handle=0;}
     const bool valid=true;m_error.clear();
+    if(m_downloadStartBlocked){m_downloadStartBlocked=false;m_taskText="等待开始";}
     if(configurationChanged)m_model->resetDiagnosticRequested();
     if(valid && (m_backendSimulation!=m_settings.simulation || (m_lost && configurationChanged))){m_backendSimulation=m_settings.simulation;m_pending=true;m_model->settingsRequested(m_settings);}
     if(modeChanged){m_hardware.clear();emit hardwareListChanged();}
@@ -136,23 +138,32 @@ bool ChannelViewModel::canConnect() const {
     }
     return matches==1;
 }
-bool ChannelViewModel::canStart() const{return startHint().isEmpty();}
-QString ChannelViewModel::startHint() const {
+bool ChannelViewModel::canStart() const{return downloadInputHint().isEmpty();}
+QString ChannelViewModel::downloadInputHint() const {
     if(busy())return "通道正在执行操作";
     SoftwareChannelConfiguration c;QString error;if(!m_settings.toConfiguration(c,error))return error;
     if(!connected())return "请先连接软件通道";
     if(!m_settings.simulation){
         if(m_settings.bus!=Bus::Lin)return "真实 CAN 下载尚未完成适配；当前支持 PLIN / LIN 真实下载";
         if(m_health!=Health::Ready&&m_health!=Health::Sleeping)return "硬件通道状态异常";
+    }
+    if(!imageReady(m_settings.applicationPath))return "请选择有效的 Application 镜像";
+    if(m_settings.flashRequired && !imageReady(m_settings.flashPath))return "此配置需要有效的 Flash Driver 镜像";
+    return {};
+}
+QString ChannelViewModel::startHint() const {
+    const auto hint=downloadInputHint();if(!hint.isEmpty())return hint;
+    if(!m_settings.simulation){
+        QString error;
         boot::FlashProfile profile;if(!boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error))return error;
         if(profile.keyLibrary.trimmed().isEmpty())return "请配置已授权的安全访问 DLL";
         if(!profile.keyLibrary.trimmed().isEmpty()&&profile.keyProvider!="external-generatekeyex")return "下载设置中请选择 External GenerateKeyEx 算法";
         const QDir app(QCoreApplication::applicationDirPath());
         const auto key=QDir::isRelativePath(profile.keyLibrary)?app.absoluteFilePath(profile.keyLibrary):profile.keyLibrary;
-        if(!profile.keyLibrary.trimmed().isEmpty()&&(!QFileInfo::exists(key)||!QFileInfo::exists(app.filePath("seedkey/SeedkeyBridge32.exe"))))return "Seedkey DLL 或 32 位调用程序缺失，请使用完整发布目录";
+        const QFileInfo dll(key),bridge(app.filePath("seedkey/SeedkeyBridge32.exe"));
+        if(!dll.isFile()||!dll.isReadable())return "安全访问 DLL 不存在或不可读取，请检查下载设置中的 27 DLL 路径";
+        if(!bridge.isFile()||!bridge.isReadable())return "缺少 seedkey/SeedkeyBridge32.exe，请补充 32 位调用程序";
     }
-    if(!imageReady(m_settings.applicationPath))return "请选择有效的 Application 镜像";
-    if(m_settings.flashRequired && !imageReady(m_settings.flashPath))return "此配置需要有效的 Flash Driver 镜像";
     return {};
 }
 bool ChannelViewModel::canScan()const {
@@ -165,7 +176,20 @@ void ChannelViewModel::toggleConnection() {
     emit changed();
 }
 void ChannelViewModel::refresh(){if(!m_pending){m_pending=true;m_model->refreshRequested();emit changed();}}
-void ChannelViewModel::start(){if(canStart()){m_pending=true;m_model->previewRequested(m_settings);emit changed();}}
+void ChannelViewModel::start(){
+    // The button reflects connection/image readiness; dependencies are checked
+    // again here, before the worker can send any download request.
+    const auto hint=startHint();
+    if(!hint.isEmpty()){
+        m_error=hint;
+        if(canStart()){
+            m_downloadStartBlocked=true;
+            m_taskText=(hint=="请配置已授权的安全访问 DLL"||hint=="安全访问 DLL 不存在或不可读取，请检查下载设置中的 27 DLL 路径")?"27 dll未加载":hint;
+        }
+        log(hint);emit changed();return;
+    }
+    m_downloadStartBlocked=false;m_error.clear();m_pending=true;m_model->previewRequested(m_settings);emit changed();
+}
 void ChannelViewModel::cancel(){
     if(m_signals->running())m_signals->stop();
     if(m_repeatActive){m_repeatActive=false;m_diagnosticRepeatTimer.stop();m_diagnosticResult+="\n自动重发已停止";log("自动重发已停止");}

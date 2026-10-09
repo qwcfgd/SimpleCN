@@ -6,6 +6,11 @@
 #include <QImage>
 #include <QDebug>
 #include <QTextStream>
+#include <QTimer>
+#include <QDialog>
+#include <QLineEdit>
+#include <QPushButton>
+#include "views/ChannelPage.h"
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -49,9 +54,9 @@ int main(int argc,char **argv){
     const QString output=QDir(app.arguments().at(1)).absolutePath();QDir().mkpath(output);
     if(QApplication::testAttribute(Qt::AA_DontUseNativeDialogs))return 3;
     for(const auto &mode:{app.arguments().at(2)}){
-        const bool save=mode.contains("save"),cancel=mode.startsWith("cancel");
+        const bool save=mode.contains("save"),cancel=mode.startsWith("cancel"),dll=mode.contains("dll");
         host::Language::instance().setCode(save?"en":"zh_CN");
-        const QString path=output+"/路径 space "+mode+".json";
+        const QString path=output+"/路径 space "+mode+(dll?".dll":".json");
         if(!save){QFile file(path);if(!file.open(QIODevice::WriteOnly))return 4;file.write("{}");}
         std::atomic<bool> done{false};bool modern=false,screenshot=false,entered=false;
         std::thread driver([&]{
@@ -64,6 +69,14 @@ int main(int argc,char **argv){
                     const auto native=QDir::toNativeSeparators(path).toStdWString();DWORD_PTR result=0;
                     entered=SendMessageTimeoutW(state.edit,WM_SETTEXT,0,reinterpret_cast<LPARAM>(native.c_str()),SMTO_ABORTIFHUNG,2000,&result)!=0;
                     screenshot=capture(state.window,output+"/"+mode+".png");
+                    QFile handleFile(output+"/"+mode+".hwnd");
+                    if(handleFile.open(QIODevice::WriteOnly))handleFile.write(QByteArray::number(qulonglong(reinterpret_cast<quintptr>(state.window))));
+                    handleFile.close();
+                    QFile buttonsFile(output+"/"+mode+".buttons");
+                    if(buttonsFile.open(QIODevice::WriteOnly))buttonsFile.write(
+                        QByteArray::number(qulonglong(reinterpret_cast<quintptr>(state.accept)))+'\n'+
+                        QByteArray::number(qulonglong(reinterpret_cast<quintptr>(state.cancel))));
+                    buttonsFile.close();
                     // The external PowerShell UI Automation driver invokes the button.
                     for(int wait=0;wait<250&&!done;++wait)std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -75,12 +88,25 @@ int main(int argc,char **argv){
             if(!done)ExitProcess(5);
 
         });
-        QString filter="JSON (*.json)";
-        const auto result=save?QFileDialog::getSaveFileName(nullptr,host::Language::text("导出运行日志")+" [probe:"+mode+"]",output,filter+";;Text (*.txt)",&filter)
-                              :QFileDialog::getOpenFileName(nullptr,host::Language::text("载入已保存通道")+" [probe:"+mode+"]",output,filter);
+        QString filter=dll?"DLL (*.dll *.DLL)":"JSON (*.json)",result;
+        if(dll){
+            auto settings=host::ChannelSettings::defaults(communication::Bus::Lin);settings.simulation=true;
+            host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);
+            QTimer::singleShot(200,&page,[&]{
+                auto dialog=page.findChild<QDialog*>("downloadSettingsDialog");
+                if(!dialog)ExitProcess(7);
+                dialog->findChild<QPushButton*>("browseKeyLibrary")->click();
+                result=dialog->findChild<QLineEdit*>("keyLibrary")->text();
+                dialog->reject();
+            });
+            page.findChild<QPushButton*>("downloadSettings")->click();
+        }else{
+            result=save?QFileDialog::getSaveFileName(nullptr,host::Language::text("导出运行日志")+" [probe:"+mode+"]",output,filter+";;Text (*.txt)",&filter)
+                       :QFileDialog::getOpenFileName(nullptr,host::Language::text("载入已保存通道")+" [probe:"+mode+"]",output,filter);
+        }
         done=true;driver.join();
         out<<mode<<" modern="<<modern<<" path entered="<<entered<<" screenshot="<<screenshot<<" result="<<result<<" filter="<<filter<<Qt::endl;
-        if(!modern||!entered||!screenshot||(cancel?!result.isEmpty():QDir::cleanPath(result)!=QDir::cleanPath(path))||filter!="JSON (*.json)")return 6;
+        if(!modern||!entered||!screenshot||(cancel?!result.isEmpty():QDir::cleanPath(result)!=QDir::cleanPath(path))||filter!=(dll?"DLL (*.dll *.DLL)":"JSON (*.json)"))return 6;
     }
     return 0;
 }

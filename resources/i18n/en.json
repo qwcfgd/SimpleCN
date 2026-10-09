@@ -912,5 +912,9 @@
   "暂停表格更新，后台继续记录；拖动左侧滚动条浏览历史报文": "Freeze the table while recording continues; drag the left scrollbar to browse history",
   "历史报文浏览": "Browse recorded frames",
   "缓存第 %1–%2 条 / 共 %3 条": "Records %1–%2 / %3 total",
-  "显示 %1 / 缓存 %2 条": "Shown %1 / recorded %2"
+  "显示 %1 / 缓存 %2 条": "Shown %1 / recorded %2",
+  "安全访问 DLL 不存在或不可读取，请检查下载设置中的 27 DLL 路径": "Security access DLL is missing or unreadable; check the 27 DLL path in download settings",
+  "缺少 seedkey/SeedkeyBridge32.exe，请补充 32 位调用程序": "Missing seedkey/SeedkeyBridge32.exe; install the 32-bit bridge",
+  "27 dll未加载": "27 DLL not loaded",
+  "选择 27 DLL": "Select 27 DLL"
 }

@@ -3,7 +3,8 @@ QMainWindow, QWidget#centralWidget, QWidget#controls, QScrollArea { background: 
 QLabel { background: transparent; }
 QLabel#eyebrow { color: #127C90; font-size: 11px; font-weight: 700; letter-spacing: 1px; }
 QLabel#heroTitle { font-size: 21px; font-weight: 700; color: #142D48; }
-QLabel#heroSubtitle, QLabel#muted { color: #708397; font-size: 11px; }
+QLabel#heroSubtitle, QLabel#muted, QLabel#downloadStartHint { color: #708397; font-size: 11px; }
+QLabel#taskText[downloadStartBlocked="true"] { color: #dc2626; }
 QLabel#versionBadge { color: #167689; background: #E1F2F4; padding: 8px 12px; border-radius: 8px; }
 QLabel#sectionTitle { color: #243D59; font-size: 13px; font-weight: 700; padding-bottom: 0px; }
 QLabel#inlineError { color: #B83232; background: #FFF0EE; padding: 6px; border-radius: 5px; }

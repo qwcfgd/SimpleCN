@@ -7,9 +7,9 @@ struct MainWindowInitialValues {
     static constexpr const char *fontFamily="Microsoft YaHei UI";
     static constexpr const char *applicationName="SimpleCN";
     static constexpr const char *organizationName="QtController";
-    static constexpr const char *version="1.4.3";
-    static constexpr const char *versionLabel="ReleaseVer: 1.4.3";
-    static constexpr const char *title="SimpleCN V1.4.3";
+    static constexpr const char *version="1.44";
+    static constexpr const char *versionLabel="ReleaseVer: 1.44";
+    static constexpr const char *title="SimpleCN V1.44";
     static constexpr const char *description="SIMPLE CONTROLLER FOR CAN/LIN";
     static constexpr const char *configPath="/config/channels.json";
 };

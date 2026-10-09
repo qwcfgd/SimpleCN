@@ -35,7 +35,11 @@
 
 ## 外部安全访问算法
 
-公开仓库和公开发布包不包含任何私有算法 DLL 或真实 seed/key 向量。simulation 使用模拟算法；online 下载要求明确提供已授权的外部 DLL，缺少 DLL 时不启动下载。
+公开仓库和公开发布包不包含任何私有算法 DLL 或真实 seed/key 向量。simulation 使用模拟算法，无需 27 DLL；online LIN 下载要求明确提供已授权的外部 DLL，缺少 DLL 时不启动下载。
+
+V1.44 的按钮条件为：当前通道已连接、配置有效、无其他任务占用，Application 镜像有效；勾选“Flash Driver使能”时还需 Driver 镜像。未选择 27 DLL 不加入按钮禁用条件；点击后在下载任务窗格将“等待开始”改为红色“27 dll未加载”，并在发送下载请求之前停止。缺少连接或镜像时，任务窗格显示具体原因；只需 Application 的目标可在下载设置中取消“Flash Driver使能”。真实 CAN 下载仍需目标适配，目前仅支持模拟下载。
+
+“下载设置…”的第一行是 27 DLL 路径与“文件…”按钮，使用现代 Windows 原生文件选择框，只选择 DLL 文件。支持完整路径、中文和空格；取消选择保留原值，确认下载设置后保存路径。DLL 相对路径以 EXE 目录解析；有效 DLL 还需要程序目录下的 `seedkey/SeedkeyBridge32.exe`，缺少时显示具体提示并阻止下载启动。
 
 通用外部提供者标识为 external-generatekeyex。旧配置需要在下载设置中重新选择提供者并保存。DLL 相对路径以 EXE 目录解析。可选桥接程序位于 seedkey/SeedkeyBridge32.exe，使用 GenerateKeyEx 接口；接口位数、参数约定和输入长度限制必须与使用者提供的 DLL 兼容。
 
