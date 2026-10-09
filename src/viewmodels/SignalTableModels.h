@@ -2,7 +2,6 @@
 #include "viewmodels/SignalTransmitViewModel.h"
 #include <QAbstractTableModel>
 #include <QStandardItemModel>
-#include <QStyledItemDelegate>
 namespace host {
 class SignalValueTableModel : public QAbstractTableModel {
     Q_OBJECT
@@ -19,13 +18,6 @@ public:
     bool setData(const QModelIndex&,const QVariant&,int role=Qt::EditRole)override;
 signals:void validation(QString);
 private:SignalTransmitViewModel*m_vm;QString m_key;bool m_canEdit=false;
-};
-class SignalValueDelegate : public QStyledItemDelegate {
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
-    QWidget *createEditor(QWidget*,const QStyleOptionViewItem&,const QModelIndex&)const override;
-    void setEditorData(QWidget*,const QModelIndex&)const override;
-    void setModelData(QWidget*,QAbstractItemModel*,const QModelIndex&)const override;
 };
 class CanTxTableModel : public QAbstractTableModel {
     Q_OBJECT

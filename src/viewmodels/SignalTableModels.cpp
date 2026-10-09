@@ -2,9 +2,6 @@
 #include "SignalTableModels.h"
 #include "model/SignalCodec.h"
 #include <QBrush>
-#include <QComboBox>
-#include <QCompleter>
-#include <QLineEdit>
 namespace host {
 using namespace signal;
 SignalValueTableModel::SignalValueTableModel(SignalTransmitViewModel*vm,QObject*p):QAbstractTableModel(p),m_vm(vm){
@@ -49,31 +46,6 @@ bool SignalValueTableModel::setData(const QModelIndex&i,const QVariant&value,int
     if((role!=Qt::EditRole&&role!=EnumValueRole&&role!=EnumRawRole)||!(flags(i)&Qt::ItemIsEditable))return false;
     if(role==EnumValueRole){bool ok=false;const auto bits=value.toString().mid(2).toULongLong(&ok,16);const auto*f=m_vm->frame(m_key);if(i.column()!=3||!ok||!f->fields[i.row()].labels.contains(bits))return false;}
     QString error;const bool ok=m_vm->editSignal(m_key,i.row(),value.toString(),i.column()==3&&role==Qt::EditRole,error);emit validation(error);return ok;
-}
-QWidget*SignalValueDelegate::createEditor(QWidget*parent,const QStyleOptionViewItem&option,const QModelIndex&i)const{
-    const auto values=i.data(SignalValueTableModel::EnumOptionsRole).toList();
-    if(i.column()!=3||values.isEmpty())return QStyledItemDelegate::createEditor(parent,option,i);
-    auto*combo=new QComboBox(parent);combo->setObjectName("signalEnumEditor");combo->setEditable(true);combo->setInsertPolicy(QComboBox::NoInsert);
-    combo->setProperty("physicalEditable",i.data(SignalValueTableModel::PhysicalEditableRole));
-    for(const auto&v:values){const auto entry=v.toMap();combo->addItem(entry["text"].toString(),entry["raw"]);}
-    combo->completer()->setCompletionMode(QCompleter::InlineCompletion);combo->completer()->setCaseSensitivity(Qt::CaseInsensitive);
-    auto*self=const_cast<SignalValueDelegate*>(this);connect(combo,qOverload<int>(&QComboBox::activated),self,[self,combo]{emit self->commitData(combo);emit self->closeEditor(combo);});return combo;
-}
-void SignalValueDelegate::setEditorData(QWidget*editor,const QModelIndex&i)const{
-    // A live RX/status refresh must never replace an in-progress draft. Each
-    // editor gets its initial value once; committing still goes through setData.
-    if(editor->property("signalDraftInitialized").toBool())return;
-    editor->setProperty("signalDraftInitialized",true);
-    auto*combo=qobject_cast<QComboBox*>(editor);if(!combo){QStyledItemDelegate::setEditorData(editor,i);return;}
-    const int selected=combo->findData(i.data(SignalValueTableModel::EnumValueRole));
-    if(selected>=0)combo->setCurrentIndex(selected);else if(combo->isEditable())combo->setEditText(i.data(Qt::EditRole).toString());else{combo->addItem(i.data().toString());combo->setCurrentIndex(combo->count()-1);}
-}
-void SignalValueDelegate::setModelData(QWidget*editor,QAbstractItemModel*model,const QModelIndex&i)const{
-    auto*combo=qobject_cast<QComboBox*>(editor);if(!combo){QStyledItemDelegate::setModelData(editor,model,i);return;}
-    int selected=combo->findText(combo->currentText(),Qt::MatchFixedString);
-    if(selected<0)for(int n=0;n<combo->count();++n){const auto text=combo->itemText(n);if(text.left(text.lastIndexOf(" (")).compare(combo->currentText(),Qt::CaseInsensitive)==0){selected=n;break;}}
-    if(selected>=0)model->setData(i,combo->itemData(selected),SignalValueTableModel::EnumValueRole);
-    else model->setData(i,combo->currentText(),combo->property("physicalEditable").toBool()?int(Qt::EditRole):int(SignalValueTableModel::EnumRawRole));
 }
 CanTxTableModel::CanTxTableModel(SignalTransmitViewModel*vm,QObject*p):QAbstractTableModel(p),m_vm(vm),m_definitions(vm->queuedDefinitions()){
     connect(vm,&SignalTransmitViewModel::structureChanged,this,[this]{beginResetModel();m_definitions=m_vm->queuedDefinitions();endResetModel();});

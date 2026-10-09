@@ -1,6 +1,7 @@
 #include "localization/Language.h"
 #include "SignalTransmitPage.h"
 #include "SignalPlotDialog.h"
+#include "SignalValueDelegate.h"
 #include "viewmodels/SignalTableModels.h"
 #include <QBoxLayout>
 #include <QFormLayout>

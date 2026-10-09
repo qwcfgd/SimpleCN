@@ -150,9 +150,10 @@ void ChannelPage::build() {
     m_count=label("0 条");m_count->setObjectName("muted");
     auto clear=new QPushButton("清空");clear->setObjectName("clearFrames");
     auto exportButton=new QPushButton("导出");m_follow=new QCheckBox("跟随");m_follow->setChecked(ChannelPageInitialValues::followFrames);
-    m_rxdEnabled=new QCheckBox("RxD使能");m_rxdEnabled->setObjectName("rxdEnabled");m_rxdEnabled->setVisible(lin);
+    // Assign a parent before setVisible(true), which otherwise shows a temporary top-level window.
+    m_rxdEnabled=new QCheckBox("RxD使能",frameCard);m_rxdEnabled->setObjectName("rxdEnabled");m_rxdEnabled->setVisible(lin);
     m_rxdEnabled->setToolTip("勾选后显示发送帧在 LIN 硬件接收队列中的 0x3C 回读；不勾选仅隐藏该回读，不影响发送确认。");
-    m_scan=new QPushButton("扫描帧头");m_scan->setObjectName("scanHeaders");m_scan->setVisible(lin);
+    m_scan=new QPushButton("扫描帧头",frameCard);m_scan->setObjectName("scanHeaders");m_scan->setVisible(lin);
     frameActions->addWidget(filter,1);frameActions->addWidget(m_count);frameActions->addWidget(m_rxdEnabled);frameActions->addWidget(m_follow);
     frameActions->addWidget(m_scan);frameActions->addWidget(clear);frameActions->addWidget(exportButton);frameLayout->addLayout(frameActions);
     m_table=new QTreeView;m_table->setObjectName("frameTable");m_table->setAlternatingRowColors(true);

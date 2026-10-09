@@ -35,6 +35,21 @@
 #include "infrastructure/ChannelWorker.h"
 using namespace host;
 using communication::Bus;
+class StartupWindowEvents : public QObject {
+public:
+    QString phase;
+    QJsonArray shows;
+    StartupWindowEvents(){qApp->installEventFilter(this);}
+    ~StartupWindowEvents() override {qApp->removeEventFilter(this);}
+protected:
+    bool eventFilter(QObject* object,QEvent* event) override {
+        auto* widget=qobject_cast<QWidget*>(object);
+        if(event->type()==QEvent::Show && widget && widget->isWindow())
+            shows.append(QJsonObject{{"phase",phase},{"class",widget->metaObject()->className()},
+                {"object",widget->objectName()},{"width",widget->width()},{"height",widget->height()}});
+        return false;
+    }
+};
 class HostUiTest : public QObject {
     Q_OBJECT
     QTemporaryDir m_temp;
@@ -79,6 +94,37 @@ private slots:
     void initTestCase(){
         QVERIFY(m_temp.isValid());QApplication::setStyle("Fusion");QApplication::setFont(QFont("Microsoft YaHei UI",9));
         QDir().mkpath(QCoreApplication::applicationDirPath()+"/artifacts");
+    }
+    void startupShowsOnlyMainWindow_data(){
+        QTest::addColumn<bool>("restore");
+        QTest::newRow("defaults")<<false;
+        QTest::newRow("restore-project")<<true;
+    }
+    void startupShowsOnlyMainWindow(){
+        QFETCH(bool,restore);
+        const auto path=m_temp.path()+"/startup.json";
+        if(restore){QString error;QVERIFY2(SettingsStore(path).save({preview(Bus::Can),preview(Bus::Lin)},error),qPrintable(error));}
+        StartupWindowEvents events;events.phase="construct";
+        MainWindow window(path,true);
+        if(restore){events.phase="restore";QString error;QVERIFY2(window.restoreChannels(path,error),qPrintable(error));}
+        const int prematureShows=events.shows.size();
+        events.phase="show-main";const QSize preparedSize=window.size();window.show();
+        QTRY_VERIFY(window.isVisible());QTest::qWait(100);
+        QFile log(artifactDir()+QString("/startup-windows-%1.json").arg(restore?"restore":"defaults"));
+        QVERIFY(log.open(QIODevice::WriteOnly));log.write(QJsonDocument(events.shows).toJson());log.close();
+        QVERIFY2(prematureShows==0,QJsonDocument(events.shows).toJson().constData());
+        QCOMPARE(events.shows.size(),1);
+        const auto first=events.shows.first().toObject();
+        QCOMPARE(first["class"].toString(),QString("host::MainWindow"));
+        QCOMPARE(first["width"].toInt(),preparedSize.width());
+        QCOMPARE(first["height"].toInt(),preparedSize.height());
+        for(auto* vm:window.channels()){
+            auto* tabs=window.findChild<QTabWidget*>("channelTabs");
+            const int index=window.channels().indexOf(vm);tabs->setCurrentIndex(index);
+            auto* page=tabs->widget(index);const bool lin=vm->settings().bus==Bus::Lin;
+            QCOMPARE(page->findChild<QCheckBox*>("rxdEnabled")->isVisible(),lin);
+            QCOMPARE(page->findChild<QPushButton*>("scanHeaders")->isVisible(),lin);
+        }
     }
     void independentProfilesAndInvalidParameters() {
         auto can=preview(Bus::Can),lin=preview(Bus::Lin);

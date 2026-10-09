@@ -76,6 +76,7 @@ add_library(bootloader_ui STATIC
     src/viewmodels/ChannelViewModel.h src/viewmodels/ChannelViewModel.cpp
     src/viewmodels/SignalTransmitViewModel.h src/viewmodels/SignalTransmitViewModel.cpp
     src/viewmodels/SignalTableModels.h src/viewmodels/SignalTableModels.cpp
+    src/views/SignalValueDelegate.h src/views/SignalValueDelegate.cpp
     src/viewmodels/ChannelConfigurationViewModel.h src/viewmodels/ChannelConfigurationViewModel.cpp
     src/viewmodels/DiagnosticDraftViewModel.h src/viewmodels/DiagnosticDraftViewModel.cpp
     src/views/ChannelHardwareEditor.h src/views/ChannelHardwareEditor.cpp

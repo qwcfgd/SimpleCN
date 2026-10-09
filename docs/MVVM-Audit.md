@@ -24,7 +24,7 @@ flowchart LR
 | Domain | `SignalTypes.h`、`HostTypes.h`、`ChannelDefaults.h` | 数据定义、状态、计划、快照；不依赖 View 或 ViewModel。 |
 | Model 服务 | `DatabaseImporter`、`SignalCodec`、`SignalConfigurationStore`、`SettingsStore` | 解析、精确十进制、位编码、配置校验与文件操作；不调用控件。 |
 | ViewModel | `SignalTransmitViewModel`、`SignalTableModels`、`ChannelConfigurationViewModel`、`DiagnosticDraftViewModel` | 管理草稿/已应用值/基准/撤销、能力状态；组织服务调用并生成线程间命令。 |
-| View | `SignalTransmitPage`、通信和 UDS 参数对话框、`MainWindow` | 创建控件、选择文件路径、收集输入、呈现状态。业务校验与提交委托 ViewModel。 |
+| View | `SignalTransmitPage`、通信和 UDS 参数对话框、`MainWindow` | 创建控件、选择文件路径、收集输入、呈现状态。主要提交经 ViewModel；仍有部分通道协调与下载草稿规则，见当前复核。 |
 | 运行与基础设施 | `ChannelModel`、`ChannelWorker`、`SignalTransmitter`、CAN/LIN 调度器 | worker 串行操作驱动；UI 线程不直接访问 SDK。 |
 
 Qt 的 `QAbstractItemModel` 名称不决定它属于业务 Model。`SignalTableModels` 适配 ViewModel 的编辑状态与显示规则，因此放在 `viewmodels`；原有仅持有数据的表格模型可以留在 `model`。
@@ -82,3 +82,24 @@ FrameTableModel 保留完整会话缓存，同时管理最多 10,000 条的显�
 ## V1.44 下载与通信资源
 
 下载按钮的基本就绪条件、在线依赖预检查和被阻止状态由 ChannelViewModel 管理；缺少 DLL 的提示与日志在请求 worker 之前产生。ChannelPage 只负责显示任务文本与红色状态、设置对话框首行和原生 DLL 文件选择，将路径交回既有设置保存流程。样式只在被阻止状态变化时重新应用。resource/ 内通信代码仍位于基础设施层，由 CMake 在本项目中编译；线程、协议和硬件职责未迁移到界面层。原生桌面探针与测试素材仍留在 qttemp。
+
+
+## 2026-10-09 当前代码复核
+
+结论：工程保留 MVVM 的核心数据流，但仍有 View 中的业务协调和规则，因此不应称为完全严格的 MVVM。静态检查通过只说明没有命中受检查的依赖规则，不能证明所有方法的职责都已分离。
+
+本次检查发现并修正 `SignalTableModels` 中混放的 `SignalValueDelegate`：它继承 `QStyledItemDelegate` 并创建 `QComboBox`，应属于 View。已移至 `src/views/SignalValueDelegate.h/.cpp`，其枚举角色数据仍来自 `SignalValueTableModel`，提交仍走 `setData()` 和 ViewModel 校验、Model 编码。移动未改变编辑行为。
+
+旧分层脚本只禁止少数 QWidget 头文件，漏掉了 QComboBox、QLineEdit 和 QStyledItemDelegate；也未覆盖新加入的 resource 源码。本次补充常见控件与编辑委托头文件、QtWidgets 包含、相对路径依赖识别，以及 resource/communication、driverCan、driverLin、global 的下层检查。
+
+| 检查项 | 当前证据与结论 |
+|---|---|
+| 启动闪窗 | 发生在 View 构造控件时，无父控件先显示；指定父控件修复，不改变 ViewModel 或 worker。详见 [启动检查](Startup-Review-1.44.md)。 |
+| View → ViewModel | 下载按钮状态和启动预检查由 ChannelViewModel 管理；原生文件选择与红色状态渲染在 ChannelPage。诊断草稿通过 DiagnosticDraftViewModel，信号编辑通过表格适配器和 SignalTransmitViewModel。 |
+| ViewModel → Model / 服务 | 配置保存载入经 ChannelConfigurationViewModel → SettingsStore；CDD、信号解析编码由服务提供。ViewModel 经 ChannelModel 发出结构化任务命令，不直接包含硬件实现。 |
+| Model / worker → ViewModel | ChannelModel 组合 worker、移入 QThread，以 Qt 信号返回连接、帧和任务状态；worker 与 resource 通信代码无 View / ViewModel / 控件依赖。 |
+| 多通道协调仍在 View | MainWindow 持有通道集合、创建 ViewModel、计算通道名称与 64 通道上限、更新硬件占用集合，并安排连接就绪后的重试。状态与规则的这部分应进一步收敛至项目级 ViewModel；不能只因为未直接访问 SDK 就认定职责完全分离。 |
+| 下载草稿规则仍在 View | ChannelPage 直接解析 FlashProfile、按流程调整步骤和反馈复选框，并调用 ChannelSettings::toConfiguration 做保存前校验。底层仍会校验，但 View 的草稿和规则逻辑尚未完整委托，可提取 DownloadSettingsViewModel。 |
+| 文件职责与可替换性 | ChannelViewModel::exportLogs 直接使用 QSaveFile；这是应用行为与基础设施耦合，不是控件依赖。多层仍同编入 bootloader_ui，ChannelModel 直接组合 worker，可继续通过服务接口和构建目标拆分降低耦合。 |
+
+此次修复范围为启动显示缺陷、编辑委托归层及检查规则补强；以上剩余项按实际现状记录，没有将检查脚本的绿色结果当作严格 MVVM 的证明。

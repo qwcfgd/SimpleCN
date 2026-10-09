@@ -24,6 +24,7 @@
 #include "views/SignalPlotCanvas.h"
 #include "model/FrameTableModel.h"
 #include "viewmodels/SignalTableModels.h"
+#include "views/SignalValueDelegate.h"
 using namespace host;
 class LayoutCounter final:public QObject {
 public:
