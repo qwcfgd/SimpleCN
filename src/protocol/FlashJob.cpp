@@ -55,7 +55,7 @@ bool FlashProfile::fromJson(const QJsonObject &o,FlashProfile &out,QString &erro
     if(o.contains("maxPduBytes")){if(!number("maxPduBytes",p.consecutiveFrameByteLimit,3,4095,v))return bad();p.consecutiveFrameByteLimit=v;}
     if(!number("consecutiveFrameByteLimit",p.consecutiveFrameByteLimit,3,4095,v))return bad();p.consecutiveFrameByteLimit=v;
     if(!number("resetWaitMs",p.resetWaitMs,0,60000,v))return bad();p.resetWaitMs=v;
-    if(p.name.isEmpty()||p.name.size()>80||(p.keyProvider!="simulation-xor-v1"&&p.keyProvider!="external-generatekeyex")||(p.keyProvider=="simulation-xor-v1"&&!p.simulationOnly)||
+    if(p.name.isEmpty()||p.name.size()>80||(p.keyProvider!="simulation-xor-v1"&&p.keyProvider!="external-generatekeyex"&&p.keyProvider!="seed-as-key")||(p.keyProvider=="simulation-xor-v1"&&!p.simulationOnly)||
        p.eraseRoutine==p.verifyRoutine||p.eraseRoutine==p.dependencyRoutine||p.verifyRoutine==p.dependencyRoutine)return bad();
     out=p;error.clear();return true;
 }
@@ -135,9 +135,7 @@ void FlashJob::unlock(quint8 level,const QString &seedId,const QString &keyId,st
         const auto seed=pdu.mid(2);
         if(seed.isEmpty()&&!m_profile.enabled(seedId)){
             if(!m_profile.enabled(keyId)){next();return;}
-            if(!m_profile.keyLibrary.trimmed().isEmpty()){fail("Security seed step disabled while 27 DLL key step is enabled");return;}
-            const QByteArray keyReq=QByteArray(1,char(0x27))+char(level+1)+char(0);
-            step(keyId,keyReq,positive(keyReq,2),[next](const QByteArray &){next();});return;
+            fail("Security seed step disabled while key step is enabled");return;
         }
         if(seed.isEmpty()){fail("Empty security seed");return;}
         bool unlocked=true;for(unsigned char b:seed)if(b)unlocked=false;

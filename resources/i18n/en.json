@@ -916,5 +916,8 @@
   "安全访问 DLL 不存在或不可读取，请检查下载设置中的 27 DLL 路径": "Security access DLL is missing or unreadable; check the 27 DLL path in download settings",
   "缺少 seedkey/SeedkeyBridge32.exe，请补充 32 位调用程序": "Missing seedkey/SeedkeyBridge32.exe; install the 32-bit bridge",
   "27 dll未加载": "27 DLL not loaded",
-  "选择 27 DLL": "Select 27 DLL"
+  "选择 27 DLL": "Select 27 DLL",
+  "未选择 DLL 时，将收到的 seed 原样作为 key 发送": "Without a DLL, send the received seed unchanged as the key",
+  "未配置 27 DLL：收到的 seed 原样作为 key 发送": "No 27 DLL configured: send the received seed unchanged as the key",
+  "安全访问使用已配置的 27 DLL": "Security access uses the configured 27 DLL"
 }

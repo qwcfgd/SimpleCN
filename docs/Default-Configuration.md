@@ -10,7 +10,7 @@ ChannelSettings 继承 ChannelPageInitialValues，不再复制字段初值；创
 | CAN / LIN 名称、波特率、ID / NAD、在线或模拟初始模式 | ChannelPageInitialValues 普通成员及 linName / linProfile / linBitrate / defaultSimulation |
 | P2、P2*、保活使能及周期、编程 / 安全级别 | ChannelPageInitialValues 普通成员 |
 | 镜像路径、BIN 基址、Driver 使能、重复下载参数 | ChannelPageInitialValues 普通成员 |
-| App 初始流程、反馈框、RID / DID、连续帧字节上限、复位等待、27 DLL 路径 | initialDownloadProfile() 及 feedbackChecked |
+| App 初始流程、反馈框、RID / DID、连续帧字节上限、复位等待、27 DLL 路径、默认 seed-as-key | initialDownloadProfile() 及 feedbackChecked |
 | CAN 网络层选项 | canNetwork |
 | 报文跟随、文本缓存数、耗时刷新周期 | followFrames / logCapacity / elapsedRefreshMs |
 | 主窗口尺寸、字体、标题、版本和默认配置文件路径 | MainWindowInitialValues |

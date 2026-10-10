@@ -14,6 +14,12 @@ public:
 class SimulationKey final : public KeyProvider {
 public: QByteArray calculate(quint8,const QByteArray &,QString &) override;
 };
+class SeedAsKey final : public KeyProvider {
+public: QByteArray calculate(quint8,const QByteArray &seed,QString &error) override {
+    error.clear();if(seed.isEmpty()){error="Empty security seed";return {};}
+    return seed;
+}
+};
 class ZeroKey final : public KeyProvider {
 public: QByteArray calculate(quint8,const QByteArray &,QString &error) override {error.clear();return QByteArray(1,char(0));}
 };

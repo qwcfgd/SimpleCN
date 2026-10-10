@@ -283,6 +283,8 @@ void ChannelPage::editDownload() {
     auto content=new QWidget;auto form=new QFormLayout(content);form->setContentsMargins(12,10,12,10);form->setSpacing(10);
     scroll->setWidget(content);outer->addWidget(scroll,1);
     auto keyLibrary=edit("keyLibrary",32767);keyLibrary->setText(profile.keyLibrary);
+    keyLibrary->setPlaceholderText("未选择 DLL 时，将收到的 seed 原样作为 key 发送");
+    keyLibrary->setToolTip("未选择 DLL 时，将收到的 seed 原样作为 key 发送");
     auto keyRow=new QWidget;keyRow->setObjectName("keyLibraryRow");
     auto keyLayout=new QHBoxLayout(keyRow);keyLayout->setContentsMargins(0,0,0,0);keyLayout->addWidget(keyLibrary,1);
     auto browseKey=new QPushButton("文件…");browseKey->setObjectName("browseKeyLibrary");keyLayout->addWidget(browseKey);
@@ -395,7 +397,8 @@ void ChannelPage::editDownload() {
             profile.negativeResponseChecks[boot::downloadSteps()[i].id]=negativeChecks[i]->isChecked();
             profile.timeoutChecks[boot::downloadSteps()[i].id]=timeoutChecks[i]->isChecked();
         }
-        profile.keyProvider="external-generatekeyex";profile.keyLibrary=keyLibrary->text();profile.simulationOnly=false;
+        profile.keyLibrary=keyLibrary->text();profile.simulationOnly=false;
+        profile.keyProvider=profile.keyLibrary.trimmed().isEmpty()?"seed-as-key":"external-generatekeyex";
         profile.eraseRoutine=quint16(erase->value());profile.verifyRoutine=quint16(verifyRid->value());profile.dependencyRoutine=quint16(dependencyRid->value());profile.identityDid=quint16(did->value());
         profile.consecutiveFrameByteLimit=block->value();profile.resetWaitMs=resetWait->value();s.downloadProfile=profile.toJson();
         communication::SoftwareChannelConfiguration c;QString message;

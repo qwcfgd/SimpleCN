@@ -148,6 +148,71 @@ private slots:
         QCOMPARE(transport.requests[2],hex("271200"));
         job.cancel();
     }
+    void seedAsKeyWire_data(){
+        QTest::addColumn<int>("level");QTest::addColumn<QByteArray>("seed");
+        QTest::newRow("01-one-byte")<<1<<hex("ff");
+        QTest::newRow("03-zero-and-high-bytes")<<3<<hex("0080ff12345678");
+        QTest::newRow("11-seventeen-bytes")<<0x11<<hex("00112233445566778899aabbccddeeff80");
+        QTest::newRow("11-zero-seed-already-unlocked")<<0x11<<hex("00000000");
+    }
+    void seedAsKeyWire(){
+        QFETCH(int,level);QFETCH(QByteArray,seed);
+        ManualTransport transport;UdsSession session(transport,{1000,1000,2000,0});FlashProfile profile;
+        profile.flow="boot";profile.keyProvider="seed-as-key";profile.simulationOnly=false;profile.securityLevel=quint8(level);
+        profile.negativeResponseChecks["bootKey"]=true;
+        FlashJob job(session,profile,std::make_unique<SeedAsKey>());QString error;
+        QSignalSpy sent(&transport,&DiagnosticTransport::sent);
+        QVERIFY2(job.start(image(8),{},error),qPrintable(error));
+        QTRY_COMPARE(transport.requests.size(),1);QCOMPARE(transport.requests[0],hex("1002"));
+        QTRY_COMPARE(sent.size(),1);
+        transport.reply(hex("5002"));QTRY_COMPARE(transport.requests.size(),2);
+        QCOMPARE(transport.requests[1],QByteArray(1,char(0x27))+char(level));
+        QTRY_COMPARE(sent.size(),2);
+        transport.reply(QByteArray(1,char(0x67))+char(level)+seed);QTRY_COMPARE(transport.requests.size(),3);
+        QTRY_COMPARE(sent.size(),3);
+        if(seed==QByteArray(seed.size(),char(0)))QCOMPARE(transport.requests[2],hex("2ef1840101"));
+        else {
+            QCOMPARE(transport.requests[2],QByteArray(1,char(0x27))+char(level+1)+seed);
+            // A rejected key must still stop the download.
+            QSignalSpy finished(&job,&FlashJob::finished);
+            transport.reply(QByteArray::fromHex("7f2735"));QTRY_COMPARE(finished.count(),1);
+            QVERIFY(!finished[0][0].toBool());QCOMPARE(transport.requests.size(),3);
+        }
+        job.cancel();
+    }
+    void seedAsKeyRequiresSeed(){
+        SeedAsKey key;QString error="stale";
+        const auto seed=hex("0080ff");QCOMPARE(key.calculate(1,seed,error),seed);QVERIFY(error.isEmpty());
+        QVERIFY(key.calculate(1,{},error).isEmpty());QVERIFY(!error.isEmpty());
+        ManualTransport transport;UdsSession session(transport,{1000,1000,2000,0});FlashProfile p;
+        p.flow="boot";p.keyProvider="seed-as-key";p.simulationOnly=false;p.stepEnabled["bootSeed"]=false;
+        FlashJob job(session,p,std::make_unique<SeedAsKey>());QSignalSpy finished(&job,&FlashJob::finished);
+        QSignalSpy sent(&transport,&DiagnosticTransport::sent);
+        QVERIFY(job.start(image(8),{},error));QTRY_COMPARE(transport.requests.size(),1);
+        QTRY_COMPARE(sent.size(),1);
+        transport.reply(hex("5002"));QTRY_COMPARE(finished.count(),1);
+        QVERIFY(!finished[0][0].toBool());QVERIFY(finished[0][1].toString().contains("seed step disabled"));
+        QCOMPARE(transport.requests,QList<QByteArray>{hex("1002")});
+    }
+    void seedAsKeyAppAndBoot(){
+        ManualTransport transport;UdsSession session(transport,{1000,1000,2000,0});FlashProfile p;
+        p.flow="app";p.keyProvider="seed-as-key";p.simulationOnly=false;p.securityLevel=0x11;
+        for(const auto &step:downloadSteps())p.stepEnabled[step.id]=false;
+        for(const auto id:{"pre2701","pre2702","bootSeed","bootKey"})p.stepEnabled[id]=true;
+        FlashJob job(session,p,std::make_unique<SeedAsKey>());QString error;
+        QSignalSpy sent(&transport,&DiagnosticTransport::sent);
+        QVERIFY(job.start(image(8),{},error));QTRY_COMPARE(transport.requests.size(),1);
+        QCOMPARE(transport.requests[0],hex("2701"));
+        QTRY_COMPARE(sent.size(),1);
+        const auto appSeed=hex("0080ff12345678");transport.reply(hex("6701")+appSeed);
+        QTRY_COMPARE(transport.requests.size(),2);QCOMPARE(transport.requests[1],hex("2702")+appSeed);
+        QTRY_COMPARE(sent.size(),2);
+        transport.reply(hex("6702"));QTRY_COMPARE(transport.requests.size(),3);QCOMPARE(transport.requests[2],hex("2711"));
+        QTRY_COMPARE(sent.size(),3);
+        const auto bootSeed=hex("00112233445566778899aabbccddeeff80");transport.reply(hex("6711")+bootSeed);
+        QTRY_COMPARE(transport.requests.size(),4);QCOMPARE(transport.requests[3],hex("2712")+bootSeed);
+        job.cancel();
+    }
     void sessionPendingEchoAndAbsoluteDeadline(){
         ManualTransport t;UdsSession s(t,{30,45,140,0});bool done=false,ok=false;QString failure;
         QVERIFY(s.request(hex("3101ff00"),hex("7101ff00"),[&](bool success,const QByteArray &,const QString &e){done=true;ok=success;failure=e;}));

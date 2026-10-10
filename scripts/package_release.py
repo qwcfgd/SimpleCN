@@ -39,10 +39,15 @@ def main():
     (output/"dll").mkdir()
     for name in ("PLinApi.dll", "PCANBasic.dll"):
         shutil.copy2(build/"dll"/name, output/"dll"/name)
+    bridge=build/"seedkey/SeedkeyBridge32.exe"
+    if bridge.is_file():
+        (output/"seedkey").mkdir()
+        shutil.copy2(bridge, output/"seedkey/SeedkeyBridge32.exe")
     (output/"qt.conf").write_text("[Paths]\nPrefix=.\nPlugins=.\n", encoding="utf-8")
     (output/"docs").mkdir()
     for name in ("User-Guide.md", "Release-1.44.md", "Tosun-Hardware.md", "Trace-and-Graphics.md", "Signal-Workbench-Replay.md",
-                 "CDD-UDS.md", "Default-Configuration.md", "Licensing.md", "Signal-Transmission-Implementation.md", "Logic-Review-Fixes.md"):
+                 "CDD-UDS.md", "Default-Configuration.md", "Licensing.md", "Signal-Transmission-Implementation.md", "Logic-Review-Fixes.md",
+                 "Online-SeedKey-1.44.md", "Startup-Review-1.44.md", "MVVM-Audit.md"):
         shutil.copy2(ROOT/"docs"/name, output/"docs"/name)
     shutil.copytree(ROOT/"docs/licenses", output/"docs/licenses")
     (output/"README.txt").write_text(
@@ -50,13 +55,15 @@ def main():
         "启动 QtBootloader.exe。首次包含 CAN01 和 LIN01，不自动连接。\n"
         "完整说明：docs/User-Guide.md\n"
         "发布包仅包含应用及运行依赖；测试、调试与模拟素材保存在 build/qttemp。\n"
-        "公开包不含安全访问算法；实机使用需另行配置已授权 DLL 和桥接程序。\n"
+        "未配置 27 DLL 时，在线 LIN 将收到的 seed 原样作为 key；配置 DLL 时使用外部算法及 32 位桥接程序。\n"
+        "公开包不包含私有安全访问算法。\n"
         "请保留整个目录；不要只复制 exe。保存配置需要目录可写。\n",
         encoding="utf-8-sig")
     inventory = {
         "applicationLicense": "LGPL-3.0-only", "applicationVersion": "1.44", "uiVersion": "SimpleCN V1.44",
         "qtMajor": int(args.qt_major), "architecture": "Windows x64",
-        "buildType": "Release", "physicalDownloadEnabled": False, "physicalDownloadBuses": [], "physicalECUValidated": False,
+        "buildType": "Release", "physicalDownloadEnabled": True, "physicalDownloadBuses": ["LIN"], "physicalECUValidated": False,
+        "defaultOnlineKeyProvider": "seed-as-key", "externalKeyBridgeIncluded": bridge.is_file(),
         "components": ["Qt runtime and plugins", "MinGW runtime",
                        "PEAK PCANBasic and PLIN API x64", "TOSUN SDK adapter (SDK installed separately)",
                        "dbcppp 3.8.0 (MIT)", "Boost 1.84 headers (Boost Software License 1.0)"],

@@ -24,7 +24,7 @@ struct ChannelPageInitialValues {
             checks[step.id]=feedbackChecked;timeouts[step.id]=!boot::suppressesPositiveResponse(step.id)&&feedbackChecked;
         }
         return {{"flow","app"},{"stepEnabled",initialStepEnabled("app")},{"negativeResponseChecks",checks},{"timeoutChecks",timeouts},{"simulationOnly",false},
-            {"keyProvider","external-generatekeyex"},{"keyLibrary",""},
+            {"keyProvider","seed-as-key"},{"keyLibrary",""},
             {"eraseRoutine",0xff00},{"verifyRoutine",0xff01},{"dependencyRoutine",0xff02},
             {"identityDid",0xf180},{"consecutiveFrameByteLimit",4095},{"resetWaitMs",1000}};
     }

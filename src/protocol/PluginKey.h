@@ -36,4 +36,13 @@ public:
     }
 private:QString m_path;
 };
+inline std::unique_ptr<KeyProvider> makeDownloadKeyProvider(FlashProfile &profile,bool simulation){
+    if(simulation)return std::make_unique<SimulationKey>();
+    profile.simulationOnly=false;
+    if(profile.keyLibrary.trimmed().isEmpty()){
+        profile.keyProvider="seed-as-key";return std::make_unique<SeedAsKey>();
+    }
+    profile.keyProvider="external-generatekeyex";
+    return std::make_unique<PluginKey>(profile.keyLibrary);
+}
 }

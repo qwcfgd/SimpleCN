@@ -114,11 +114,12 @@ private slots:
         auto button=page.findChild<QPushButton*>("startButton");
         auto hint=page.findChild<QLabel*>("downloadStartHint");QVERIFY(button);QVERIFY(hint);
         QSignalSpy requested(model,&ChannelModel::previewRequested);
-        QVERIFY(button->isEnabled());QVERIFY(!hint->isHidden());
-        QCOMPARE(hint->text(),QString("请配置已授权的安全访问 DLL"));
+        QVERIFY(button->isEnabled());QVERIFY(hint->isHidden());
+        auto task=page.findChild<QLabel*>("taskText");QVERIFY(task);
+        auto next=vm.settings();next.downloadProfile["keyLibrary"]=temp.filePath("missing.dll");
+        QVERIFY(vm.setSettings(next));QVERIFY(!vm.downloadStartBlocked());
         button->click();QCOMPARE(requested.count(),0);QVERIFY(!vm.pending());
         QCOMPARE(vm.error(),hint->text());QCOMPARE(vm.taskState(),TaskState::Idle);
-        auto task=page.findChild<QLabel*>("taskText");QVERIFY(task);
         QCOMPARE(task->text(),QString("27 dll未加载"));QVERIFY(vm.downloadStartBlocked());
         QVERIFY(task->property("downloadStartBlocked").toBool());
         QCOMPARE(task->palette().color(QPalette::WindowText),QColor("#dc2626"));
@@ -126,7 +127,7 @@ private slots:
         QDir().mkpath("artifacts");QVERIFY(page.grab().save("artifacts/download-dll-missing.png"));
         Language::instance().setCode("en");QCOMPARE(Language::text("27 dll未加载"),QString("27 DLL not loaded"));
         Language::instance().setCode("zh_CN");
-        auto next=vm.settings();next.downloadProfile["keyLibrary"]=temp.filePath("missing.dll");
+        next.downloadProfile["keyLibrary"]=temp.filePath("another-missing.dll");
         QVERIFY(vm.setSettings(next));QVERIFY(!vm.downloadStartBlocked());QCOMPARE(task->text(),QString("等待开始"));
         QVERIFY(button->isEnabled());QVERIFY(hint->text().contains("27 DLL"));
         button->click();QCOMPARE(requested.count(),0);QVERIFY(vm.error().contains("27 DLL"));
@@ -141,6 +142,56 @@ private slots:
         model->healthChanged(communication::Health::Removed,{});QVERIFY(!button->isEnabled());
         QCOMPARE(hint->text(),QString("硬件通道状态异常"));
     }
+    void onlineWithoutDllStarts_data(){
+        QTest::addColumn<QString>("provider");
+        QTest::newRow("new-default")<<QString("seed-as-key");
+        QTest::newRow("old-external-empty-path")<<QString("external-generatekeyex");
+    }
+    void onlineWithoutDllStarts(){
+        QFETCH(QString,provider);
+        auto settings=ChannelSettings::defaults(communication::Bus::Lin);
+        settings.downloadProfile["keyProvider"]=provider;settings.downloadProfile["keyLibrary"]="  ";
+        const auto app=temp.filePath("online-echo.bin");QFile file(app);
+        QVERIFY(file.open(QIODevice::WriteOnly));file.write("image");file.close();
+        settings.applicationPath=app;settings.flashPath=app;
+        ChannelViewModel vm(settings);ChannelPage page(&vm);auto model=vm.findChild<ChannelModel*>();
+        QSignalSpy ready(model,&ChannelModel::ready);QTRY_VERIFY(!ready.isEmpty());
+        // Observe the online command without opening or writing a physical port.
+        QVERIFY(QObject::disconnect(model,&ChannelModel::previewRequested,nullptr,nullptr));
+        QSignalSpy requested(model,&ChannelModel::previewRequested);
+        model->stateChanged(communication::ConnectionState::Connected,{});
+        model->healthChanged(communication::Health::Ready,{});
+        auto button=page.findChild<QPushButton*>("startButton");QVERIFY(button->isEnabled());
+        QVERIFY(vm.startHint().isEmpty());button->click();QCOMPARE(requested.count(),1);
+        QVERIFY(vm.pending());QVERIFY(vm.error().isEmpty());QVERIFY(!vm.downloadStartBlocked());
+        QVERIFY(!page.findChild<QLabel*>("taskText")->property("downloadStartBlocked").toBool());
+    }
+    void keyProviderSelection(){
+        QString error;const auto seed=hex("0080ff12345678");
+        for(const auto provider:{"seed-as-key","external-generatekeyex"}){
+            FlashProfile p;p.keyProvider=provider;p.keyLibrary="  ";p.simulationOnly=false;
+            auto key=makeDownloadKeyProvider(p,false);QCOMPARE(key->calculate(1,seed,error),seed);
+            QVERIFY(error.isEmpty());QCOMPARE(p.keyProvider,QString("seed-as-key"));
+        }
+        FlashProfile p;p.keyLibrary="missing.dll";
+        auto external=makeDownloadKeyProvider(p,false);
+        QVERIFY(external->calculate(1,seed,error).isEmpty());QVERIFY(error.contains("16-byte"));
+        QCOMPARE(p.keyProvider,QString("external-generatekeyex"));
+        auto simulation=makeDownloadKeyProvider(p,true);error.clear();
+        QCOMPARE(simulation->calculate(0x11,hex("12345678"),error),hex("a680e2cc"));
+    }
+#ifdef TEST_SEEDKEY_DLL
+    void externalDllBridge(){
+        const auto dll=temp.filePath(QString::fromUtf8("算法 测试.dll"));
+        QVERIFY(QFile::copy(QStringLiteral(TEST_SEEDKEY_DLL),dll));
+        PluginKey key(dll);QString error;
+        QCOMPARE(key.calculate(1,hex("0001020380ff7f101112131415161718"),error),hex("5b5a5958dba4244b4a49484f4e4d4c43"));
+        QVERIFY2(error.isEmpty(),qPrintable(error));
+        PluginKey missing(temp.filePath("missing-provider.dll"));
+        QVERIFY(missing.calculate(1,hex("0001020380ff7f101112131415161718"),error).isEmpty());
+        QVERIFY(error.contains("LoadLibrary"));
+    }
+#endif
     void onlineCanStillRequiresTargetIntegration(){
         auto settings=ChannelSettings::defaults(communication::Bus::Can);
         settings.applicationPath=temp.filePath("online-preflight.bin");settings.flashPath=settings.applicationPath;
@@ -249,6 +300,7 @@ private slots:
         QVERIFY(defaults.flashRequired);
         QVERIFY(!defaults.rxdEnabled);QVERIFY(!defaults.toJson()["rxdEnabled"].toBool());
         QCOMPARE(defaults.downloadProfile["flow"].toString(),QString("app"));
+        QCOMPARE(defaults.downloadProfile["keyProvider"].toString(),QString("seed-as-key"));
         for(const auto &step:downloadSteps()){
             QVERIFY(defaults.downloadProfile["stepEnabled"].toObject()[step.id].toBool());
             QCOMPARE(defaults.downloadProfile["negativeResponseChecks"].toObject()[step.id].toBool(),ChannelPageInitialValues::feedbackChecked);

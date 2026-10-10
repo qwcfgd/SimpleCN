@@ -37,6 +37,16 @@ private slots:
         QCOMPARE(executable.exitStatus(),QProcess::NormalExit);QCOMPARE(executable.exitCode(),0);
         QVERIFY(executable.readAllStandardOutput().contains(MainWindowInitialValues::version));
     }
+#ifdef HOST_TEST_SEEDKEY_BRIDGE
+    void shippedBridgeStartsWithoutQt(){
+        QProcess bridge;auto env=QProcessEnvironment::systemEnvironment();
+        const auto windows=env.value("SystemRoot","C:/Windows");env.insert("PATH",windows+"/System32;"+windows);
+        bridge.setProcessEnvironment(env);bridge.start(runtime()+"/seedkey/SeedkeyBridge32.exe",QStringList{});
+        QVERIFY(bridge.waitForStarted(3000));QVERIFY(bridge.waitForFinished(3000));
+        QCOMPARE(bridge.exitStatus(),QProcess::NormalExit);QCOMPARE(bridge.exitCode(),2);
+        QVERIFY(bridge.readAllStandardError().contains("Expected DLL, level, seedHex"));
+    }
+#endif
     void relocatedProfilesAndThreeChannelDownload(){
         QTemporaryDir config;QVERIFY(config.isValid());
         MainWindow window(config.path()+"/channels.json");

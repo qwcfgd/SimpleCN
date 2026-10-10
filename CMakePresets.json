@@ -11,7 +11,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"
@@ -27,7 +29,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -43,7 +47,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"
@@ -59,7 +65,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -75,7 +83,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"
@@ -91,7 +101,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -107,7 +119,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"
@@ -123,7 +137,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -139,7 +155,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -155,7 +173,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"
@@ -171,7 +191,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/5.15.19/mingw810_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/8.1.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt5",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/8.1.0/mingw64/bin;C:/Qt/5.15.19/mingw810_64/bin;$penv{PATH}"
@@ -187,7 +209,9 @@
         "CMAKE_PREFIX_PATH": "C:/Qt/6.8.4/mingw1200_64",
         "CMAKE_CXX_COMPILER": "C:/MinGW/12.0.0/mingw64/bin/g++.exe",
         "HOST_RUNTIME_OUTPUT_DIR": "C:/Documents/0_Qt/build/Qt-GeneralController-qt6",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "BUILD_SEEDKEY_BRIDGE": "ON",
+        "SEEDKEY_CXX32": "C:/MinGW/12.0.0/mingw32/bin/g++.exe"
       },
       "environment": {
         "PATH": "C:/MinGW/12.0.0/mingw64/bin;C:/Qt/6.8.4/mingw1200_64/bin;$penv{PATH}"

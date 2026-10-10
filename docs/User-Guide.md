@@ -35,13 +35,15 @@
 
 ## 外部安全访问算法
 
-公开仓库和公开发布包不包含任何私有算法 DLL 或真实 seed/key 向量。simulation 使用模拟算法，无需 27 DLL；online LIN 下载要求明确提供已授权的外部 DLL，缺少 DLL 时不启动下载。
+公开仓库和公开发布包不包含任何私有算法 DLL 或真实 seed/key 向量。simulation 使用模拟算法，无需 27 DLL；online LIN 下载在 27 DLL 路径为空时默认将收到的 seed 字节原样作为 key 发送，不调用 DLL 或桥接 EXE。选择 DLL 后使用其 GenerateKeyEx 算法。
 
-V1.44 的按钮条件为：当前通道已连接、配置有效、无其他任务占用，Application 镜像有效；勾选“Flash Driver使能”时还需 Driver 镜像。未选择 27 DLL 不加入按钮禁用条件；点击后在下载任务窗格将“等待开始”改为红色“27 dll未加载”，并在发送下载请求之前停止。缺少连接或镜像时，任务窗格显示具体原因；只需 Application 的目标可在下载设置中取消“Flash Driver使能”。真实 CAN 下载仍需目标适配，目前仅支持模拟下载。
+V1.44 的按钮条件为：当前通道已连接、配置有效、无其他任务占用，Application 镜像有效；勾选“Flash Driver使能”时还需 Driver 镜像。未选择 27 DLL 时可启动并使用 seed 原样回传；旧配置标识为 external-generatekeyex 但 DLL 路径为空时也采用此方式。已填写 DLL 路径但文件无效时，任务窗格仍显示红色“27 dll未加载”并停止启动，不自动切换算法。缺少连接或镜像时，任务窗格显示具体原因；只需 Application 的目标可在下载设置中取消“Flash Driver使能”。真实 CAN 下载仍需目标适配，目前仅支持模拟下载。
 
 “下载设置…”的第一行是 27 DLL 路径与“文件…”按钮，使用现代 Windows 原生文件选择框，只选择 DLL 文件。支持完整路径、中文和空格；取消选择保留原值，确认下载设置后保存路径。DLL 相对路径以 EXE 目录解析；有效 DLL 还需要程序目录下的 `seedkey/SeedkeyBridge32.exe`，缺少时显示具体提示并阻止下载启动。
 
-通用外部提供者标识为 external-generatekeyex。旧配置需要在下载设置中重新选择提供者并保存。DLL 相对路径以 EXE 目录解析。可选桥接程序位于 seedkey/SeedkeyBridge32.exe，使用 GenerateKeyEx 接口；接口位数、参数约定和输入长度限制必须与使用者提供的 DLL 兼容。
+默认提供者标识为 seed-as-key，27 key 请求由 SID 27、seed 子功能加 1、完整 seed 字节构成；空 seed 报错，全零 seed 继续按已解锁处理。启用 key 步骤但禁用 seed 步骤时不发送伪造的 00 key。正常 ECU 正响应、负响应和超时处理继续按既有步骤判定设置执行。
+
+通用外部提供者标识为 external-generatekeyex，DLL 相对路径以 EXE 目录解析。桥接程序位于 seedkey/SeedkeyBridge32.exe，使用 GenerateKeyEx 接口；接口位数、参数约定和输入长度限制必须与使用者提供的 DLL 兼容。本机 CMakePresets 默认启用 BUILD_SEEDKEY_BRIDGE，并使用 C:/MinGW/12.0.0/mingw32/bin/g++.exe 构建独立、静态运行库的 32 位桥接程序；自定义构建可指定 SEEDKEY_CXX32。发布打包会带上已构建的桥接程序。
 
 为保护本地目标参数，请将实机配置、算法 DLL 和验证记录保存在 private/ 或仓库外。公开打包脚本不携带这些资料。
 

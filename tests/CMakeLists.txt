@@ -49,6 +49,17 @@ set_tests_properties(release_runtime PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=win
 host_deploy(VerifyRelease)
 
 add_executable(test_download_revision test_download_revision.cpp)
+if(BUILD_SEEDKEY_BRIDGE)
+    set(seedkey_test_dll "${CMAKE_CURRENT_BINARY_DIR}/seedkey-fixtures/test-provider.dll")
+    add_custom_command(OUTPUT "${seedkey_test_dll}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/seedkey-fixtures"
+        COMMAND "${SEEDKEY_CXX32}" -shared -static -O2 "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/seedkey_provider.cpp" -o "${seedkey_test_dll}"
+        DEPENDS fixtures/seedkey_provider.cpp VERBATIM)
+    add_custom_target(seedkey_test_provider DEPENDS "${seedkey_test_dll}")
+    add_dependencies(test_download_revision seedkey_test_provider)
+    target_compile_definitions(test_download_revision PRIVATE TEST_SEEDKEY_DLL="${seedkey_test_dll}")
+    target_compile_definitions(VerifyRelease PRIVATE HOST_TEST_SEEDKEY_BRIDGE=1)
+endif()
 target_link_libraries(test_download_revision PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
 host_deploy(test_download_revision)
 add_test(NAME download_revision COMMAND test_download_revision -o "${CMAKE_CURRENT_BINARY_DIR}/download-revision-results.xml,xml")

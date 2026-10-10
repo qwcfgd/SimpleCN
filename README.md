@@ -19,8 +19,9 @@
 
 ## V1.44：下载按钮与独立通信模块
 
-- 连接和所需镜像就绪后，未选择 27 DLL 不再禁用 LIN 在线下载按钮；点击时若 DLL 未加载，任务窗格以红色显示“27 dll未加载”，并阻止启动下载。
+- 连接和所需镜像就绪后，LIN 在线下载未配置 27 DLL 时默认将收到的 seed 原样作为 key 发送，无需桥接 EXE。已填写但无效的 DLL 路径仍显示红色“27 dll未加载”并阻止启动。
 - 下载设置第一行提供 27 DLL 路径及现代 Windows 文件选择按钮；任务窗格显示连接、镜像及运行依赖的具体提示。LIN / CAN 模拟下载使用模拟算法。
+- 本机 Qt 5 / Qt 6 预设同时构建、部署 `seedkey/SeedkeyBridge32.exe`，供已配置 DLL 的下载调用；公开打包脚本携带该通用桥接程序，不携带私有算法。
 - 通信源码、PEAK API 头文件及 x64 运行库纳入本仓库 `resource/`，不再依赖其他工程的通信目录。详见 [1.44 更新说明](docs/Release-1.44.md)。
 
 ## V1.4.3：SimpleCN 与报文监视更新
@@ -139,7 +140,7 @@ ctest --preset qt6
 
 路径不随 worktree 改变；同一构建目录不应被不同检出同时使用。不在源码目录创建 build。`-DBUILD_TESTING=OFF` 可仅构建主程序；自定义程序位置使用 `HOST_RUNTIME_OUTPUT_DIR`，CMake `-B` 仍应放在 `../build/qttemp` 中。
 
-必要的 Qt / MinGW DLL、插件和硬件 API 应与 EXE 一起保留。测试程序、模拟素材与缓存不进入运行目录。可选的 32 位安全访问桥接程序需显式设置 `BUILD_SEEDKEY_BRIDGE=ON` 和 `SEEDKEY_CXX32`；算法由使用者另行提供。
+必要的 Qt / MinGW DLL、插件和硬件 API 应与 EXE 一起保留。测试程序、模拟素材与缓存不进入运行目录。本机预设已启用 32 位安全访问桥接程序；自定义构建需设置 `BUILD_SEEDKEY_BRIDGE=ON` 和 `SEEDKEY_CXX32`。未配置 DLL 时使用 seed 原样回传，无需桥接程序；外部算法由使用者另行提供。
 
 ### 打包与独立验证
 

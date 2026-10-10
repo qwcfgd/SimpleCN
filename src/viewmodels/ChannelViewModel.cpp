@@ -156,8 +156,7 @@ QString ChannelViewModel::startHint() const {
     if(!m_settings.simulation){
         QString error;
         boot::FlashProfile profile;if(!boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error))return error;
-        if(profile.keyLibrary.trimmed().isEmpty())return "请配置已授权的安全访问 DLL";
-        if(!profile.keyLibrary.trimmed().isEmpty()&&profile.keyProvider!="external-generatekeyex")return "下载设置中请选择 External GenerateKeyEx 算法";
+        if(profile.keyLibrary.trimmed().isEmpty())return {};
         const QDir app(QCoreApplication::applicationDirPath());
         const auto key=QDir::isRelativePath(profile.keyLibrary)?app.absoluteFilePath(profile.keyLibrary):profile.keyLibrary;
         const QFileInfo dll(key),bridge(app.filePath("seedkey/SeedkeyBridge32.exe"));
@@ -184,7 +183,7 @@ void ChannelViewModel::start(){
         m_error=hint;
         if(canStart()){
             m_downloadStartBlocked=true;
-            m_taskText=(hint=="请配置已授权的安全访问 DLL"||hint=="安全访问 DLL 不存在或不可读取，请检查下载设置中的 27 DLL 路径")?"27 dll未加载":hint;
+            m_taskText=hint=="安全访问 DLL 不存在或不可读取，请检查下载设置中的 27 DLL 路径"?"27 dll未加载":hint;
         }
         log(hint);emit changed();return;
     }

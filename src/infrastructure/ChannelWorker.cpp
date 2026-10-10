@@ -159,13 +159,9 @@ void ChannelWorker::beginDownload(){
     boot::FlashProfile profile;
     if(!boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error)){failPreview(error);return;}
     profile.name=m_settings.profileId;profile.session=quint8(m_settings.programmingSession);profile.securityLevel=quint8(m_settings.securityLevel);
-    std::unique_ptr<boot::KeyProvider> key;
-    if(m_settings.simulation)key=std::make_unique<boot::SimulationKey>();
-    else {
-        if(profile.keyLibrary.trimmed().isEmpty()){failPreview("请配置已授权的安全访问 DLL");return;}
-        if(profile.keyProvider!="external-generatekeyex"){failPreview("真实下载请选用 External GenerateKeyEx");return;}
-        profile.simulationOnly=false;key=std::make_unique<boot::PluginKey>(profile.keyLibrary);
-    }
+    auto key=boot::makeDownloadKeyProvider(profile,m_settings.simulation);
+    if(!m_settings.simulation)emit logMessage(profile.keyLibrary.trimmed().isEmpty()
+        ?"未配置 27 DLL：收到的 seed 原样作为 key 发送":"安全访问使用已配置的 27 DLL");
     if(!createProtocol(profile,error,false)){failPreview(error);return;}
     emit logMessage(QString("镜像快照 %1 B · SHA256 %2 · 配置 %3").arg(application.size).arg(QString::fromLatin1(application.sha256.toHex())).arg(profile.name));
     m_job.reset(new boot::FlashJob(*m_uds,profile,std::move(key)));
