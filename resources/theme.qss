@@ -21,9 +21,11 @@ QTabBar#channelTabBar::tab:selected { background: transparent; border: none; }
 QWidget#canPage QTabBar#taskTabBar::tab { color: #5B7288; background: transparent; border-bottom: 3px solid transparent; }
 QWidget#canPage QTabBar#taskTabBar::tab:selected { color: #1E4E79; background: #E6EEF6; border-bottom: 3px solid #2B6CB0; font-weight: 700; }
 QWidget#canPage QTabBar#taskTabBar::tab:hover { background: #EEF4F9; }
+QWidget#canPage QTabBar#taskTabBar::tab:disabled { color: #95A5B5; background: #EDF2F7; }
 QWidget#canPage QLineEdit:focus, QWidget#canPage QComboBox:focus, QWidget#canPage QSpinBox:focus { border: 1px solid #2B6CB0; background: white; }
 QWidget#canPage QLineEdit:disabled, QWidget#canPage QComboBox:disabled, QWidget#canPage QSpinBox:disabled { background: #EDF2F7; color: #8898AA; border-color: #DEE5ED; }
 QWidget#canPage QPushButton:disabled, QWidget#canPage QToolButton:disabled { background: #EBF0F6; color: #95A5B5; border-color: #DAE3EC; }
+QWidget#canPage QCheckBox:disabled { color: #8898AA; }
 QWidget#canPage QPushButton:hover, QWidget#canPage QToolButton:hover { color: #1E4E79; border-color: #2B6CB0; background: #F0F5FA; }
 QWidget#canPage QPushButton[primary="true"] { color: white; background: #2B6CB0; border-color: #2B6CB0; font-weight: 600; }
 QWidget#canPage QPushButton[primary="true"]:hover { background: #235A94; }
@@ -34,9 +36,11 @@ QWidget#canPage QTableView, QWidget#canPage QPlainTextEdit { selection-backgroun
 QWidget#linPage QTabBar#taskTabBar::tab { color: #587566; background: transparent; border-bottom: 3px solid transparent; }
 QWidget#linPage QTabBar#taskTabBar::tab:selected { color: #1E5E3A; background: #E7F2EB; border-bottom: 3px solid #2D7A5A; font-weight: 700; }
 QWidget#linPage QTabBar#taskTabBar::tab:hover { background: #EFF6F1; }
+QWidget#linPage QTabBar#taskTabBar::tab:disabled { color: #94A89C; background: #EDF4F0; }
 QWidget#linPage QLineEdit:focus, QWidget#linPage QComboBox:focus, QWidget#linPage QSpinBox:focus { border: 1px solid #2D7A5A; background: white; }
 QWidget#linPage QLineEdit:disabled, QWidget#linPage QComboBox:disabled, QWidget#linPage QSpinBox:disabled { background: #EDF4F0; color: #889D91; border-color: #DFE9E3; }
 QWidget#linPage QPushButton:disabled, QWidget#linPage QToolButton:disabled { background: #EBF2ED; color: #94A89C; border-color: #DAE6DF; }
+QWidget#linPage QCheckBox:disabled { color: #889D91; }
 QWidget#linPage QPushButton:hover, QWidget#linPage QToolButton:hover { color: #1E5E3A; border-color: #2D7A5A; background: #F0F7F2; }
 QWidget#linPage QPushButton[primary="true"] { color: white; background: #2D7A5A; border-color: #2D7A5A; font-weight: 600; }
 QWidget#linPage QPushButton[primary="true"]:hover { background: #236549; }

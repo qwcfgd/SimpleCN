@@ -41,6 +41,7 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing,true);
         for(int i=0;i<count();++i){
             QStyleOptionTab option;initStyleOption(&option,i);
+            const bool enabled=isTabEnabled(i)&&(option.state & QStyle::State_Enabled);
             const bool selected=(i==currentIndex());
             const bool hovered=(option.state & QStyle::State_MouseOver);
             const bool lin=isLinTab(i);
@@ -48,7 +49,9 @@ protected:
 
             // Soft azure for CAN, soft sage green for LIN
             QColor bg=Qt::transparent;
-            if(selected){
+            if(!enabled){
+                bg=lin?QColor("#EDF4F0"):QColor("#EDF2F7");
+            }else if(selected){
                 bg=lin?QColor("#E7F2EB"):QColor("#E6EEF6");
             }else if(hovered){
                 bg=lin?QColor("#F0F7F2"):QColor("#F0F5FA");
@@ -58,7 +61,7 @@ protected:
             }
 
             // Left accent line
-            if(selected){
+            if(selected&&enabled){
                 const QColor accent=lin?QColor("#2D7A5A"):QColor("#2B6CB0");
                 painter.fillRect(QRect(rect.left(),rect.top(),3,rect.height()),accent);
             }
@@ -75,9 +78,9 @@ protected:
             // Channel label text
             const QRect textRect=rect.adjusted(leftPad+iconPx+6,0,-4,0);
             QFont f=font();
-            if(selected)f.setBold(true);
+            if(selected&&enabled)f.setBold(true);
             painter.setFont(f);
-            const QColor textCol=selected?(lin?QColor("#1E5E3A"):QColor("#1E4E79")):QColor("#688095");
+            const QColor textCol=!enabled?(lin?QColor("#889D91"):QColor("#8898AA")):(selected?(lin?QColor("#1E5E3A"):QColor("#1E4E79")):QColor("#688095"));
             painter.setPen(textCol);
             painter.drawText(textRect,Qt::AlignLeft|Qt::AlignVCenter|Qt::TextSingleLine,tabText(i));
         }

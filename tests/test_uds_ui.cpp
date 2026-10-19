@@ -166,7 +166,7 @@ private slots:
         QString error;QVERIFY(vm.loadCdd(fixture(),error));select(page,vm,"Number/Write");
         auto input=page.findChild<QLineEdit*>("udsField_2");QVERIFY(input);auto command=page.findChild<QPlainTextEdit*>("udsCommand");QVERIFY(command);input->setText("4660");QCOMPARE(command->toPlainText(),QString("2E F1 A0 34 12"));
         input->setText("65536");QVERIFY(!page.findChild<QPushButton*>("copyUdsCommand")->isEnabled());input->setText("4660");
-        QVERIFY(!page.findChild<QCheckBox*>("udsRawMode"));command->setPlainText("2E F1 A0 78 56");QVERIFY(page.findChild<QPushButton*>("copyUdsCommand")->isEnabled());command->setPlainText("2E F1 A1 78 5");QVERIFY(!page.findChild<QPushButton*>("copyUdsCommand")->isEnabled());page.findChild<QPushButton*>("revertUdsCommand")->click();
+        QVERIFY(!page.findChild<QCheckBox*>("udsRawMode"));command->setPlainText("2E F1 A0 78 56");QVERIFY(page.findChild<QPushButton*>("copyUdsCommand")->isEnabled());command->setPlainText("2E F1 A1 78 56");QVERIFY(!page.findChild<QPushButton*>("copyUdsCommand")->isEnabled());page.findChild<QPushButton*>("revertUdsCommand")->click();
         QVERIFY(!vm.selectDiagnosticTarget("unknown","Base",error));QCOMPARE(vm.settings().cddVariant,QString("base"));
         QVERIFY(vm.selectDiagnosticTarget("ExampleECU","Other",error));QCOMPARE(vm.settings().cddVariant,QString("other"));
         QVector<ChannelSettings> saved{vm.settings()},loaded;auto path=temp.filePath("channels.json");QVERIFY(SettingsStore(path).save(saved,error));QVERIFY(SettingsStore(path).load(loaded,error));QCOMPARE(loaded[0].cddPath,vm.settings().cddPath);QCOMPARE(loaded[0].cddVariant,QString("other"));

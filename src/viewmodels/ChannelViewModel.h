@@ -5,6 +5,7 @@
 #include <QSet>
 #include <QTimer>
 #include "SignalTransmitViewModel.h"
+namespace boot { struct FlashProfile; }
 namespace host {
 class ChannelViewModel : public QObject {
     Q_OBJECT
@@ -43,6 +44,8 @@ public:
     bool chooseImage(bool flash,const QString &path);
     static QStringList imageCandidates(const QString &path);
     bool exportLogs(const QString &,QString &error)const;
+    bool flashProfile(boot::FlashProfile &profile,QString &error)const;
+    bool updateDownloadSettings(const ChannelSettings &settings,const boot::FlashProfile &profile,QString &error);
     const diag::Database &diagnosticDatabase()const{return m_database;}
     UdsServiceTableModel *diagnosticServices(){return &m_services;}
     bool loadCdd(const QString &,QString &error,bool applyCommunication=true);

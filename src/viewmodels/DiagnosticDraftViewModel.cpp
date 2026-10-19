@@ -26,7 +26,9 @@ DiagnosticPreview DiagnosticDraftViewModel::preview(const diag::Service*s,const 
     DiagnosticPreview out;
     if(manual){
         out.text=raw;
-        diag::Codec::parseHex(raw,out.bytes,out.error);
+        if(diag::Codec::parseHex(raw,out.bytes,out.error)&&s){
+            diag::Codec::validate(*s,out.bytes,out.error);
+        }
         return out;
     }
     if(!s){out.error="请载入 CDD 并选择服务";return out;}

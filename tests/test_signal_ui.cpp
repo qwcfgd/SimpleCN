@@ -350,12 +350,22 @@ private slots:
         // Frame without comment, issue, or error returns null QVariant()
         QVERIFY(!canModel.data(canModel.index(1,0),Qt::ToolTipRole).isValid());
 
+        // Unenabled frame background uses CAN muted soft azure tint (#F4F7FA)
+        const auto frame0Key = canModel.key(0);
+        QVERIFY(vm.setFrameEnabled(frame0Key, false, error));
+        QCOMPARE(canModel.data(canModel.index(0,0), Qt::BackgroundRole).value<QBrush>().color(), QColor("#F4F7FA"));
+
         SignalTransmitViewModel linVm(Bus::Lin);
         QVERIFY(linVm.importFile(fixture("ldf"),error));
         LinScheduleTableModel linModel(&linVm);
         QVERIFY(linModel.rowCount()>0);
         // Clean LIN slot definition without issue/error returns null QVariant()
         QVERIFY(!linModel.data(linModel.index(0,0),Qt::ToolTipRole).isValid());
+
+        // Unenabled LIN frame background uses LIN muted soft sage tint (#F2F7F4)
+        const auto lin0Key = linModel.key(0);
+        QVERIFY(linVm.setFrameEnabled(lin0Key, false, error));
+        QCOMPARE(linModel.data(linModel.index(0,0), Qt::BackgroundRole).value<QBrush>().color(), QColor("#F2F7F4"));
     }
     void linPageSignalTabTitleSynchronizedToTransmit(){
         ChannelViewModel linVm(settings(true));
@@ -365,6 +375,18 @@ private slots:
         QCOMPARE(tabs->count(),3);
         // LIN channel signal transmit page title is synchronized to "信号发送"
         QCOMPARE(tabs->tabText(2),QString("信号发送"));
+
+        // Title remains "信号发送" even when LIN role is set to Monitor
+        QString error;
+        linVm.signalTransmission()->setRole(LinRole::Monitor,{},error);
+        QCOMPARE(tabs->tabText(2),QString("信号发送"));
+
+        // CAN channel signal transmit page title is also "信号发送" across directions
+        ChannelViewModel canVm(settings(false));
+        ChannelPage canPage(&canVm);
+        auto* canTabs=canPage.findChild<QTabWidget*>("taskPages");
+        QVERIFY(canTabs);
+        QCOMPARE(canTabs->tabText(2),QString("信号发送"));
     }
 };
 QTEST_MAIN(SignalUiTest)

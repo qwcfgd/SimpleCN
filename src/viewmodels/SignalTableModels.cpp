@@ -85,9 +85,15 @@ QVariant CanTxTableModel::data(const QModelIndex&i,int role)const{
         if(!f.comment.trimmed().isEmpty())parts.append(f.comment.trimmed());
         if(!f.issue.trimmed().isEmpty())parts.append(Language::text(f.issue.trimmed()));
         if(!d.frameError.trimmed().isEmpty())parts.append(Language::text(d.frameError.trimmed()));
+        const auto failure=status.failures.value(f.key);
+        if(!failure.trimmed().isEmpty())parts.append(Language::text(failure.trimmed()));
         return parts.isEmpty()?QVariant():QVariant(parts.join('\n'));
     }
-    if(role==Qt::BackgroundRole&&(!f.issue.isEmpty()||!d.frameError.isEmpty()||status.failures.contains(f.key)))return QBrush(QColor("#ffe0e0"));
+    if(role==Qt::BackgroundRole){
+        if(!f.issue.isEmpty()||!d.frameError.isEmpty()||status.failures.contains(f.key))return QBrush(QColor("#ffe0e0"));
+        if(!d.sendEnabled)return QBrush(QColor("#F4F7FA"));
+    }
+    if(role==Qt::ForegroundRole&&!d.sendEnabled)return QBrush(QColor("#8C9BA8"));
     if(role!=Qt::DisplayRole&&role!=Qt::EditRole)return {};
     switch(i.column()){
     case 1:return i.row()+1;case 2:return f.name;case 3:return "0x"+QString::number(f.id,16).toUpper();case 4:return f.transmitters.isEmpty()?f.publisher:f.transmitters.join(", ");case 5:return QString(f.extended?"29 bit":"11 bit")+(f.custom?Language::text(" · 自建"):QString(" · DBC"));case 6:return f.length;case 7:return d.cycleMs;
@@ -143,7 +149,7 @@ const Schedule*LinScheduleTableModel::schedule()const{for(const auto&s:m_vm->wor
 int LinScheduleTableModel::rowCount(const QModelIndex&p)const{const auto*s=schedule();return p.isValid()||!s?0:s->entries.size();}
 QString LinScheduleTableModel::key(int row)const{const auto*s=schedule();return s&&row>=0&&row<s->entries.size()?s->entries[row].frame:QString();}
 QVariant LinScheduleTableModel::headerData(int c,Qt::Orientation o,int role)const{if(role!=Qt::DisplayRole)return {};if(o==Qt::Vertical)return c+1;return Language::text(QStringList{"使能","槽","帧-名称","ID","发布节点","字节","delay ms","报文","帧头 · 数据发送类型"}.value(c));}
-QVariant LinScheduleTableModel::data(const QModelIndex&i,int role)const{const auto*s=schedule();if(!i.isValid()||!s||i.row()>=s->entries.size()||(role!=Qt::DisplayRole&&role!=Qt::EditRole&&role!=Qt::ToolTipRole&&role!=Qt::BackgroundRole&&role!=Qt::CheckStateRole))return {};const auto&slot=s->entries[i.row()];const auto*f=m_vm->frame(slot.frame);
+QVariant LinScheduleTableModel::data(const QModelIndex&i,int role)const{const auto*s=schedule();if(!i.isValid()||!s||i.row()>=s->entries.size()||(role!=Qt::DisplayRole&&role!=Qt::EditRole&&role!=Qt::ToolTipRole&&role!=Qt::BackgroundRole&&role!=Qt::ForegroundRole&&role!=Qt::CheckStateRole))return {};const auto&slot=s->entries[i.row()];const auto*f=m_vm->frame(slot.frame);
     const auto d=m_vm->working().frames.value(slot.frame);
     if(role==Qt::CheckStateRole)return i.column()==0?QVariant(d.sendEnabled?Qt::Checked:Qt::Unchecked):QVariant();
     if(role==Qt::ToolTipRole){
@@ -151,9 +157,16 @@ QVariant LinScheduleTableModel::data(const QModelIndex&i,int role)const{const au
         if(!slot.issue.trimmed().isEmpty())parts.append(Language::text(slot.issue.trimmed()));
         if(f&&!f->issue.trimmed().isEmpty())parts.append(Language::text(f->issue.trimmed()));
         if(!d.frameError.trimmed().isEmpty())parts.append(Language::text(d.frameError.trimmed()));
+        const auto failure=m_vm->status().failures.value(slot.frame);
+        if(!failure.trimmed().isEmpty())parts.append(Language::text(failure.trimmed()));
         return parts.isEmpty()?QVariant():QVariant(parts.join('\n'));
     }
-    if(role==Qt::BackgroundRole)return d.frameError.isEmpty()?QVariant():QVariant(QBrush(QColor("#ffe0e0")));
+    if(role==Qt::BackgroundRole){
+        if(!d.frameError.isEmpty()||m_vm->status().failures.contains(slot.frame))return QVariant(QBrush(QColor("#ffe0e0")));
+        if(!d.sendEnabled)return QVariant(QBrush(QColor("#F2F7F4")));
+        return QVariant();
+    }
+    if(role==Qt::ForegroundRole&&!d.sendEnabled)return QVariant(QBrush(QColor("#8C9E94")));
     switch(i.column()){case 1:return i.row()+1;case 2:return f?f->name:slot.frame;case 3:return f?QString("0x%1").arg(f->id,2,16,QChar('0')).toUpper():QString();case 4:return f?f->publisher:QString();case 5:return f?QVariant(f->length):QVariant();case 6:return slot.delayMs;case 7:return role==Qt::EditRole&&!d.frameError.isEmpty()?d.frameInput:QString::fromLatin1(d.applied.bytes.toHex(' ')).toUpper();case 8:{const auto role=m_vm->working().role;const bool tx=role!=LinRole::Monitor&&f&&(f->custom||f->publisher==m_vm->working().node||(f->id==61&&role==LinRole::Slave));return QString(role==LinRole::Master?"Tx":"Rx")+" · "+(tx?"Tx":"Rx");}}return {};
 }
 Qt::ItemFlags LinScheduleTableModel::flags(const QModelIndex&i)const{

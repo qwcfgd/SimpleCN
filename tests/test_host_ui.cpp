@@ -53,10 +53,42 @@ protected:
 class HostUiTest : public QObject {
     Q_OBJECT
     QTemporaryDir m_temp;
+    template <typename F>
+    static void onDialog(QWidget *parent, const char *dialogName, F fn, int timeoutMs = 5000) {
+        auto *timer = new QTimer(parent);
+        auto *elapsed = new QElapsedTimer;
+        elapsed->start();
+        timer->setInterval(20);
+        QObject::connect(timer, &QTimer::timeout, parent, [parent, dialogName, fn, timer, elapsed, timeoutMs]() {
+            auto *d = parent->findChild<QDialog*>(dialogName);
+            if (!d) {
+                if (elapsed->elapsed() > timeoutMs) {
+                    timer->stop();
+                    timer->deleteLater();
+                    delete elapsed;
+                    QFAIL(qPrintable(QString("Timeout waiting for dialog %1").arg(dialogName)));
+                }
+                return;
+            }
+            timer->stop();
+            timer->deleteLater();
+            delete elapsed;
+            fn(d);
+        });
+        timer->start();
+    }
     void openChannelAction(MainWindow&window,int index,const char*actionName){
         if(QString::fromLatin1(actionName)=="connectChannelAction"){
             auto*vm=window.channels().value(index);QVERIFY(vm);const bool connected=vm->connected();
-            QTimer::singleShot(100,&window,[&window,vm,connected]{auto*dialog=window.findChild<QDialog*>("editChannelDialog");QVERIFY(dialog);auto*button=dialog->findChild<QPushButton*>("connectButton");QVERIFY(button);QTRY_VERIFY(button->isEnabled());button->click();QTRY_COMPARE(vm->connected(),!connected);QTRY_VERIFY(!vm->pending());dialog->reject();});
+            onDialog(&window, "editChannelDialog", [&window,vm,connected](QDialog* dialog){
+                auto*button=dialog->findChild<QPushButton*>("connectButton");
+                QVERIFY(button);
+                QTRY_VERIFY(button->isEnabled());
+                button->click();
+                QTRY_COMPARE(vm->connected(),!connected);
+                QTRY_VERIFY(!vm->pending());
+                dialog->reject();
+            });
             openChannelAction(window,index,"editChannelAction");return;
         }
 
@@ -71,7 +103,14 @@ class HostUiTest : public QObject {
     }
     void saveChannelsFromDialog(MainWindow&window){
         const int index=window.channels().isEmpty()?-1:0;
-        QTimer::singleShot(100,&window,[&window,index]{auto*dialog=window.findChild<QDialog*>(index<0?"createChannelDialog":"editChannelDialog");QVERIFY(dialog);auto*save=dialog->findChild<QPushButton*>("saveSettings");QVERIFY(save);QTRY_VERIFY(save->isEnabled());save->click();dialog->reject();});
+        const char* dialogName=index<0?"createChannelDialog":"editChannelDialog";
+        onDialog(&window, dialogName, [](QDialog* dialog){
+            auto*save=dialog->findChild<QPushButton*>("saveSettings");
+            QVERIFY(save);
+            QTRY_VERIFY(save->isEnabled());
+            save->click();
+            dialog->reject();
+        });
         openChannelAction(window,index,index<0?"createChannelAction":"editChannelAction");
     }
     QString artifactDir() const {
@@ -363,10 +402,10 @@ private slots:
         MainWindow window(m_temp.path()+"/edit-channel.json",true);window.show();auto*vm=window.canChannel();QTRY_VERIFY(vm->canConnect());
         const auto original=vm->settings().toJson();const auto peer=window.linChannel()->settings().toJson();
         QVERIFY(!window.findChild<QPushButton*>("createChannel"));QVERIFY(!window.findChild<ChannelPage*>("canPage")->findChild<QComboBox*>("bitrateCombo"));
-        QTimer::singleShot(100,&window,[&]{auto*dialog=window.findChild<QDialog*>("editChannelDialog");QVERIFY(dialog);
+        onDialog(&window, "editChannelDialog", [](QDialog* dialog){
             dialog->findChild<QLineEdit*>("channelName")->setText("cancelled");auto*rate=dialog->findChild<QComboBox*>("bitrateCombo");QVERIFY(rate);rate->setCurrentIndex(rate->findData(250000));dialog->reject();});
         openChannelAction(window,0,"editChannelAction");QCOMPARE(vm->settings().toJson(),original);
-        QTimer::singleShot(100,&window,[&]{auto*dialog=window.findChild<QDialog*>("editChannelDialog");QVERIFY(dialog);
+        onDialog(&window, "editChannelDialog", [](QDialog* dialog){
             dialog->findChild<QLineEdit*>("channelName")->setText("CAN renamed");auto*rate=dialog->findChild<QComboBox*>("bitrateCombo");rate->setCurrentIndex(rate->findData(250000));
             QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok),Qt::LeftButton);});
         openChannelAction(window,0,"editChannelAction");QCOMPARE(vm->settings().softwareId,QString("CAN renamed"));QCOMPARE(vm->settings().bitrate,250000);
@@ -374,7 +413,7 @@ private slots:
         QString error;auto duplicate=vm->settings();duplicate.softwareId=window.linChannel()->settings().softwareId;
         ChannelConfigurationViewModel configuration(m_temp.filePath("unused.json"));QVERIFY(!configuration.update(vm,duplicate,window.channels(),error));QCOMPARE(vm->settings().softwareId,QString("CAN renamed"));
         QVERIFY(window.removeChannel(vm));QVERIFY(window.removeChannel(window.linChannel()));
-        QTimer::singleShot(100,&window,[&]{auto*dialog=window.findChild<QDialog*>("createChannelDialog");QVERIFY(dialog);dialog->reject();});
+        onDialog(&window, "createChannelDialog", [](QDialog* dialog){dialog->reject();});
         openChannelAction(window,-1,"createChannelAction");QVERIFY(window.channels().isEmpty());
     }
     void doubleClickConnectionDialogAndConfigurationLoad(){
@@ -400,19 +439,17 @@ private slots:
         auto tabs=window.findChild<QTabWidget*>("channelTabs");
         QCOMPARE(tabs->count(),2);QCOMPARE(tabs->tabText(0),QString("CAN01"));QCOMPARE(tabs->tabText(1),QString("LIN01"));
         QVERIFY(window.linChannel()!=nullptr);
-        QTimer::singleShot(100,&window,[&](){
-            auto dialog=window.findChild<QDialog*>("createChannelDialog");QVERIFY(dialog);
+        onDialog(&window, "createChannelDialog", [](QDialog* dialog){
             QCOMPARE(dialog->findChild<QLineEdit*>("channelName")->text(),QString("CAN02"));
             dialog->reject();
         });
         openChannelAction(window,-1,"createChannelAction");
         QCOMPARE(tabs->count(),2);
-        QTimer::singleShot(100,&window,[&](){
-            auto dialog=window.findChild<QDialog*>("createChannelDialog");QVERIFY(dialog);
+        onDialog(&window, "createChannelDialog", [](QDialog* dialog){
             dialog->findChild<QComboBox*>("channelType")->setCurrentIndex(1);
             auto name=dialog->findChild<QLineEdit*>("channelName");QCOMPARE(name->text(),QString("LIN02"));
             name->setText("LIN 台架 A");
-            QTimer::singleShot(150,dialog,[dialog]{QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok),Qt::LeftButton);});
+            QTimer::singleShot(50,dialog,[dialog]{QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok),Qt::LeftButton);});
         });
         openChannelAction(window,-1,"createChannelAction");
         QCOMPARE(tabs->count(),3);QCOMPARE(tabs->tabText(2),QString("LIN 台架 A"));

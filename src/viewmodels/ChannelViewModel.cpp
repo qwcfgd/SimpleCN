@@ -219,6 +219,17 @@ bool ChannelViewModel::exportLogs(const QString &path,QString &error) const {
     error.clear();QSaveFile f(path);const QByteArray data=(m_logs.join('\n')+'\n').toUtf8();
     if(!f.open(QIODevice::WriteOnly) || f.write(data)!=data.size() || !f.commit()){error="日志导出失败。";return false;}return true;
 }
+bool ChannelViewModel::flashProfile(boot::FlashProfile &profile,QString &error) const {
+    return boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error);
+}
+bool ChannelViewModel::updateDownloadSettings(const ChannelSettings &s,const boot::FlashProfile &profile,QString &error) {
+    if(busy()){error="通道正在执行操作，无法保存下载设置";return false;}
+    auto next=s;
+    next.downloadProfile=profile.toJson();
+    communication::SoftwareChannelConfiguration c;
+    if(!next.toConfiguration(c,error))return false;
+    return setSettings(next);
+}
 bool ChannelViewModel::loadCdd(const QString &path,QString &error,bool applyCommunication){
     if(busy()){error="通道正在执行操作";return false;}
     diag::Database db;if(!diag::Database::load(path,db,error))return false;

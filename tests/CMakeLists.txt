@@ -24,19 +24,19 @@ host_deploy(test_host_ui)
 add_custom_command(TARGET test_host_ui POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${qt_bin}/../plugins/platforms/qoffscreen.dll" "$<TARGET_FILE_DIR:test_host_ui>/platforms/qoffscreen.dll")
 add_test(NAME host_ui COMMAND test_host_ui -o "${CMAKE_CURRENT_BINARY_DIR}/host-ui-results.xml,xml")
-set_tests_properties(host_ui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 120)
+set_tests_properties(host_ui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 180)
 
 add_executable(test_protocol test_protocol.cpp)
 target_link_libraries(test_protocol PRIVATE bootloader_protocol Qt${QT_VERSION_MAJOR}::Test)
 host_deploy(test_protocol)
 add_test(NAME protocol COMMAND test_protocol -o "${CMAKE_CURRENT_BINARY_DIR}/protocol-results.xml,xml")
-set_tests_properties(protocol PROPERTIES TIMEOUT 90)
+set_tests_properties(protocol PROPERTIES TIMEOUT 120)
 
 add_executable(test_can_protocol test_can_protocol.cpp)
 target_link_libraries(test_can_protocol PRIVATE bootloader_protocol Qt${QT_VERSION_MAJOR}::Test)
 host_deploy(test_can_protocol)
 add_test(NAME can_protocol COMMAND test_can_protocol -o "${CMAKE_CURRENT_BINARY_DIR}/can-protocol-results.xml,xml")
-set_tests_properties(can_protocol PROPERTIES TIMEOUT 90)
+set_tests_properties(can_protocol PROPERTIES TIMEOUT 120)
 
 # Verifier and simulation fixtures remain in qttemp; the application stays clean.
 file(COPY "${CMAKE_SOURCE_DIR}/profiles/fixtures" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/profiles")

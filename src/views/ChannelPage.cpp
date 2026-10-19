@@ -281,7 +281,7 @@ void ChannelPage::editProtocol() {
 void ChannelPage::editDownload() {
     if(m_vm->busy())return;
     const auto original=m_vm->settings();boot::FlashProfile profile;QString message;
-    if(!boot::FlashProfile::fromJson(original.downloadProfile,profile,message))return;
+    if(!m_vm->flashProfile(profile,message))return;
     QDialog dialog(this);dialog.setObjectName("downloadSettingsDialog");dialog.setWindowTitle(original.softwareId+" · 下载设置");
     dialog.resize(990,520);if(screen())dialog.resize(dialog.size().boundedTo(screen()->availableGeometry().size()-QSize(40,80)));
     auto outer=new QVBoxLayout(&dialog);auto scroll=new QScrollArea;scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);
@@ -405,11 +405,10 @@ void ChannelPage::editDownload() {
         profile.keyLibrary=keyLibrary->text();profile.simulationOnly=false;
         profile.keyProvider=profile.keyLibrary.trimmed().isEmpty()?"seed-as-key":"external-generatekeyex";
         profile.eraseRoutine=quint16(erase->value());profile.verifyRoutine=quint16(verifyRid->value());profile.dependencyRoutine=quint16(dependencyRid->value());profile.identityDid=quint16(did->value());
-        profile.consecutiveFrameByteLimit=block->value();profile.resetWaitMs=resetWait->value();s.downloadProfile=profile.toJson();
-        communication::SoftwareChannelConfiguration c;QString message;
-        if(!s.toConfiguration(c,message)){error->setText(message);error->show();return;}
-        if(m_vm->setSettings(s))dialog.accept();
-        else {error->setText("当前通道忙，请在任务结束后修改。");error->show();}
+        profile.consecutiveFrameByteLimit=block->value();profile.resetWaitMs=resetWait->value();
+        QString message;
+        if(!m_vm->updateDownloadSettings(s,profile,message)){error->setText(message);error->show();return;}
+        dialog.accept();
     });dialog.exec();
 }
 void ChannelPage::render() {
@@ -426,16 +425,7 @@ void ChannelPage::render() {
     m_connectButton->setText(m_vm->connected()?"断开":"连接");
     m_connectButton->setEnabled(!m_vm->pending()&&(m_vm->connected()?!m_vm->otherTaskBusy():m_vm->canConnect()));
     if(m_tasks&&m_tasks->count()>2){
-        QString signalTitle="信号发送";
-        if(s.bus==communication::Bus::Can){
-            const auto dir=m_vm->signalTransmission()->working().canDirection;
-            if(dir=="Rx")signalTitle="信号接收";
-            else if(dir=="TxRx"||dir=="All"||dir=="Tx/Rx")signalTitle="信号收发";
-            else signalTitle="信号发送";
-        }else{
-            signalTitle=(m_vm->signalTransmission()->working().role==signal::LinRole::Monitor)?"信号接收":"信号发送";
-        }
-        m_tasks->setTabText(2,Language::text(signalTitle));
+        m_tasks->setTabText(2,Language::text("信号发送"));
     }
     m_flashAddress->setEnabled(!m_vm->busy()&&s.flashRequired);
     m_appAddress->setEnabled(!m_vm->busy());
