@@ -48,8 +48,8 @@ public:
     bool loadCdd(const QString &,QString &error,bool applyCommunication=true);
     bool applyDiagnosticConfiguration(const diag::Database &,const ChannelSettings &,QString &error);
     bool selectDiagnosticTarget(const QString &ecu,const QString &variant,QString &error);
-    bool sendDiagnostic(int serviceRow,const QByteArray &,QString &error);
-    bool repeatDiagnostic(int serviceRow,const QByteArray &,QString &error);
+    bool sendDiagnostic(int serviceRow,const QByteArray &,QString &error,bool raw=false);
+    bool repeatDiagnostic(int serviceRow,const QByteArray &,QString &error,bool raw=false);
     bool diagnosticBusy()const{return m_protocolBusy||m_diagnosticBusy||m_repeatActive;}
     bool diagnosticRepeating()const{return m_repeatActive;}
     QString diagnosticRepeatStatus()const;

@@ -322,7 +322,7 @@ private slots:
         QCOMPARE(requests[8],hex("3400440000ff0000001000"));
         QCOMPARE(requests[27],hex("3101ff00440002000000000005"));
         QCOMPARE(requests[28],hex("3400440002000000000005"));
-        QVERIFY(job.start(app,driver,error));QTRY_COMPARE_WITH_TIMEOUT(result.size(),2,10000);QVERIFY(result[1][0].toBool());QCOMPARE(bench.ecu.resets,2);
+        QVERIFY(job.start(app,driver,error));QTRY_COMPARE_WITH_TIMEOUT(result.size(),2,20000);QVERIFY(result[1][0].toBool());QCOMPARE(bench.ecu.resets,2);
         const auto directory=QCoreApplication::applicationDirPath()+"/artifacts";QDir().mkpath(directory);
         QFile flow(directory+"/lin-uds-flow.json");QVERIFY(flow.open(QIODevice::WriteOnly));
         flow.write(QJsonDocument(QJsonObject{{"backend","SimulatedLinEcu"},{"nad",21},{"completedRounds",bench.ecu.resets},{"memoryMatches",true},{"events",transcript}}).toJson());

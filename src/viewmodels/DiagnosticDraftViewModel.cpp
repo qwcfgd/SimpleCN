@@ -24,8 +24,12 @@ bool DiagnosticDraftViewModel::select(const QString&ecuKey,const QString&variant
 }
 DiagnosticPreview DiagnosticDraftViewModel::preview(const diag::Service*s,const diag::Values&values,bool manual,const QString&raw,bool suppress){
     DiagnosticPreview out;
+    if(manual){
+        out.text=raw;
+        diag::Codec::parseHex(raw,out.bytes,out.error);
+        return out;
+    }
     if(!s){out.error="请载入 CDD 并选择服务";return out;}
-    if(manual){out.text=raw;if(diag::Codec::parseHex(raw,out.bytes,out.error))diag::Codec::validate(*s,out.bytes,out.error);return out;}
     const bool encoded=diag::Codec::encode(s->request,values,out.bytes,out.error);
     if(encoded&&suppress&&out.bytes.size()>1)out.bytes[1]=char(quint8(out.bytes[1])|0x80);
     if(encoded)diag::Codec::validate(*s,out.bytes,out.error);

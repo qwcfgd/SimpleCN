@@ -45,13 +45,13 @@ def main():
         shutil.copy2(bridge, output/"seedkey/SeedkeyBridge32.exe")
     (output/"qt.conf").write_text("[Paths]\nPrefix=.\nPlugins=.\n", encoding="utf-8")
     (output/"docs").mkdir()
-    for name in ("User-Guide.md", "Release-1.44.md", "Tosun-Hardware.md", "Trace-and-Graphics.md", "Signal-Workbench-Replay.md",
+    for name in ("User-Guide.md", "Release-1.45.md", "Release-1.44.md", "Tosun-Hardware.md", "Trace-and-Graphics.md", "Signal-Workbench-Replay.md",
                  "CDD-UDS.md", "Default-Configuration.md", "Licensing.md", "Signal-Transmission-Implementation.md", "Logic-Review-Fixes.md",
                  "Online-SeedKey-1.44.md", "Startup-Review-1.44.md", "MVVM-Audit.md"):
         shutil.copy2(ROOT/"docs"/name, output/"docs"/name)
     shutil.copytree(ROOT/"docs/licenses", output/"docs/licenses")
     (output/"README.txt").write_text(
-        "SimpleCN V1.44\n\n"
+        "SimpleCN V1.45\n\n"
         "启动 QtBootloader.exe。首次包含 CAN01 和 LIN01，不自动连接。\n"
         "完整说明：docs/User-Guide.md\n"
         "发布包仅包含应用及运行依赖；测试、调试与模拟素材保存在 build/qttemp。\n"
@@ -60,7 +60,7 @@ def main():
         "请保留整个目录；不要只复制 exe。保存配置需要目录可写。\n",
         encoding="utf-8-sig")
     inventory = {
-        "applicationLicense": "LGPL-3.0-only", "applicationVersion": "1.44", "uiVersion": "SimpleCN V1.44",
+        "applicationLicense": "LGPL-3.0-only", "applicationVersion": "1.45", "uiVersion": "SimpleCN V1.45",
         "qtMajor": int(args.qt_major), "architecture": "Windows x64",
         "buildType": "Release", "physicalDownloadEnabled": True, "physicalDownloadBuses": ["LIN"], "physicalECUValidated": False,
         "defaultOnlineKeyProvider": "seed-as-key", "externalKeyBridgeIncluded": bridge.is_file(),

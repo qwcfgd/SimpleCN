@@ -11,8 +11,8 @@ struct CanFrame {
     QByteArray data;
 };
 struct CanOptions {
-    quint32 txId=0x715,rxId=0x795;
-    bool extended=false;
+    quint32 txId=0x715,rxId=0x795,functionalTxId=0x7df;
+    bool extended=false,functionalRx=false;
     int blockSize=8,stMin=1,maxWaitFrames=3,nAsMs=1000,nBsMs=1000,nCrMs=1000,receiveCapacity=4095,padding=0xff;
     int nArMs=0; // Legacy profiles use N_As for flow-control confirmations.
     bool valid(QString &) const;
@@ -26,6 +26,7 @@ public:
     using Write=std::function<bool(const CanFrame &,quint64 token,QString &error)>;
     CanTransport(CanOptions,Write,QObject *parent=nullptr);
     bool send(const QByteArray &,QString &) override;
+    bool send(const QByteArray &,QString &,bool functional) override;
     void cancel() override;
     int maximumPdu() const override{return 4095;}
     bool busy() const{return m_txState!=Idle||m_pending!=None||m_rxLength>0;}
@@ -53,7 +54,7 @@ private:
     int m_txOffset=0,m_txSequence=1,m_remainingBlock=0,m_peerBlock=0,m_peerStUs=0,m_waitFrames=0;
     int m_rxLength=0,m_rxSequence=1,m_rxBlock=0,m_pendingCount=0;
     quint64 m_serial=0,m_token=0,m_epoch=0;
-    TxState m_txState=Idle;Kind m_pending=None;bool m_listening=false;
+    TxState m_txState=Idle;Kind m_pending=None;bool m_listening=false,m_txFunctional=false;
 };
 }
 Q_DECLARE_METATYPE(boot::CanFrame)

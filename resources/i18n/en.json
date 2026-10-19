@@ -919,5 +919,14 @@
   "选择 27 DLL": "Select 27 DLL",
   "未选择 DLL 时，将收到的 seed 原样作为 key 发送": "Without a DLL, send the received seed unchanged as the key",
   "未配置 27 DLL：收到的 seed 原样作为 key 发送": "No 27 DLL configured: send the received seed unchanged as the key",
-  "安全访问使用已配置的 27 DLL": "Security access uses the configured 27 DLL"
+  "安全访问使用已配置的 27 DLL": "Security access uses the configured 27 DLL",
+  "Driver 基址 (HEX)": "Driver base address (HEX)",
+  "App 基址 (HEX)": "App base address (HEX)",
+  "开始接收": "Start Receiving",
+  "接收 raw": "Rx raw",
+  "接收物理值": "Rx physical",
+  "信号接收": "Signal Rx",
+  "信号收发": "Signal Tx/Rx",
+  "原始报文": "Raw message",
+  "真实 CAN 下载：硬件回显与 ISO-TP 传输层已激活": "Hardware CAN download: transmit echo and ISO-TP transport layer activated"
 }

@@ -67,6 +67,7 @@ struct AppliedPayload { QByteArray bytes;quint64 revision=0; };
 struct LastRxState {
     QByteArray bytes;quint64 hardwareUs=0; qint64 arrivalUs=0;
     bool received=false,valid=false;QString detail;
+    QVector<RawValue> values;
 };
 struct TxDraft {
     QVector<RawValue> values;

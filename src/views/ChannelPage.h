@@ -29,7 +29,7 @@ private:
     QLineEdit *m_flashPath,*m_appPath,*m_flashAddress,*m_appAddress;
     QCheckBox *m_follow,*m_rxdEnabled;
     QLabel *m_hardwareSummary,*m_connectionStatus,*m_flashInfo,*m_appInfo,*m_hint,*m_task,*m_count,*m_elapsedText,*m_error;
-    QPushButton *m_start,*m_cancel,*m_scan,*m_protocol,*m_downloadSettings,*m_browseFlash;
+    QPushButton *m_start,*m_cancel,*m_scan,*m_protocol,*m_downloadSettings,*m_browseFlash,*m_connectButton=nullptr;
     QProgressBar *m_progress;
     QTreeView *m_table;
     QPlainTextEdit *m_log;

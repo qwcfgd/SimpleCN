@@ -7,6 +7,7 @@ class DiagnosticTransport : public QObject {
 public:
     using QObject::QObject;
     virtual bool send(const QByteArray &pdu,QString &error)=0;
+    virtual bool send(const QByteArray &pdu,QString &error,bool functional){Q_UNUSED(functional);return send(pdu,error);}
     virtual void cancel()=0;
     virtual int maximumPdu() const=0;
 signals:

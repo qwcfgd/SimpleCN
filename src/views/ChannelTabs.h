@@ -5,16 +5,25 @@
 #include <QWheelEvent>
 #include <QResizeEvent>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QStylePainter>
 #include <QStyleOptionTab>
 #include <algorithm>
 namespace host {
-// Horizontal labels in a vertically scrolling navigation rail.
+// Horizontal labels in a vertically scrolling navigation rail with bus-specific styling.
 class ChannelTabBar final : public QTabBar {
 public:
     explicit ChannelTabBar(QWidget *parent=nullptr):QTabBar(parent){setObjectName("channelTabBar");setExpanding(false);setUsesScrollButtons(true);}
     int rowHeight()const{return qMax(38,fontMetrics().height()+18);}
     QSize minimumSizeHint()const override{return QSize(104,rowHeight());}
+    bool isLinTab(int i)const{
+        const QString d=tabData(i).toString();
+        if(!d.isEmpty())return d.compare("LIN",Qt::CaseInsensitive)==0;
+        if(auto *tabs=qobject_cast<const QTabWidget*>(parentWidget())){
+            if(auto *w=tabs->widget(i))return w->objectName()=="linPage";
+        }
+        return tabText(i).startsWith("LIN",Qt::CaseInsensitive);
+    }
 protected:
     QSize tabSizeHint(int index)const override {Q_UNUSED(index);return QSize(104,rowHeight());}
     void mouseDoubleClickEvent(QMouseEvent*event)override{if(event->button()==Qt::LeftButton)QTabBar::mouseDoubleClickEvent(event);else event->ignore();}
@@ -28,8 +37,50 @@ protected:
         event->accept();
     }
     void paintEvent(QPaintEvent *)override {
-        QStylePainter painter(this);
-        for(int i=0;i<count();++i){QStyleOptionTab option;initStyleOption(&option,i);option.shape=QTabBar::RoundedNorth;painter.drawControl(QStyle::CE_TabBarTab,option);}
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing,true);
+        for(int i=0;i<count();++i){
+            QStyleOptionTab option;initStyleOption(&option,i);
+            const bool selected=(i==currentIndex());
+            const bool hovered=(option.state & QStyle::State_MouseOver);
+            const bool lin=isLinTab(i);
+            const QRect rect=tabRect(i);
+
+            // Soft azure for CAN, soft sage green for LIN
+            QColor bg=Qt::transparent;
+            if(selected){
+                bg=lin?QColor("#E7F2EB"):QColor("#E6EEF6");
+            }else if(hovered){
+                bg=lin?QColor("#F0F7F2"):QColor("#F0F5FA");
+            }
+            if(bg!=Qt::transparent){
+                painter.fillRect(rect,bg);
+            }
+
+            // Left accent line
+            if(selected){
+                const QColor accent=lin?QColor("#2D7A5A"):QColor("#2B6CB0");
+                painter.fillRect(QRect(rect.left(),rect.top(),3,rect.height()),accent);
+            }
+
+            // Status icon
+            const QIcon icon=tabIcon(i);
+            const int iconPx=16;
+            const int leftPad=8;
+            const QRect iconRect(rect.left()+leftPad,rect.top()+(rect.height()-iconPx)/2,iconPx,iconPx);
+            if(!icon.isNull()){
+                icon.paint(&painter,iconRect);
+            }
+
+            // Channel label text
+            const QRect textRect=rect.adjusted(leftPad+iconPx+6,0,-4,0);
+            QFont f=font();
+            if(selected)f.setBold(true);
+            painter.setFont(f);
+            const QColor textCol=selected?(lin?QColor("#1E5E3A"):QColor("#1E4E79")):QColor("#688095");
+            painter.setPen(textCol);
+            painter.drawText(textRect,Qt::AlignLeft|Qt::AlignVCenter|Qt::TextSingleLine,tabText(i));
+        }
     }
 private:int m_wheel=0;
 };

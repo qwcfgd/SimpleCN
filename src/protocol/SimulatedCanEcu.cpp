@@ -1,7 +1,9 @@
 #include "SimulatedCanEcu.h"
 namespace boot {
 static CanOptions reversed(CanOptions options){
-    qSwap(options.rxId,options.txId);return options;
+    qSwap(options.rxId,options.txId);
+    options.functionalRx=true;
+    return options;
 }
 SimulatedCanEcu::SimulatedCanEcu(CanOptions options,FlashProfile profile,QObject *parent)
  :QObject(parent),uds(std::move(profile)),m_endpoint(reversed(options),[this](const CanFrame &frame,quint64 token,QString &){

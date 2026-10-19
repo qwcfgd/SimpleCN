@@ -85,8 +85,12 @@ void ChannelPage::build() {
     auto status=new QHBoxLayout;
     m_hardwareSummary=label("");m_hardwareSummary->setObjectName("hardwareSummary");m_hardwareSummary->setWordWrap(true);status->addWidget(m_hardwareSummary,1);
     m_connectionStatus=label("");m_connectionStatus->setObjectName("connectionState");m_connectionStatus->setAlignment(Qt::AlignRight|Qt::AlignVCenter);status->addWidget(m_connectionStatus);
-    hardwareLayout->addLayout(status);
     m_protocol=new QPushButton("参数配置…");m_protocol->setObjectName("downloadParameters");
+    m_connectButton=new QPushButton("连接");m_connectButton->setObjectName("channelConnectButton");
+    status->addWidget(m_protocol);
+    status->addWidget(m_connectButton);
+    hardwareLayout->addLayout(status);
+    connect(m_connectButton,&QPushButton::clicked,m_vm,&ChannelViewModel::toggleConnection);
     root->addWidget(hardwareCard);root->addWidget(m_regions,1);
 
     auto download=new QFrame;download->setObjectName("downloadPanel");download->setProperty("card",true);download->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Minimum);
@@ -96,7 +100,7 @@ void ChannelPage::build() {
     auto heading=label("下载镜像");heading->setObjectName("sectionTitle");
     m_downloadSettings=new QPushButton("下载设置…");m_downloadSettings->setObjectName("downloadSettings");
     auto imageHeader=new QHBoxLayout;imageHeader->addWidget(heading);imageHeader->addStretch();
-    imageHeader->addWidget(m_protocol);imageHeader->addWidget(m_downloadSettings);imageGrid->addLayout(imageHeader,0,0,1,3);
+    imageHeader->addWidget(m_downloadSettings);imageGrid->addLayout(imageHeader,0,0,1,3);
     connect(m_downloadSettings,&QPushButton::clicked,this,&ChannelPage::editDownload);
     m_flashPath=edit("flashPath",32767);m_flashPath->setPlaceholderText("Flash Driver · BIN / HEX（可选）");
     m_appPath=edit("applicationPath",32767);m_appPath->setPlaceholderText("Application · BIN / HEX");
@@ -115,6 +119,7 @@ void ChannelPage::build() {
     // Image addresses live in the settings dialog; image selection and task controls stay visible.
     for(auto address:{m_flashAddress,m_appAddress}){address->setParent(this);address->hide();}
     imageGrid->setColumnStretch(1,1);
+    connect(m_vm->signalTransmission(),&SignalTransmitViewModel::changed,this,&ChannelPage::render);
     auto downloadSplit=new QSplitter(Qt::Vertical);downloadSplit->setObjectName("downloadSplit");downloadSplit->setChildrenCollapsible(false);
     downloadLayout->addWidget(downloadSplit);downloadSplit->addWidget(m_images);
     auto taskRegion=new QWidget;taskRegion->setObjectName("taskRegion");
@@ -215,7 +220,7 @@ void ChannelPage::build() {
     connect(m_table,&QTreeView::expanded,this,[expanded](const QModelIndex &i){expanded->insert(i.data(Qt::UserRole+2).toString());});
     connect(m_table,&QTreeView::collapsed,this,[expanded](const QModelIndex &i){expanded->remove(i.data(Qt::UserRole+2).toString());});
     connect(m_vm->frames(),&QAbstractItemModel::modelReset,this,[this,proxy,expanded]{
-        if(expanded->isEmpty()||!m_vm->frames()->rolling()||m_vm->frames()->paused())return;
+        if(expanded->isEmpty()||!m_vm->frames()->rolling())return;
         for(int row=0;row<m_vm->frames()->rowCount();++row){auto source=m_vm->frames()->index(row,0);if(expanded->contains(source.data(Qt::UserRole+2).toString()))m_table->setExpanded(proxy->mapFromSource(source),true);}
     });
     auto historyLayout=new QHBoxLayout;historyLayout->setSpacing(4);historyLayout->addWidget(historyScroll);historyLayout->addWidget(m_table,1);frameLayout->addLayout(historyLayout,1);
@@ -418,6 +423,22 @@ void ChannelPage::render() {
     m_protocol->setEnabled(!m_vm->busy());
     m_images->setEnabled(!m_vm->busy());m_flashPath->setEnabled(s.flashRequired);m_browseFlash->setEnabled(s.flashRequired);
     m_flashInfo->setEnabled(s.flashRequired);
+    m_connectButton->setText(m_vm->connected()?"断开":"连接");
+    m_connectButton->setEnabled(!m_vm->pending()&&(m_vm->connected()?!m_vm->otherTaskBusy():m_vm->canConnect()));
+    if(m_tasks&&m_tasks->count()>2){
+        QString signalTitle="信号发送";
+        if(s.bus==communication::Bus::Can){
+            const auto dir=m_vm->signalTransmission()->working().canDirection;
+            if(dir=="Rx")signalTitle="信号接收";
+            else if(dir=="TxRx"||dir=="All"||dir=="Tx/Rx")signalTitle="信号收发";
+            else signalTitle="信号发送";
+        }else{
+            signalTitle=(m_vm->signalTransmission()->working().role==signal::LinRole::Monitor)?"信号接收":"信号发送";
+        }
+        m_tasks->setTabText(2,Language::text(signalTitle));
+    }
+    m_flashAddress->setEnabled(!m_vm->busy()&&s.flashRequired);
+    m_appAddress->setEnabled(!m_vm->busy());
     m_start->setText(s.simulation?"开始模拟下载":"开始下载");m_start->setEnabled(m_vm->canStart());
     const auto hint=m_vm->startHint();
     m_start->setToolTip(hint);m_cancel->setEnabled(m_vm->taskState()==TaskState::Running || m_vm->scanning());

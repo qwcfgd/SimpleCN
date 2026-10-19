@@ -53,6 +53,6 @@ public:
     // Deterministic, explicitly simulated values; never used to fill a user's request.
     static QByteArray simulationResponse(const Service &,const QByteArray &,QMap<int,QByteArray> &);
 };
-struct Request { Service service; QByteArray bytes; };
+struct Request { Service service; QByteArray bytes; bool raw=false; };
 }
 Q_DECLARE_METATYPE(host::diag::Request)

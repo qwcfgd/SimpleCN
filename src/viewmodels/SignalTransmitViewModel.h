@@ -38,7 +38,8 @@ public:
     bool editPayload(const QString&,const QString&,QString&error);
     bool setFrameEnabled(const QString&,bool,QString&error);
     bool setCanOptions(const QString&,bool enabled,int period,QString&error);
-    bool putCustom(const QString &oldKey,const QString &name,quint32 id,int length,int cycle,QString&error);
+    bool putCustom(const QString &oldKey,const QString &name,quint32 id,int length,int cycle,QString&error,bool allowSameId=false);
+    bool duplicateFrame(const QString &sourceKey,QString&error);
     bool removeCustom(const QString&,QString&error);
     bool setRole(signal::LinRole,const QString&,QString&error);
     bool selectSchedule(const QString&,QString&error);
@@ -55,7 +56,7 @@ public:
     void importReplay(const QString&);void resetReplay();void setReplayMapping(const QJsonObject&);
     bool startReplayPlan(signal::TxPlan,QString&);
     std::function<QStringList(signal::Bus)> replayTargets;
-    bool changeId(const QString&,quint32,QString&);
+    bool changeId(const QString&,quint32,QString&,bool allowSameId=false);
     bool createSchedule(QString&);
     bool setLinDelay(int,const QString&,QString&);
     void setRepeatCount(int);

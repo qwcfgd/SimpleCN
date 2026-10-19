@@ -175,7 +175,7 @@ private slots:
         }
         FlashProfile p;p.keyLibrary="missing.dll";
         auto external=makeDownloadKeyProvider(p,false);
-        QVERIFY(external->calculate(1,seed,error).isEmpty());QVERIFY(error.contains("16-byte"));
+        QVERIFY(external->calculate(1,seed,error).isEmpty());QVERIFY(!error.isEmpty());
         QCOMPARE(p.keyProvider,QString("external-generatekeyex"));
         auto simulation=makeDownloadKeyProvider(p,true);error.clear();
         QCOMPARE(simulation->calculate(0x11,hex("12345678"),error),hex("a680e2cc"));
@@ -192,15 +192,18 @@ private slots:
         QVERIFY(error.contains("LoadLibrary"));
     }
 #endif
-    void onlineCanStillRequiresTargetIntegration(){
+    void onlineCanPermitsDownloadWhenConnected(){
         auto settings=ChannelSettings::defaults(communication::Bus::Can);
-        settings.applicationPath=temp.filePath("online-preflight.bin");settings.flashPath=settings.applicationPath;
+        const auto bin=temp.filePath("online-preflight.bin");
+        QFile f(bin);QVERIFY(f.open(QIODevice::WriteOnly));f.write(QByteArray(64,1));f.close();
+        settings.applicationPath=bin;settings.flashPath=bin;
         ChannelViewModel vm(settings);ChannelPage page(&vm);auto model=vm.findChild<ChannelModel*>();
         QSignalSpy ready(model,&ChannelModel::ready);QTRY_VERIFY(!ready.isEmpty());
         model->stateChanged(communication::ConnectionState::Connected,{});
         model->healthChanged(communication::Health::Ready,{});
-        QVERIFY(!vm.canStart());QVERIFY(!page.findChild<QPushButton*>("startButton")->isEnabled());
-        QVERIFY(page.findChild<QLabel*>("downloadStartHint")->text().contains("真实 CAN"));
+        QVERIFY(vm.canStart());
+        QVERIFY(page.findChild<QPushButton*>("startButton")->isEnabled());
+        QVERIFY(page.findChild<QLabel*>("downloadStartHint")->isHidden());
     }
     void appAndBootWireSequence_data(){
         QTest::addColumn<QString>("flow");QTest::addColumn<bool>("checked");
@@ -291,7 +294,7 @@ private slots:
 
     void seedkeyRejectsInvalidInputs(){
         PluginKey key("missing-provider.dll");QString error;
-        QVERIFY(key.calculate(1,hex("12345678"),error).isEmpty());QVERIFY(error.contains("16-byte"));
+        QVERIFY(key.calculate(1,QByteArray(),error).isEmpty());QVERIFY(!error.isEmpty());
     }
     void defaultsAndDownloadDialog(){
         auto defaults=ChannelSettings::defaults(communication::Bus::Lin);QString error;

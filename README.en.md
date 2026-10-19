@@ -6,16 +6,23 @@
 
 [简体中文](README.md) · English · [GitHub: SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.44-2563eb)
+![Version](https://img.shields.io/badge/version-1.45-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 Developed with assistance from OpenAI Codex.
 
-[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.44 release notes (Chinese)](docs/Release-1.44.md)
+[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.45 release notes (Chinese)](docs/Release-1.45.md)
 
 </div>
+
+## V1.45: CAN / LIN accent color differentiation and UI refinements
+
+- **CAN / LIN channel visual differentiation**: CAN channels use soft azure accent tones (`#E6EEF6` / `#2B6CB0`), while LIN channels use soft sage green tones (`#E7F2EB` / `#2D7A5A`). Channel tabs, task tabs, disabled backgrounds, table selections, and primary action buttons automatically match the active bus type with an elegant, non-glaring appearance.
+- **LIN signal page title synchronization**: Synchronized the LIN channel task tab title to "信号发送" (Signal Transmit), consistent with CAN channels.
+- **Empty tooltip elimination**: Hovering over pending messages without comments or diagnostics in the signal transmission table no longer triggers empty tooltip popups.
+- **MVVM compliance and test verification**: Verified strict MVVM boundary compliance and achieved 100% test pass rate across both Qt 5 and Qt 6 environments. See [V1.45 release notes (Chinese)](docs/Release-1.45.md).
 
 ## V1.44: download controls and bundled communication sources
 

@@ -34,7 +34,8 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
     for(const auto&f:next.database->frames){TxDraft d;if(!SignalCodec::initialize(f,bus,d,error))return false;work.frames[f.key]=d;keys.insert(f.key);names.insert(f.name);ids.insert(f.id);}
     for(const auto&value:root["custom"].toArray()){
         const auto o=value.toObject();bool ok=false;const auto id=o["id"].toString().toULongLong(&ok);const auto name=o["name"].toString();
-        const auto length=o["length"];const QString savedKey=o["key"].toString(frameKey(bus,quint32(id),id>0x7ff));const bool scoped=bus==Bus::Lin&&savedKey.startsWith(frameKey(bus,quint32(id))+"@");
+        const auto length=o["length"];const QString savedKey=o["key"].toString(frameKey(bus,quint32(id),id>0x7ff));
+        const bool scoped=(bus==Bus::Lin&&savedKey.startsWith(frameKey(bus,quint32(id))+"@"))||(bus==Bus::Can&&savedKey.startsWith(frameKey(bus,quint32(id),id>0x7ff)+"@"));
         if(!ok||id>(bus==Bus::Can?0x1fffffff:61)||!length.isDouble()||length.toDouble()!=length.toInt(-1)||length.toInt(-1)<0||length.toInt()>8||name.trimmed().isEmpty()||(!scoped&&(ids.contains(quint32(id))||names.contains(name)))||keys.contains(savedKey))return reject("自建帧 ID/名称重复或结构无效");
         FrameDefinition f;f.custom=true;f.id=quint32(id);f.extended=id>0x7ff;f.key=frameKey(bus,f.id,f.extended);f.name=name;f.length=length.toInt();f.publisher=o["publisher"].toString();f.classicChecksum=o["classicChecksum"].toBool(bus==Bus::Lin&&id>=60);if(bus==Bus::Lin&&(f.length<1||(id>=60&&(f.length!=8||!f.classicChecksum))))return reject("LIN 帧长度或校验无效");
         if(!o["source"].toString().isEmpty()){bool found=false;for(const auto &definition:next.database->frames)if(definition.key==o["source"].toString()&&definition.id==f.id){f=definition;found=true;break;}if(!found)return reject("调度帧的源定义不存在");}f.key=savedKey;

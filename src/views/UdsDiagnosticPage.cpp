@@ -63,7 +63,7 @@ UdsDiagnosticPage::UdsDiagnosticPage(ChannelViewModel *vm,QWidget *parent):QWidg
     connect(m_send,&QPushButton::clicked,this,[this]{
         if(m_vm->diagnosticBusy()){m_vm->cancel();return;}
         updateRequest();if(!m_error.isEmpty())return;QString error;
-        bool sent=m_vm->settings().udsRepeatEnabled?m_vm->repeatDiagnostic(sourceRow(),m_bytes,error):m_vm->sendDiagnostic(sourceRow(),m_bytes,error);
+        bool sent=m_vm->settings().udsRepeatEnabled?m_vm->repeatDiagnostic(sourceRow(),m_bytes,error,m_custom):m_vm->sendDiagnostic(sourceRow(),m_bytes,error,m_custom);
         if(!sent)m_validation->setText(error);
     });
     connect(vm,&ChannelViewModel::diagnosticDatabaseChanged,this,&UdsDiagnosticPage::refreshDatabase);
@@ -117,8 +117,8 @@ void UdsDiagnosticPage::render(){
     m_parameters->setEnabled(idle&&!m_custom);m_request->setReadOnly(!idle);m_revert->setEnabled(idle&&m_custom);m_suppress->setEnabled(idle&&!m_custom);
     m_send->setText(m_vm->diagnosticBusy()?"取消发送":"发送");
     auto hint=m_vm->diagnosticHint();auto s=m_vm->diagnosticServices()->service(sourceRow());
-    m_send->setEnabled(m_vm->diagnosticBusy()||(m_error.isEmpty()&&!m_bytes.isEmpty()&&hint.isEmpty()&&s&&s->physical));m_copy->setEnabled(m_error.isEmpty()&&!m_bytes.isEmpty());
-    m_validation->setText(!m_error.isEmpty()?m_error:(!hint.isEmpty()?hint:QString("%1 字节 · %2").arg(m_bytes.size()).arg(m_vm->settings().simulation?"模拟响应仅用于功能验证":"物理寻址")));
+    m_send->setEnabled(m_vm->diagnosticBusy()||(m_error.isEmpty()&&!m_bytes.isEmpty()&&hint.isEmpty()&&(m_custom||(s&&(s->physical||s->functional)))));m_copy->setEnabled(m_error.isEmpty()&&!m_bytes.isEmpty());
+    m_validation->setText(!m_error.isEmpty()?m_error:(!hint.isEmpty()?hint:QString("%1 字节 · %2").arg(m_bytes.size()).arg(m_vm->settings().simulation?"模拟响应仅用于功能验证":(m_custom?"原始报文":(s&&s->functional?"功能寻址":"物理寻址")))));
     m_validation->setStyleSheet(m_error.isEmpty()?QString():"color:#A33A2B;");
     const auto response=Language::text(m_vm->diagnosticResult());if(m_response->toPlainText()!=response)m_response->setPlainText(response);
 }

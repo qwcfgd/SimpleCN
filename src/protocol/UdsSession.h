@@ -15,7 +15,7 @@ class UdsSession final : public QObject {
 public:
     using Reply=std::function<void(bool,const QByteArray &,const QString &)>;
     UdsSession(DiagnosticTransport &,SessionOptions,QObject *parent=nullptr);
-    bool request(QByteArray bytes,QByteArray expected,Reply reply,bool suppressed=false);
+    bool request(QByteArray bytes,QByteArray expected,Reply reply,bool suppressed=false,bool functional=false);
     void cancel();
     bool busy() const{return m_active||!m_queue.isEmpty();}
     int maximumPdu() const{return m_transport.maximumPdu();}
@@ -24,7 +24,7 @@ signals:
     void notice(QString);
     void activityChanged(bool);
 private:
-    struct Request {QByteArray bytes,expected;Reply reply;bool suppressed=false;};
+    struct Request {QByteArray bytes,expected;Reply reply;bool suppressed=false;bool functional=false;};
     void pump();
     void response(const QByteArray &);
     void finish(bool,const QByteArray &,const QString &);

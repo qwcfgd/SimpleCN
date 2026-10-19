@@ -6,18 +6,25 @@
 
 简体中文 · [English](README.en.md) · [GitHub：SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.44-2563eb)
+![Version](https://img.shields.io/badge/version-1.45-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 从数据库信号编辑，到报文监视、日志回放和图像观测，在同一工作台完成。由 OpenAI Codex 协助开发。
 
-[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.44 更新](docs/Release-1.44.md) · [许可说明](docs/Licensing.md)
+[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.45 更新](docs/Release-1.45.md) · [许可说明](docs/Licensing.md)
 
 </div>
 
-## V1.44：下载按钮与独立通信模块
+## V1.45：CAN / LIN 色系区分与界面交互优化
+ 
+- **CAN / LIN 通道视觉区分**：CAN 采用柔和雅致的天青色系（选显色 `#E6EEF6` / 强调色 `#2B6CB0`），LIN 采用鼠尾草绿色系（选显色 `#E7F2EB` / 强调色 `#2D7A5A`），通道左侧标签栏、任务标签选中与悬停、禁用状态背景底色、表格选中色与主按钮均自适应对应总线色彩，清晰易辨且柔和不刺眼。
+- **LIN 信号页面标题同步**：LIN 通道任务标签页名称统一为“信号发送”，与 CAN 保持一致。
+- **悬停空提示框消除**：信号发送待发报文列表在报文无注释、无错误及警告时，悬停不再弹出空提示框。
+- **架构规范与质量保证**：通过脚本和代码审查确保严格遵循 MVVM 架构规范，Qt 5 与 Qt 6 全套回归测试 100% 通过。详见 [1.45 更新说明](docs/Release-1.45.md)。
+ 
+ ## V1.44：下载按钮与独立通信模块
 
 - 连接和所需镜像就绪后，LIN 在线下载未配置 27 DLL 时默认将收到的 seed 原样作为 key 发送，无需桥接 EXE。已填写但无效的 DLL 路径仍显示红色“27 dll未加载”并阻止启动。
 - 下载设置第一行提供 27 DLL 路径及现代 Windows 文件选择按钮；任务窗格显示连接、镜像及运行依赖的具体提示。LIN / CAN 模拟下载使用模拟算法。

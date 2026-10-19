@@ -28,9 +28,10 @@ UdsSession::UdsSession(DiagnosticTransport &transport,SessionOptions options,QOb
     });
     if(options.testerPresentMs>0)m_keepalive.start(options.testerPresentMs);
 }
-bool UdsSession::request(QByteArray b,QByteArray expected,Reply reply,bool suppressed){
-    if(b.isEmpty()||b.size()>maximumPdu()||expected.isEmpty()||m_queue.size()>=32)return false;
-    m_queue.enqueue({std::move(b),std::move(expected),std::move(reply),suppressed});
+bool UdsSession::request(QByteArray b,QByteArray expected,Reply reply,bool suppressed,bool functional){
+    if(b.isEmpty()||b.size()>maximumPdu()||m_queue.size()>=32)return false;
+    if(expected.isEmpty())expected=QByteArray(1,char(quint8(b[0])+0x40));
+    m_queue.enqueue({std::move(b),std::move(expected),std::move(reply),suppressed,functional});
     emit activityChanged(true);
     const auto epoch=m_epoch;QTimer::singleShot(0,this,[this,epoch]{if(epoch==m_epoch)pump();});return true;
 }
@@ -38,7 +39,7 @@ void UdsSession::pump(){
     if(m_active||m_queue.isEmpty())return;
     m_current=m_queue.dequeue();m_active=true;m_sent=m_pending=false;m_limit.start(60000);
     emit trace(true,m_current.bytes);
-    QString error;if(!m_transport.send(m_current.bytes,error))finish(false,{},error);
+    QString error;if(!m_transport.send(m_current.bytes,error,m_current.functional))finish(false,{},error);
 }
 void UdsSession::response(const QByteArray &pdu){
     if(!m_active||!m_sent||pdu.isEmpty())return;

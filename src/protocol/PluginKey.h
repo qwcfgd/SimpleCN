@@ -14,8 +14,8 @@ public:
     explicit PluginKey(QString path):m_path(std::move(path)){}
     QByteArray calculate(quint8 level,const QByteArray &seed,QString &error) override {
         error.clear();
-        if(seed.isEmpty()||seed.size()>4093||seed.size()%16){
-            error="External GenerateKeyEx requires a non-empty seed of complete 16-byte blocks";return {};
+        if(seed.isEmpty()||seed.size()>4096){
+            error="External GenerateKeyEx requires a non-empty seed";return {};
         }
         const auto root=QCoreApplication::applicationDirPath();
         const QString dll=QDir::isRelativePath(m_path)?QDir(root).absoluteFilePath(m_path):m_path;
@@ -31,7 +31,7 @@ public:
         }
         const auto result=process.readAllStandardOutput().trimmed();
         const auto key=QByteArray::fromHex(result);
-        if(result.size()!=32||key.size()!=16||key.toHex()!=result.toLower()){error="Invalid key result from bridge";return {};}
+        if(result.isEmpty()||key.isEmpty()||key.toHex()!=result.toLower()){error="Invalid key result from bridge";return {};}
         return key;
     }
 private:QString m_path;

@@ -108,6 +108,7 @@ ChannelViewModel *MainWindow::addChannel(ChannelSettings settings,QString &error
     connect(signalVm,&SignalTransmitViewModel::replayRequested,this,[this,signalVm](bool periodic){m_replay.start(signalVm,periodic,m_channels);});
     connect(signalVm,&SignalTransmitViewModel::replayStopRequested,this,[this,signalVm]{if(m_replay.contains(signalVm))m_replay.stop();});
     auto page=new ChannelPage(vm);ui->channelTabs->addTab(page,statusIcon(0),settings.softwareId);
+    ui->channelTabs->tabBar()->setTabData(ui->channelTabs->count()-1,settings.bus==communication::Bus::Lin?"LIN":"CAN");
     connect(vm,&ChannelViewModel::changed,this,&MainWindow::updateChannels);
     ui->channelTabs->setCurrentWidget(page);updateChannels();return vm;
 }
@@ -123,6 +124,7 @@ void MainWindow::updateChannels() {
         ui->channelTabs->setTabText(i,vm->settings().softwareId);
         ui->channelTabs->setTabIcon(i,statusIcon(state));
         ui->channelTabs->setTabToolTip(i,state==1?"通讯正常":state==2?"通讯丢失":"未通讯");
+        ui->channelTabs->tabBar()->setTabData(i,vm->settings().bus==communication::Bus::Lin?"LIN":"CAN");
     }
 }
 void MainWindow::channelContextMenu(int index,const QPoint&position) {

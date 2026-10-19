@@ -217,13 +217,18 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
         });
     }else{
         boot::CanOptions options;options.txId=m_settings.requestId.toUInt(nullptr,16);
-        options.rxId=m_settings.responseId.toUInt(nullptr,16);options.extended=m_settings.extendedId;
+        options.rxId=m_settings.responseId.toUInt(nullptr,16);
+        if(!m_settings.functionalId.trimmed().isEmpty()){
+            bool ok=false;quint32 fid=m_settings.functionalId.trimmed().toUInt(&ok,16);
+            if(ok)options.functionalTxId=fid;
+        }
+        options.extended=m_settings.extendedId;
         if(!boot::CanOptions::fromJson(m_settings.canNetwork,options,error))return false;
         if(!m_settings.simulation){
-            if(!manual){error="真实 CAN 下载须完成目标适配与发送确认验证";return false;}
             if(!m_can||!m_can->enableEcho()){
                 error="当前 CAN 驱动未能开启发送回显，无法确认诊断请求已上总线";return false;
             }
+            if(!manual)emit logMessage("真实 CAN 下载：硬件回显与 ISO-TP 传输层已激活");
         }else m_canEcu.reset(new boot::SimulatedCanEcu(options,profile));
         m_canTransport.reset(new boot::CanTransport(options,[this](const boot::CanFrame &frame,quint64 token,QString &error){
             if(m_canEcu)return m_canEcu->writeFromHost(frame,token,error);
@@ -231,7 +236,9 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
             TPCANMsg message={};message.ID=frame.id;message.MSGTYPE=frame.extended?PCAN_MESSAGE_EXTENDED:PCAN_MESSAGE_STANDARD;
             message.LEN=BYTE(frame.data.size());for(int i=0;i<frame.data.size();++i)message.DATA[i]=BYTE(frame.data[i]);
             if(!m_can->sendRaw(message)){error=m_can->lastErrorText();return false;}
-            m_canEchoes.enqueue({m_canTransport.get(),token,frame});return true;
+            m_canEchoes.enqueue({m_canTransport.get(),token,frame});
+            QMetaObject::invokeMethod(this,&ChannelWorker::receive,Qt::QueuedConnection);
+            return true;
         }));
         if(m_canEcu){m_canEcu->attach(*m_canTransport);
             connect(m_canEcu.get(),&boot::SimulatedCanEcu::failed,m_canTransport.get(),&boot::CanTransport::linkFailed);
@@ -324,7 +331,7 @@ void ChannelWorker::sendDiagnostic(ChannelSettings settings,diag::Request reques
     auto reject=[this](const QString &error){emit diagnosticFinished(false,{},error);};
     QString error;
     if(!m_operations.permits(OperationCoordinator::Task::Diagnostic)||m_running||m_scanning||m_manualBusy||!m_session||m_session->state()!=ConnectionState::Connected){reject("通道未连接或正在执行操作");return;}
-    if(settings.bus!=m_settings.bus||settings.simulation!=m_settings.simulation||!diag::Codec::validate(request.service,request.bytes,error)){reject(error.isEmpty()?"通道设置已变化":error);return;}
+    if(settings.bus!=m_settings.bus||settings.simulation!=m_settings.simulation||(!request.raw&&!diag::Codec::validate(request.service,request.bytes,error))){reject(error.isEmpty()?"通道设置已变化":error);return;}
     m_settings=settings;
     if(!m_manualMode){
         clearProtocol();boot::FlashProfile profile;
@@ -333,10 +340,12 @@ void ChannelWorker::sendDiagnostic(ChannelSettings settings,diag::Request reques
     if(!m_uds){reject("UDS 会话不可用");return;}
     m_manualRequest=std::move(request);m_manualBusy=true;
     bool suppressed=false;for(const auto &f:m_manualRequest.service.request.fields)if(f.suppressible&&m_manualRequest.bytes.size()>1&&(quint8(m_manualRequest.bytes[1])&0x80))suppressed=true;
-    if(!m_uds->request(m_manualRequest.bytes,diag::Codec::expected(m_manualRequest.service,m_manualRequest.bytes),
+    bool functional=!m_manualRequest.service.physical&&m_manualRequest.service.functional;
+    QByteArray expected=(m_manualRequest.raw||m_manualRequest.service.sid<0)?(m_manualRequest.bytes.isEmpty()?QByteArray{}:QByteArray(1,char(quint8(m_manualRequest.bytes[0])+0x40))):diag::Codec::expected(m_manualRequest.service,m_manualRequest.bytes);
+    if(!m_uds->request(m_manualRequest.bytes,expected,
         [this](bool ok,const QByteArray &pdu,const QString &why){
             m_manualBusy=false;emit diagnosticFinished(ok,pdu,why.isEmpty()?(pdu.isEmpty()?"抑制正响应请求已完成":"收到正响应"):why);
-        },suppressed)){
+        },suppressed,functional)){
         m_manualBusy=false;reject("UDS 请求队列拒绝请求");
     }
 }
@@ -434,6 +443,9 @@ void ChannelWorker::receive() {
     }
     if(!batch.isEmpty())publishFrames(batch);
     if(!events.isEmpty()){if(m_signal)m_signal->observe(events);emit busEvents(events);}
+    if(!m_canEchoes.isEmpty()||!m_receiveDrained){
+        QMetaObject::invokeMethod(this,&ChannelWorker::receive,Qt::QueuedConnection);
+    }
 }
 void ChannelWorker::startHeaderScan() {
     QString detail;const auto health=m_lin?m_lin->hardwareHealth(&detail):Health::Removed;

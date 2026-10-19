@@ -256,6 +256,116 @@ private slots:
     void settingsVersion3RestoresStopped(){ChannelViewModel vm(settings());QString error;QVERIFY(vm.signalTransmission()->importFile(fixture(),error));QVERIFY(vm.signalTransmission()->setCanOptions(key(),true,1,error));QTemporaryDir dir;SettingsStore store(dir.filePath("channels.json"));QVERIFY(store.save({vm.snapshotSettings()},error));QVector<ChannelSettings>loaded;QVERIFY(store.load(loaded,error));QCOMPARE(loaded.size(),1);ChannelViewModel restored(loaded[0]);QTRY_COMPARE(restored.signalTransmission()->definitions().size(),5);QVERIFY(restored.signalTransmission()->working().frames[key()].enabled);QVERIFY(!restored.signalTransmission()->running());
         auto legacy=loaded[0].toJson();legacy.remove("signalConfiguration");ChannelSettings parsed;QVERIFY(ChannelSettings::fromJson(legacy,parsed,error));QVERIFY(parsed.signalConfiguration.isEmpty());
     }
+    void editSignalDuringTransmissionNotOverwrittenByRx(){
+        SignalTransmitViewModel vm(Bus::Can);QString error;
+        QVERIFY(vm.importFile(fixture(),error));
+        QVERIFY(vm.selectCanNode("Tester","Tx",error));
+        const auto frameKeyName=key(291);
+        QVERIFY(vm.setCanOptions(frameKeyName,true,10,error));
+        vm.setAvailability(true,false,500000,1);
+        QVERIFY(vm.start(true,error));
+        QVERIFY(vm.running());
+        
+        SignalValueTableModel model(&vm);
+        model.setFrame(frameKeyName);
+        QVERIFY(model.rowCount()>0);
+        
+        QVERIFY(vm.editSignal(frameKeyName,0,"7",false,error));
+        QCOMPARE(model.index(0,2).data().toString(),QString("7"));
+        
+        BusFrameEvent rxEvent;
+        rxEvent.bus=Bus::Can;rxEvent.id=291;rxEvent.extended=false;
+        rxEvent.bytes=QByteArray::fromHex("0100000000000000");
+        rxEvent.valid=true;rxEvent.source=EventSource::Received;
+        rxEvent.arrivalUs=1000000;
+        vm.receive({rxEvent});
+        
+        QCOMPARE(model.index(0,2).data().toString(),QString("7"));
+        QCOMPARE(vm.working().frames.value(frameKeyName).values.value(0).bits,quint64(7));
+        
+        vm.stop();
+    }
+    void duplicateSameIdFramesTransmitIndependently(){
+        SignalTransmitViewModel vm(Bus::Can);QString error;
+        QVERIFY(vm.importFile(fixture(),error));
+        QVERIFY(vm.selectCanNode("Tester","Tx",error));
+        const auto origKey=key(291);
+        QVERIFY(vm.working().frames.contains(origKey));
+        
+        const int initial291Count = [&]{
+            int c=0;
+            for(const auto&f:vm.queuedDefinitions())if(f.id==291)++c;
+            return c;
+        }();
+        QVERIFY(initial291Count > 0);
+        
+        QVERIFY(vm.duplicateFrame(origKey,error));
+        QVERIFY(vm.putCustom({},"Custom291",291,8,50,error,true));
+        
+        const auto queued=vm.queuedDefinitions();
+        QVector<FrameDefinition> id291Frames;
+        for(const auto&f:queued)if(f.id==291)id291Frames.append(f);
+        QCOMPARE(id291Frames.size(), initial291Count + 2);
+        
+        QSet<QString> keys;
+        for(const auto&f:id291Frames)keys.insert(f.key);
+        QCOMPARE(keys.size(), id291Frames.size());
+        
+        const auto key1=id291Frames[0].key;
+        const auto key2=id291Frames[1].key;
+        const auto key3=id291Frames[2].key;
+        QVERIFY(vm.editPayload(key1,"11 11 11 11 11 11 11 11",error));
+        QVERIFY(vm.editPayload(key2,"22 22 22 22 22 22 22 22",error));
+        QVERIFY(vm.editPayload(key3,"33 33 33 33 33 33 33 33",error));
+        
+        QCOMPARE(vm.working().frames[key1].applied.bytes,QByteArray::fromHex("1111111111111111"));
+        QCOMPARE(vm.working().frames[key2].applied.bytes,QByteArray::fromHex("2222222222222222"));
+        QCOMPARE(vm.working().frames[key3].applied.bytes,QByteArray::fromHex("3333333333333333"));
+        
+        vm.setAvailability(true,false,500000,1);
+        QSignalSpy starts(&vm,&SignalTransmitViewModel::startRequested);
+        QVERIFY(vm.start(true,error));
+        QCOMPARE(starts.count(),1);
+        const auto plan=qvariant_cast<TxPlan>(starts.first().first());
+        int count291=0;
+        for(const auto&item:plan.items){
+            if(item.id==291){
+                ++count291;
+                if(item.key==key1)QCOMPARE(item.payload,QByteArray::fromHex("1111111111111111"));
+                else if(item.key==key2)QCOMPARE(item.payload,QByteArray::fromHex("2222222222222222"));
+                else if(item.key==key3)QCOMPARE(item.payload,QByteArray::fromHex("3333333333333333"));
+            }
+        }
+        QCOMPARE(count291, id291Frames.size());
+        vm.stop();
+    }
+    void pendingTableTooltipOmittedWhenEmpty(){
+        SignalTransmitViewModel vm(Bus::Can);QString error;
+        QVERIFY(vm.importFile(fixture(),error));
+        QVERIFY(vm.selectCanNode("Tester","Tx",error));
+        CanTxTableModel canModel(&vm);
+        QVERIFY(canModel.rowCount()>1);
+        // Frame with comment displays the comment
+        QCOMPARE(canModel.data(canModel.index(0,0),Qt::ToolTipRole).toString(),QString("SYNTHETIC: verifies bit layout, decimal truncation and initialization"));
+        // Frame without comment, issue, or error returns null QVariant()
+        QVERIFY(!canModel.data(canModel.index(1,0),Qt::ToolTipRole).isValid());
+
+        SignalTransmitViewModel linVm(Bus::Lin);
+        QVERIFY(linVm.importFile(fixture("ldf"),error));
+        LinScheduleTableModel linModel(&linVm);
+        QVERIFY(linModel.rowCount()>0);
+        // Clean LIN slot definition without issue/error returns null QVariant()
+        QVERIFY(!linModel.data(linModel.index(0,0),Qt::ToolTipRole).isValid());
+    }
+    void linPageSignalTabTitleSynchronizedToTransmit(){
+        ChannelViewModel linVm(settings(true));
+        ChannelPage page(&linVm);
+        auto* tabs=page.findChild<QTabWidget*>("taskPages");
+        QVERIFY(tabs);
+        QCOMPARE(tabs->count(),3);
+        // LIN channel signal transmit page title is synchronized to "信号发送"
+        QCOMPARE(tabs->tabText(2),QString("信号发送"));
+    }
 };
 QTEST_MAIN(SignalUiTest)
 #include "test_signal_ui.moc"

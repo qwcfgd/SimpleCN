@@ -61,14 +61,14 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent):
     connect(m_model,&ChannelModel::diagnosticActivity,this,[this](bool active){m_protocolBusy=active;emit changed();});
     connect(m_model,&ChannelModel::diagnosticFinished,this,[this](bool ok,QByteArray response,QString detail){
         m_diagnosticBusy=false;
-        if(ok&&!response.isEmpty()&&m_lastDiagnostic.service.response.issue.isEmpty()){
+        if(ok&&!m_lastDiagnostic.raw&&!response.isEmpty()&&m_lastDiagnostic.service.response.issue.isEmpty()){
             diag::Values values;QString error;
             if(!diag::Codec::decode(m_lastDiagnostic.service.response,response,values,error)){ok=false;detail="正响应不符合 CDD 定义："+error;}
         }
         m_diagnosticResult=QString("%1\nTX  %2\nRX  %3\n%4\n%5")
             .arg(ok?"请求完成":"请求失败",QString::fromLatin1(m_lastDiagnostic.bytes.toHex(' ')).toUpper(),
                  QString::fromLatin1(response.toHex(' ')).toUpper(),detail,
-                 response.isEmpty()?QString():diag::Codec::describeResponse(m_lastDiagnostic.service,response));
+                 response.isEmpty()?QString():(m_lastDiagnostic.raw?(response.startsWith(char(0x7f))?diag::Codec::describeResponse(m_lastDiagnostic.service,response):QString("收到响应")):diag::Codec::describeResponse(m_lastDiagnostic.service,response)));
         if(m_repeatActive){
             ++m_repeatCompleted;
             m_diagnosticResult.prepend(QString("自动重发 · 第 %1/%2 次发送\n").arg(m_repeatCompleted).arg(m_repeatTotal));
@@ -144,7 +144,6 @@ QString ChannelViewModel::downloadInputHint() const {
     SoftwareChannelConfiguration c;QString error;if(!m_settings.toConfiguration(c,error))return error;
     if(!connected())return "请先连接软件通道";
     if(!m_settings.simulation){
-        if(m_settings.bus!=Bus::Lin)return "真实 CAN 下载尚未完成适配；当前支持 PLIN / LIN 真实下载";
         if(m_health!=Health::Ready&&m_health!=Health::Sleeping)return "硬件通道状态异常";
     }
     if(!imageReady(m_settings.applicationPath))return "请选择有效的 Application 镜像";
@@ -275,17 +274,24 @@ bool ChannelViewModel::applyDiagnosticConfiguration(const diag::Database &db,con
     if(!db.warnings.isEmpty())m_diagnosticResult+='\n'+db.warnings.join('\n');
     emit diagnosticDatabaseChanged();emit changed();error.clear();return true;
 }
-bool ChannelViewModel::sendDiagnostic(int row,const QByteArray &bytes,QString &error){
+bool ChannelViewModel::sendDiagnostic(int row,const QByteArray &bytes,QString &error,bool raw){
     error=diagnosticHint();if(!error.isEmpty())return false;
-    auto service=m_services.service(row);if(!service){error="请选择 CDD 服务";return false;}
-    if(!service->physical){error="此服务仅支持功能寻址；请使用支持物理寻址的服务";return false;}
-    if(!diag::Codec::validate(*service,bytes,error))return false;
+    auto service=m_services.service(row);
+    if(!raw){
+        if(!service){error="请选择 CDD 服务";return false;}
+        if(!service->physical && !service->functional){error="此服务不支持物理或功能寻址";return false;}
+        if(!diag::Codec::validate(*service,bytes,error))return false;
+    }
     if(m_settings.bus==communication::Bus::Can&&bytes.size()>m_settings.canNetwork.value("receiveCapacity").toInt(4095)){error="请求超过配置的最大 PDU 字节数";return false;}
-    m_lastDiagnostic={*service,bytes};m_diagnosticSettings=m_settings;m_diagnosticBusy=true;m_diagnosticResult="正在等待 ECU 响应…";
+    diag::Service chosen;
+    if(service) chosen=*service;
+    else { chosen.name="RAW"; chosen.sid=bytes.isEmpty()?-1:quint8(bytes[0]); chosen.physical=true; }
+    m_lastDiagnostic={chosen,bytes,raw};
+    m_diagnosticSettings=m_settings;m_diagnosticBusy=true;m_diagnosticResult="正在等待 ECU 响应…";
     m_model->diagnosticRequested(m_diagnosticSettings,m_lastDiagnostic);emit changed();return true;
 }
-bool ChannelViewModel::repeatDiagnostic(int row,const QByteArray &bytes,QString &error){
-    if(!sendDiagnostic(row,bytes,error))return false;
+bool ChannelViewModel::repeatDiagnostic(int row,const QByteArray &bytes,QString &error,bool raw){
+    if(!sendDiagnostic(row,bytes,error,raw))return false;
     m_repeatActive=true;m_repeatRemaining=m_settings.udsRepeatCount;
     m_repeatCompleted=0;m_repeatTotal=m_settings.udsRepeatCount+1;emit changed();return true;
 }

@@ -7,7 +7,7 @@ int CanTransport::separationUs(int value){
 }
 bool CanOptions::valid(QString &error) const {
     const quint32 max=extended?0x1fffffff:0x7ff;
-    if(txId>max||rxId>max||txId==rxId||blockSize<0||blockSize>255||CanTransport::separationUs(stMin)<0||
+    if(txId>max||rxId>max||functionalTxId>max||txId==rxId||blockSize<0||blockSize>255||CanTransport::separationUs(stMin)<0||
        maxWaitFrames<0||maxWaitFrames>255||nAsMs<1||nAsMs>60000||nBsMs<1||nBsMs>60000||
        nCrMs<1||nCrMs>60000||nArMs<0||nArMs>60000||receiveCapacity<8||receiveCapacity>4095||padding<0||padding>255){
         error="Invalid Classic CAN ISO-TP configuration";return false;
@@ -15,7 +15,7 @@ bool CanOptions::valid(QString &error) const {
     error.clear();return true;
 }
 QJsonObject CanOptions::toJson() const{
-    return {{"blockSize",blockSize},{"stMin",stMin},{"maxWaitFrames",maxWaitFrames},{"nAsMs",nAsMs},
+    return {{"txId",int(txId)},{"rxId",int(rxId)},{"functionalTxId",int(functionalTxId)},{"blockSize",blockSize},{"stMin",stMin},{"maxWaitFrames",maxWaitFrames},{"nAsMs",nAsMs},
       {"nBsMs",nBsMs},{"nCrMs",nCrMs},{"nArMs",nArMs},{"receiveCapacity",receiveCapacity},{"padding",padding}};
 }
 bool CanOptions::fromJson(const QJsonObject &json,CanOptions &out,QString &error){
@@ -35,6 +35,7 @@ bool CanOptions::fromJson(const QJsonObject &json,CanOptions &out,QString &error
     options.nCrMs=json.value("nCrMs").toInt(options.nCrMs);
     options.receiveCapacity=json.value("receiveCapacity").toInt(options.receiveCapacity);
     options.padding=json.value("padding").toInt(options.padding);
+    if(json.contains("functionalTxId"))options.functionalTxId=quint32(json.value("functionalTxId").toInt(int(options.functionalTxId)));
     if(!options.valid(error))return false;out=options;return true;
 }
 CanTransport::CanTransport(CanOptions options,Write write,QObject *parent)
@@ -46,11 +47,14 @@ CanTransport::CanTransport(CanOptions options,Write write,QObject *parent)
     connect(&m_cf,&QTimer::timeout,this,&CanTransport::sendCf);
 }
 bool CanTransport::send(const QByteArray &pdu,QString &error){
+    return send(pdu,error,false);
+}
+bool CanTransport::send(const QByteArray &pdu,QString &error,bool functional){
     if(!m_options.valid(error))return false;
     if(busy()){error="CAN ISO-TP busy";return false;}
     if(pdu.isEmpty()||pdu.size()>maximumPdu()){error="Classic CAN PDU length must be 1..4095";return false;}
     m_listening=true;m_tx=pdu;m_txState=FramePending;m_txOffset=0;m_txSequence=1;m_waitFrames=0;
-    m_peerStUs=0;m_lastCf.invalidate();m_earlyFc.clear();
+    m_peerStUs=0;m_lastCf.invalidate();m_earlyFc.clear();m_txFunctional=functional;
     QByteArray frame;
     if(pdu.size()<=7){frame=QByteArray(1,char(pdu.size()))+pdu;submit(frame,Single);}
     else {frame=QByteArray(1,char(0x10|(pdu.size()>>8)))+char(pdu.size())+pdu.left(6);m_txOffset=6;submit(frame,First);}
@@ -59,13 +63,13 @@ bool CanTransport::send(const QByteArray &pdu,QString &error){
 void CanTransport::cancel(){
     ++m_epoch;m_listening=false;m_as.stop();m_bs.stop();m_cr.stop();m_cf.stop();
     m_tx.clear();m_rx.clear();m_earlyFc.clear();m_rxLength=0;m_pending=None;m_txState=Idle;
-    m_token=0;m_lastCf.invalidate();emit cancelled();
+    m_token=0;m_lastCf.invalidate();m_txFunctional=false;emit cancelled();
 }
 void CanTransport::fail(const QString &error){cancel();emit failed(error);}
 void CanTransport::submit(QByteArray bytes,Kind kind){
     if(m_pending!=None){fail("CAN adapter already has an outstanding frame");return;}
     while(bytes.size()<8)bytes.append(char(m_options.padding));
-    const CanFrame frame{m_options.txId,m_options.extended,false,false,false,bytes};
+    const CanFrame frame{m_txFunctional?m_options.functionalTxId:m_options.txId,m_options.extended,false,false,false,bytes};
     m_pending=kind;m_token=++m_serial;const auto token=m_token,epoch=m_epoch;
     m_as.start((kind==FlowControl||kind==Overflow)&&m_options.nArMs>0?m_options.nArMs:m_options.nAsMs);
     // Always return from send() before publishing frames or completing a PDU.
@@ -126,7 +130,8 @@ void CanTransport::sendFc(bool overflow){
     submit(QByteArray(1,char(overflow?0x32:0x30))+char(m_options.blockSize)+char(m_options.stMin),overflow?Overflow:FlowControl);
 }
 void CanTransport::receiveFrame(const CanFrame &frame){
-    if(!m_listening||frame.id!=m_options.rxId||frame.extended!=m_options.extended||frame.rtr||frame.fd)return;
+    const bool idMatch=(frame.id==m_options.rxId)||(m_options.functionalRx&&frame.id==m_options.functionalTxId);
+    if(!m_listening||!idMatch||frame.extended!=m_options.extended||frame.rtr||frame.fd)return;
     if(frame.error){fail("CAN receive error");return;}
     const auto &bytes=frame.data;
     if(bytes.isEmpty()||bytes.size()>8){fail("Invalid Classic CAN DLC");return;}
@@ -142,7 +147,14 @@ void CanTransport::receiveFrame(const CanFrame &frame){
         if(m_txState!=Idle)fail("Unexpected CAN flow control");
         return;
     }
-    if(m_txState!=Idle){fail("CAN response arrived before request transmission completed");return;}
+    if(m_txState!=Idle){
+        const bool lastTxFrame=(m_pending==Single)||(m_pending==Consecutive&&m_txOffset+m_pendingCount>=m_tx.size());
+        if(lastTxFrame&&(kind==0||kind==1)){
+            confirmTransmitted(m_token,true);
+        }else{
+            fail("CAN response arrived before request transmission completed");return;
+        }
+    }
     if(kind==0){
         const int size=pci&15;
         if(m_rxLength||size<1||size>7||bytes.size()<size+1){fail("Invalid CAN single frame");return;}

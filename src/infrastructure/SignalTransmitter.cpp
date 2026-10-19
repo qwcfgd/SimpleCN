@@ -53,7 +53,12 @@ void SignalTransmitter::start(const TxPlan&plan,int bitrate,bool simulation,CanH
             (plan.bus==Bus::Can&&!i.extended&&i.id>0x7ff)||(plan.bus==Bus::Lin&&(i.payload.isEmpty()||(i.id>=60&&(i.payload.size()!=8||!i.classicChecksum))))||
             (plan.bus==Bus::Can&&plan.periodic&&i.enabled&&i.periodMs<1)){fail("发送计划未通过 worker 校验");return;}
         keys.insert(i.key);linIds.insert(i.id);FrameDefinition f;f.key=i.key;f.id=i.id;f.length=i.payload.size();definitions.append(f);}
-    if(plan.bus==Bus::Can&&plan.items.isEmpty()){fail("发送计划为空");return;}
+    if(plan.bus==Bus::Can&&plan.items.isEmpty()){
+        if(!simulation&&!can){fail("CAN 驱动不可用");return;}
+        m_status.state=RunState::Running;
+        m_status.detail=simulation?"SIM CAN 接收中":"CAN 接收中";
+        emit statusChanged(m_status);m_timer.start();return;
+    }
     if(plan.bus==Bus::Lin){
         if(!simulation&&!lin){fail("LIN 驱动不可用");return;}
         if(!simulation)m_device=std::make_unique<HardwareLinSignalDevice>(*lin);m_lin=std::make_unique<LinScheduleRunner>(m_device.get());
@@ -70,7 +75,10 @@ bool SignalTransmitter::send(const TxItem&i,QString&error){
 }
 void SignalTransmitter::tick(){if(!running())return;const auto now=captureTimeUs();QString error;if(m_plan.replay){replayTick(now);return;}
     if(m_lin){if(!m_lin->tick(now,error)){fail(error);return;}const auto previous=m_status.state;m_status=m_lin->status();if(previous!=m_status.state)emit statusChanged(m_status);if(!running()){m_timer.stop();flush();return;}}
-    else if(m_plan.periodic){m_scheduler.pump(now,[this](const auto&i,QString&e){return send(i,e);});const auto stats=m_scheduler.statistics();
+    else if(m_plan.bus==Bus::Can&&m_plan.items.isEmpty()){
+        if(now-m_lastFlush>=20000)flush();
+        return;
+    }else if(m_plan.periodic){m_scheduler.pump(now,[this](const auto&i,QString&e){return send(i,e);});const auto stats=m_scheduler.statistics();
         m_status.sent=stats.sent;m_status.missed=stats.missed;m_status.failures=stats.failures;
         if(!m_scheduler.running()){fail("全部 CAN 周期发送项已停止：驱动写入失败");return;}
     }else{int budget=256;bool pending=false;
