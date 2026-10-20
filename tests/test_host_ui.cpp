@@ -526,6 +526,8 @@ private slots:
         auto page=window.findChild<ChannelPage*>("linPage");
         window.setAttribute(Qt::WA_DontShowOnScreen);window.show();QTRY_VERIFY(vm->canConnect());
         QVERIFY(!page->findChild<QLineEdit*>("requestId"));QVERIFY(!page->findChild<QLineEdit*>("uds_p2Ms"));
+        QVERIFY(!page->findChild<QPushButton*>("downloadParameters"));
+        QVERIFY(!window.findChild<ChannelPage*>("canPage")->findChild<QPushButton*>("downloadParameters"));
         QTimer::singleShot(30,&window,[&](){
             auto dialog=page->findChild<QDialog*>("udsSettingsDialog");QVERIFY(dialog);
             auto enable=dialog->findChild<QCheckBox*>("uds_testerPresentEnabled");auto period=dialog->findChild<QLineEdit*>("uds_testerPresentMs");
@@ -533,7 +535,7 @@ private slots:
             period->setText("1700");dialog->findChild<QLineEdit*>("uds_p2Ms")->setText("789");
             QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok),Qt::LeftButton);
         });
-        QTest::mouseClick(page->findChild<QPushButton*>("downloadParameters"),Qt::LeftButton);
+        QTest::mouseClick(page->findChild<QPushButton*>("udsSettings"),Qt::LeftButton);
         QVERIFY(vm->settings().testerPresentEnabled);QCOMPARE(vm->settings().testerPresentMs,1700);QCOMPARE(vm->settings().p2Ms,789);
         QCOMPARE(window.canChannel()->settings().p2Ms,1000);
         QTimer::singleShot(30,&window,[&](){
@@ -541,7 +543,7 @@ private slots:
             dialog->findChild<QCheckBox*>("uds_testerPresentEnabled")->setChecked(false);
             dialog->findChild<QLineEdit*>("uds_p2Ms")->setText("1");dialog->reject();
         });
-        QTest::mouseClick(page->findChild<QPushButton*>("downloadParameters"),Qt::LeftButton);
+        QTest::mouseClick(page->findChild<QPushButton*>("udsSettings"),Qt::LeftButton);
         QVERIFY(vm->settings().testerPresentEnabled);QCOMPARE(vm->settings().p2Ms,789);
         auto disabled=vm->settings();disabled.testerPresentEnabled=false;QVERIFY(vm->setSettings(disabled));
         communication::SoftwareChannelConfiguration cfg;QVERIFY(disabled.toConfiguration(cfg,error));QCOMPARE(cfg.uds.testerPresentMs,0);QCOMPARE(disabled.testerPresentMs,1700);

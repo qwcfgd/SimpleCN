@@ -2,7 +2,6 @@
 #include "localization/Language.h"
 #include "SignalTransmitPage.h"
 #include "UdsDiagnosticPage.h"
-#include "UdsSettingsDialog.h"
 #include <QTabWidget>
 #include <QTabBar>
 #include <QBoxLayout>
@@ -85,9 +84,7 @@ void ChannelPage::build() {
     auto status=new QHBoxLayout;
     m_hardwareSummary=label("");m_hardwareSummary->setObjectName("hardwareSummary");m_hardwareSummary->setWordWrap(true);status->addWidget(m_hardwareSummary,1);
     m_connectionStatus=label("");m_connectionStatus->setObjectName("connectionState");m_connectionStatus->setAlignment(Qt::AlignRight|Qt::AlignVCenter);status->addWidget(m_connectionStatus);
-    m_protocol=new QPushButton("参数配置…");m_protocol->setObjectName("downloadParameters");
     m_connectButton=new QPushButton("连接");m_connectButton->setObjectName("channelConnectButton");
-    status->addWidget(m_protocol);
     status->addWidget(m_connectButton);
     hardwareLayout->addLayout(status);
     connect(m_connectButton,&QPushButton::clicked,m_vm,&ChannelViewModel::toggleConnection);
@@ -236,7 +233,6 @@ void ChannelPage::build() {
     connect(m_start,&QPushButton::clicked,m_vm,&ChannelViewModel::start);
     connect(m_cancel,&QPushButton::clicked,m_vm,&ChannelViewModel::cancel);
     connect(m_scan,&QPushButton::clicked,m_vm,&ChannelViewModel::scanHeaders);
-    connect(m_protocol,&QPushButton::clicked,this,&ChannelPage::editProtocol);
     connect(filter,&QLineEdit::textChanged,proxy,&QSortFilterProxyModel::setFilterFixedString);
     connect(clear,&QPushButton::clicked,m_vm->frames(),&FrameTableModel::clear);
     connect(exportButton,&QPushButton::clicked,this,&ChannelPage::exportFrames);
@@ -273,9 +269,6 @@ void ChannelPage::applyForm() {
     auto s=m_vm->settings();s.rxdEnabled=m_rxdEnabled->isChecked();
     s.flashPath=m_flashPath->text();s.applicationPath=m_appPath->text();s.flashAddress=m_flashAddress->text();s.applicationAddress=m_appAddress->text();
     QScopedValueRollback<bool> guard(m_applying,true);m_vm->setSettings(s);
-}
-void ChannelPage::editProtocol() {
-    editUdsSettings(m_vm,this,true);
 }
 
 void ChannelPage::editDownload() {
@@ -419,7 +412,6 @@ void ChannelPage::render() {
     if(s.simulation)hardware.replace("模拟 CAN 双通道适配器","模拟CAN双通道适配器").replace("模拟 LIN 双通道适配器","模拟LIN双通道适配器");
     m_hardwareSummary->setText(QString("%1 · %2 · %3 · %4 bit/s").arg(s.simulation?"模拟模式":"在线硬件",hardware,port).arg(s.bitrate));
     m_connectionStatus->setText(connectionText(m_vm->state()));m_connectionStatus->setToolTip(m_vm->healthDetail());
-    m_protocol->setEnabled(!m_vm->busy());
     m_images->setEnabled(!m_vm->busy());m_flashPath->setEnabled(s.flashRequired);m_browseFlash->setEnabled(s.flashRequired);
     m_flashInfo->setEnabled(s.flashRequired);
     m_connectButton->setText(m_vm->connected()?"断开":"连接");

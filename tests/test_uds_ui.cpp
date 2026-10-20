@@ -52,11 +52,12 @@ private slots:
     void sharedParametersAndProtocolIndicator(){
         QFETCH(bool,lin);QTemporaryDir temp;const auto bus=lin?communication::Bus::Lin:communication::Bus::Can;
         ChannelViewModel vm(settings(bus));ChannelPage page(&vm);const int bitrate=vm.settings().bitrate;
+        QVERIFY(!page.findChild<QPushButton*>("downloadParameters"));
         auto open=[&](const char *button,const std::function<void(QDialog*)> &work){
             QTimer::singleShot(0,&page,[&]{auto dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());QVERIFY(dialog);work(dialog);dialog->reject();});
             page.findChild<QPushButton*>(button)->click();
         };
-        for(auto button:{"downloadParameters","udsSettings"})open(button,[&](QDialog *dialog){
+        for(auto button:{"udsSettings"})open(button,[&](QDialog *dialog){
             QVERIFY(!dialog->findChild<QWidget*>("uds_bitrate"));QVERIFY(!dialog->findChild<QWidget*>("cddCommunicationParameters"));
             auto baseline=dialog->findChild<QLineEdit*>("uds_default_p2Ms");auto value=dialog->findChild<QLineEdit*>("uds_p2Ms");
             QVERIFY(baseline->isReadOnly());QVERIFY(!value->isReadOnly());QCOMPARE(baseline->text(),value->text());
@@ -79,7 +80,7 @@ private slots:
             QCOMPARE(dialog->findChild<QLineEdit*>("uds_p2Ms")->text(),QString("123"));save(dialog);QVERIFY(!dialog->isVisible());
         });
         QCOMPARE(vm.settings().bitrate,bitrate);QCOMPARE(vm.settings().p2Ms,123);
-        open("downloadParameters",[&](QDialog *dialog){
+        open("udsSettings",[&](QDialog *dialog){
             QCOMPARE(dialog->findChild<QLineEdit*>("uds_p2Ms")->text(),QString("123"));
             dialog->findChild<QLineEdit*>("uds_p2Ms")->setText("234");save(dialog);
         });
@@ -99,14 +100,15 @@ private slots:
         initial.applicationPath=image.fileName();initial.flashRequired=false;initial.p3Ms=500;
         ChannelViewModel vm(initial);ChannelPage page(&vm);QString error;QVERIFY(vm.loadCdd(fixture(),error));select(page,vm,"DefaultSession/Start");
         QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());
-        auto start=page.findChild<QPushButton*>("startButton"),send=page.findChild<QPushButton*>("sendUdsRequest"),parameters=page.findChild<QPushButton*>("downloadParameters");
+        auto start=page.findChild<QPushButton*>("startButton"),send=page.findChild<QPushButton*>("sendUdsRequest"),settingsButton=page.findChild<QPushButton*>("udsSettings");
+        QVERIFY(!page.findChild<QPushButton*>("downloadParameters"));
         QVERIFY(start->isEnabled());QVERIFY(send->isEnabled());
         QVERIFY(vm.sendDiagnostic(find(vm,"DefaultSession/Start"),QByteArray::fromHex("1081"),error));
-        QVERIFY(!start->isEnabled());QVERIFY(!parameters->isEnabled());vm.start();QVERIFY(!vm.pending());QCOMPARE(vm.taskState(),TaskState::Idle);
+        QVERIFY(!start->isEnabled());QVERIFY(!settingsButton->isEnabled());vm.start();QVERIFY(!vm.pending());QCOMPARE(vm.taskState(),TaskState::Idle);
         vm.cancel();QTRY_VERIFY(!vm.busy());QVERIFY(start->isEnabled());
-        start->click();QVERIFY(vm.busy());QVERIFY(!send->isEnabled());QVERIFY(!parameters->isEnabled());
+        start->click();QVERIFY(vm.busy());QVERIFY(!send->isEnabled());QVERIFY(!settingsButton->isEnabled());
         QVERIFY(!vm.sendDiagnostic(find(vm,"DefaultSession/Start"),QByteArray::fromHex("1001"),error));
-        QTRY_COMPARE(vm.taskState(),TaskState::Running);vm.cancel();QTRY_VERIFY(!vm.busy());QVERIFY(send->isEnabled());QVERIFY(parameters->isEnabled());
+        QTRY_COMPARE(vm.taskState(),TaskState::Running);vm.cancel();QTRY_VERIFY(!vm.busy());QVERIFY(send->isEnabled());QVERIFY(settingsButton->isEnabled());
     }
     void communicationMappingAndDialogTransaction(){
         diag::Variant variant;variant.communication["CAN.ReqCanId"]={"Request","1813",{},"ECU"};
