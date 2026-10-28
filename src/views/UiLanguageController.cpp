@@ -49,6 +49,7 @@ void UiLanguageController::translateWidget(QWidget *widget){
     if(qobject_cast<QLabel*>(widget)||qobject_cast<QAbstractButton*>(widget))property(widget,"text");
     if(qobject_cast<QGroupBox*>(widget))property(widget,"title");
     if(qobject_cast<QLineEdit*>(widget)||qobject_cast<QPlainTextEdit*>(widget))property(widget,"placeholderText");
+    if(qobject_cast<QLineEdit*>(widget)&&widget->property("translateStaticText").toBool())property(widget,"text");
     if(qobject_cast<QProgressBar*>(widget))property(widget,"format");
     if(auto *status=qobject_cast<QStatusBar*>(widget)){const auto current=status->currentMessage(),translated=value(status,"message",current);if(current!=translated)status->showMessage(translated,10000);}
     if(auto *tabs=qobject_cast<QTabBar*>(widget)){

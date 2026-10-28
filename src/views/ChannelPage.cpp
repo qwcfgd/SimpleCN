@@ -10,6 +10,9 @@
 #include <QComboBox>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QIntValidator>
+#include <QRegularExpressionValidator>
+#include <QGroupBox>
 #include <QCheckBox>
 #include <QLabel>
 #include <QPushButton>
@@ -32,6 +35,7 @@
 #include <QStyle>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QMessageBox>
 #include <QFormLayout>
 #include <QScopedValueRollback>
 #include <QScreen>
@@ -66,6 +70,12 @@ ChannelPage::ChannelPage(ChannelViewModel *vm,QWidget *parent):QWidget(parent),m
     setObjectName(vm->settings().bus==communication::Bus::Lin?"linPage":"canPage");
     build();loadSettings();render();
     connect(vm,&ChannelViewModel::changed,this,&ChannelPage::render);
+
+    connect(vm,&ChannelViewModel::packageConfirmationRequested,this,[this](quint64 id,const QString &details){
+        QMessageBox dialog(QMessageBox::Question,QString::fromUtf8("确认下载镜像"),details,QMessageBox::Yes|QMessageBox::No,this);
+        dialog.setObjectName("packageConfirmation");dialog.setTextFormat(Qt::PlainText);dialog.setDefaultButton(QMessageBox::No);
+        m_vm->confirmPackage(id,dialog.exec()==QMessageBox::Yes);
+    });
 
     connect(vm,&ChannelViewModel::settingsChanged,this,[this](){if(!m_applying)loadSettings();});
     connect(vm,&ChannelViewModel::logAdded,m_log,[this](const QString &line){m_log->appendPlainText(Language::text(line));});
@@ -275,16 +285,21 @@ void ChannelPage::editDownload() {
     if(m_vm->busy())return;
     const auto original=m_vm->settings();boot::FlashProfile profile;QString message;
     if(!m_vm->flashProfile(profile,message))return;
+    profile.target="generic";
     QDialog dialog(this);dialog.setObjectName("downloadSettingsDialog");dialog.setWindowTitle(original.softwareId+" · 下载设置");
     dialog.resize(990,520);if(screen())dialog.resize(dialog.size().boundedTo(screen()->availableGeometry().size()-QSize(40,80)));
     auto outer=new QVBoxLayout(&dialog);auto scroll=new QScrollArea;scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);
-    auto content=new QWidget;auto form=new QFormLayout(content);form->setContentsMargins(12,10,12,10);form->setSpacing(10);
+    auto content=new QWidget;auto contentLayout=new QVBoxLayout(content);
+    auto repeatGroup=new QGroupBox("重复下载");repeatGroup->setObjectName("repeatDownloadGroup");auto repeatRow=new QHBoxLayout(repeatGroup);contentLayout->addWidget(repeatGroup);
+    auto parameterGroup=new QGroupBox("下载参数");parameterGroup->setObjectName("downloadParametersGroup");auto form=new QFormLayout(parameterGroup);form->setContentsMargins(12,10,12,10);form->setSpacing(10);contentLayout->addWidget(parameterGroup);
     scroll->setWidget(content);outer->addWidget(scroll,1);
     auto keyLibrary=edit("keyLibrary",32767);keyLibrary->setText(profile.keyLibrary);
     keyLibrary->setPlaceholderText("未选择 DLL 时，将收到的 seed 原样作为 key 发送");
     keyLibrary->setToolTip("未选择 DLL 时，将收到的 seed 原样作为 key 发送");
     auto keyRow=new QWidget;keyRow->setObjectName("keyLibraryRow");
-    auto keyLayout=new QHBoxLayout(keyRow);keyLayout->setContentsMargins(0,0,0,0);keyLayout->addWidget(keyLibrary,1);
+    auto keyLayout=new QHBoxLayout(keyRow);keyLayout->setContentsMargins(0,0,0,0);
+    auto keyDefault=new QLineEdit;keyDefault->setReadOnly(true);keyDefault->setObjectName("download_default_keyLibrary");keyDefault->setPlaceholderText("默认：未选择");keyLayout->addWidget(keyDefault,1);
+    keyLayout->addWidget(label("使用值"));keyLayout->addWidget(keyLibrary,1);
     auto browseKey=new QPushButton("文件…");browseKey->setObjectName("browseKeyLibrary");keyLayout->addWidget(browseKey);
     connect(browseKey,&QPushButton::clicked,&dialog,[&dialog,keyLibrary]{
         const QDir app(QCoreApplication::applicationDirPath());
@@ -299,29 +314,28 @@ void ChannelPage::editDownload() {
     auto flashRequired=new QCheckBox("Flash Driver使能");flashRequired->setObjectName("flashRequired");
     flashRequired->setChecked(original.flashRequired);flashRequired->setToolTip("勾选后下载需要 Flash Driver 镜像。");
     auto downloadRow=new QWidget;auto downloadRowLayout=new QHBoxLayout(downloadRow);downloadRowLayout->setContentsMargins(0,0,0,0);
-    downloadRowLayout->addWidget(label("下载流程"));downloadRowLayout->addWidget(flow,1);
-    downloadRowLayout->addSpacing(24);downloadRowLayout->addWidget(label("下载镜像"));downloadRowLayout->addWidget(flashRequired);
+    auto flowDefault=new QLineEdit("App下载流程");flowDefault->setReadOnly(true);flowDefault->setProperty("translateStaticText",true);flowDefault->setObjectName("download_default_flow");
+    downloadRowLayout->addWidget(label("下载流程 默认值"));downloadRowLayout->addWidget(flowDefault,1);downloadRowLayout->addWidget(label("使用值"));downloadRowLayout->addWidget(flow,1);
+    auto driverDefault=new QCheckBox("默认");driverDefault->setObjectName("download_default_flashRequired");driverDefault->setChecked(ChannelSettings::defaults(original.bus).flashRequired);driverDefault->setEnabled(false);
+    downloadRowLayout->addSpacing(24);downloadRowLayout->addWidget(label("下载镜像"));downloadRowLayout->addWidget(driverDefault);downloadRowLayout->addWidget(flashRequired);
     form->addRow(downloadRow);
     auto checksWidget=new QWidget;auto grid=new QGridLayout(checksWidget);grid->setContentsMargins(0,0,0,0);
     QVector<QCheckBox*> stepEnables,negativeChecks,timeoutChecks;
     checksWidget->setStyleSheet("QCheckBox::indicator:disabled { background-color:#D9DDE3;border:1px solid #AAB2BE;border-radius:2px; } QCheckBox:disabled { color:#8993A2; }");
     for(int group=0;group<2;++group){
-        auto stepHeader=label("步骤"),enableHeader=label("使能"),negativeHeader=label("负响应"),timeoutHeader=label("超时");
-        for(auto header:{stepHeader,enableHeader,negativeHeader,timeoutHeader})header->setObjectName("feedbackHeader");
-        const int base=group*5;
-        grid->addWidget(stepHeader,0,base);grid->addWidget(enableHeader,0,base+1,Qt::AlignHCenter);
-        grid->addWidget(negativeHeader,0,base+2,Qt::AlignHCenter);grid->addWidget(timeoutHeader,0,base+3,Qt::AlignHCenter);
-        if(group==0)grid->setColumnMinimumWidth(4,24);
+        const int base=group*8;
+        for(int col=0;col<7;++col){auto header=label(QStringList({"步骤","使能\n默认","使能\n使用","负响应\n默认","负响应\n使用","超时\n默认","超时\n使用"})[col]);header->setObjectName("feedbackHeader");grid->addWidget(header,0,base+col);}
+        if(group==0)grid->setColumnMinimumWidth(7,16);
     }
     const int rowsPerColumn=(boot::downloadSteps().size()+1)/2;
     for(int i=0;i<boot::downloadSteps().size();++i){
         const auto &step=boot::downloadSteps()[i];
         const auto id=QString::fromLatin1(step.id);
-        const int group=i/rowsPerColumn,base=group*5,row=i%rowsPerColumn+1;
+        const int group=i/rowsPerColumn,base=group*8,row=i%rowsPerColumn+1;
         auto stepLabel=label(QString("%1 · %2").arg(i+1,2,10,QChar('0')).arg(QString::fromUtf8(step.label)));
         stepLabel->setObjectName("step_"+id);
         auto stepEnable=new QCheckBox;stepEnable->setObjectName("enable_"+id);
-        stepEnable->setChecked(profile.stepEnabled.value(step.id).toBool(profile.flow!="boot"||!step.appOnly));
+        stepEnable->setChecked(profile.enabled(id));
         stepEnable->setToolTip("勾选：下载时执行该步骤。未勾选：跳过该步骤，负响应和超时判定不可用。");
         auto negative=new QCheckBox;negative->setObjectName("negative_"+id);
         negative->setChecked(profile.negativeResponseChecks.value(step.id).toBool(ChannelPageInitialValues::feedbackChecked));
@@ -329,14 +343,20 @@ void ChannelPage::editDownload() {
         auto timeout=new QCheckBox;timeout->setObjectName("timeout_"+id);
         timeout->setChecked(!boot::suppressesPositiveResponse(id)&&profile.timeoutChecks.value(step.id).toBool(ChannelPageInitialValues::feedbackChecked));
         timeout->setToolTip(boot::suppressesPositiveResponse(id)?"本步骤开启正响应抑制，超时判定不可用。":"勾选：达到 P2/P2* 或总时限时停止。未勾选：达到时限后忽略该超时并继续下一步。");
-        grid->addWidget(stepLabel,row,base);grid->addWidget(stepEnable,row,base+1,Qt::AlignHCenter);
-        grid->addWidget(negative,row,base+2,Qt::AlignHCenter);grid->addWidget(timeout,row,base+3,Qt::AlignHCenter);
+        auto defaultBox=[&](const QString &name,bool checked){auto box=label(checked?"是":"否");box->setObjectName("download_default_"+name+"_"+id);box->setToolTip(checked?"默认启用":"默认关闭");return box;};
+        grid->addWidget(stepLabel,row,base);
+        grid->addWidget(defaultBox("enable",ChannelPageInitialValues::initialStepEnabled("app").value(step.id).toBool()),row,base+1,Qt::AlignHCenter);grid->addWidget(stepEnable,row,base+2,Qt::AlignHCenter);
+        grid->addWidget(defaultBox("negative",ChannelPageInitialValues::feedbackChecked),row,base+3,Qt::AlignHCenter);grid->addWidget(negative,row,base+4,Qt::AlignHCenter);
+        grid->addWidget(defaultBox("timeout",ChannelPageInitialValues::feedbackChecked&&!boot::suppressesPositiveResponse(id)),row,base+5,Qt::AlignHCenter);grid->addWidget(timeout,row,base+6,Qt::AlignHCenter);
         stepEnables.append(stepEnable);negativeChecks.append(negative);timeoutChecks.append(timeout);
     }
-    grid->setColumnStretch(0,1);grid->setColumnStretch(5,1);
+    grid->setColumnStretch(0,1);grid->setColumnStretch(8,1);
     const auto driverStep=[](int i){
         const auto id=QString::fromLatin1(boot::downloadSteps()[i].id);
         return id=="driver34"||id=="driver36"||id=="driver37"||id=="driverVerify";
+    };
+    const auto selectedPolicy=[flow]{
+        boot::FlashProfile selected;selected.flow=flow->currentData().toString();return selected;
     };
     auto enableChecks=[flashRequired,stepEnables,negativeChecks,timeoutChecks,driverStep]{
         for(int i=0;i<negativeChecks.size();++i){
@@ -351,9 +371,9 @@ void ChannelPage::editDownload() {
         }
     };
     for(auto stepEnable:stepEnables)connect(stepEnable,&QCheckBox::toggled,&dialog,[enableChecks](bool){enableChecks();});
-    connect(flow,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[flow,stepEnables,enableChecks](int){
+    connect(flow,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[selectedPolicy,stepEnables,enableChecks](int){
         for(int i=0;i<stepEnables.size();++i)
-            stepEnables[i]->setChecked(flow->currentData()=="app"||!boot::downloadSteps()[i].appOnly);
+            stepEnables[i]->setChecked(selectedPolicy().enabled(QString::fromLatin1(boot::downloadSteps()[i].id)));
         enableChecks();
     });
     connect(flashRequired,&QCheckBox::toggled,&dialog,[stepEnables,driverStep,enableChecks](bool checked){
@@ -363,32 +383,55 @@ void ChannelPage::editDownload() {
         enableChecks();
     });enableChecks();
     auto feedbackTitle=label("反馈判定");feedbackTitle->setObjectName("feedbackDecisionTitle");
-    form->addRow(feedbackTitle);form->addRow(checksWidget);
-    auto policy=label("使能：勾选后执行该步骤；未勾选时跳过，且负响应/超时判定不可操作。负响应或超时判定勾选时遇到对应异常停止，未勾选时忽略并继续。App 默认全部使能；Boot 默认不使能 10 02 之前的步骤。下载开始后本页不可修改。");policy->setWordWrap(true);policy->setObjectName("muted");form->addRow(policy);
-    auto enabled=new QCheckBox("重复下载使能");enabled->setObjectName("repeatDownloadEnabled");enabled->setChecked(original.repeatDownloadEnabled);
-    auto count=spin("repeatDownloadCount",1,10000);count->setValue(original.repeatDownloadCount);
-    auto interval=spin("repeatDownloadIntervalMs",0,86400000);interval->setValue(original.repeatDownloadIntervalMs);interval->setSuffix(" ms");
-    count->setEnabled(enabled->isChecked());interval->setEnabled(enabled->isChecked());
-    connect(enabled,&QCheckBox::toggled,count,&QSpinBox::setEnabled);connect(enabled,&QCheckBox::toggled,interval,&QSpinBox::setEnabled);
-    form->addRow(enabled);form->addRow("重复下载次数（含首次）",count);form->addRow("完成后等待间隔",interval);
-    auto flashAddress=edit("settingsFlashAddress",10),appAddress=edit("settingsApplicationAddress",10);
-    flashAddress->setText(original.flashAddress);appAddress->setText(original.applicationAddress);
-    form->addRow("Driver 基址 · hex",flashAddress);form->addRow("App 基址 · hex",appAddress);
-    auto erase=spin("eraseRoutine",0,65535),verifyRid=spin("verifyRoutine",0,65535),dependencyRid=spin("dependencyRoutine",0,65535),did=spin("identityDid",0,65535);
-    for(auto value:{erase,verifyRid,dependencyRid,did}){value->setDisplayIntegerBase(16);value->setPrefix("0x");}
-    erase->setValue(profile.eraseRoutine);verifyRid->setValue(profile.verifyRoutine);dependencyRid->setValue(profile.dependencyRoutine);did->setValue(profile.identityDid);
-    form->addRow("擦除例程 RID",erase);form->addRow("校验例程 RID",verifyRid);form->addRow("依赖例程 RID",dependencyRid);form->addRow("身份 DID",did);
-    auto block=spin("consecutiveFrameByteLimit",3,4095),resetWait=spin("resetWaitMs",0,60000);
-    block->setValue(profile.consecutiveFrameByteLimit);block->setSuffix(" Byte");resetWait->setValue(profile.resetWaitMs);resetWait->setSuffix(" ms");
-    form->addRow("连续帧字节上限",block);form->addRow("复位后等待",resetWait);
+
+    auto policy=label("使能：勾选后执行该步骤；未勾选时跳过，且负响应/超时判定不可操作。负响应或超时判定勾选时遇到对应异常停止，未勾选时忽略并继续。App 默认全部使能；Boot 默认不使能 10 02 之前的步骤。下载开始后本页不可修改。");policy->setWordWrap(true);policy->setObjectName("muted");
+    const auto defaults=ChannelSettings::defaults(original.bus);
+    boot::FlashProfile defaultProfile;QString defaultError;boot::FlashProfile::fromJson(defaults.downloadProfile,defaultProfile,defaultError);
+    auto enabled=new QCheckBox("重复下载使能（默认关闭）");enabled->setObjectName("repeatDownloadEnabled");enabled->setChecked(original.repeatDownloadEnabled);
+    auto decimal=[&](const char *name,int low,int high,int value){auto e=edit(name,10);e->setValidator(new QIntValidator(low,high,e));e->setText(QString::number(value));return e;};
+    auto count=decimal("repeatDownloadCount",1,10000,original.repeatDownloadCount),interval=decimal("repeatDownloadIntervalMs",0,86400000,original.repeatDownloadIntervalMs);
+    count->setMaximumWidth(90);interval->setMaximumWidth(110);repeatRow->addWidget(enabled);repeatRow->addWidget(label("次数（默认 2）"));repeatRow->addWidget(count);repeatRow->addWidget(label("间隔 / ms（默认 1000）"));repeatRow->addWidget(interval);repeatRow->addStretch();
+    count->setEnabled(enabled->isChecked());interval->setEnabled(enabled->isChecked());connect(enabled,&QCheckBox::toggled,count,&QWidget::setEnabled);connect(enabled,&QCheckBox::toggled,interval,&QWidget::setEnabled);
+    auto columns=new QWidget;auto columnsLayout=new QHBoxLayout(columns);columnsLayout->setContentsMargins(0,0,0,0);auto lw=new QWidget;auto rw=new QWidget;auto left=new QFormLayout(lw);auto right=new QFormLayout(rw);columnsLayout->addWidget(lw,1);columnsLayout->addWidget(rw,1);form->addRow(columns);
+    auto pair=[&](QFormLayout *layout,const QString &title,QLineEdit *field,const QString &baseline){auto row=new QWidget;auto box=new QHBoxLayout(row);box->setContentsMargins(0,0,0,0);auto initial=new QLineEdit(baseline);initial->setReadOnly(true);initial->setCursorPosition(0);initial->setToolTip(baseline);initial->setObjectName("download_default_"+field->objectName());initial->setStyleSheet("QLineEdit { background:#EEF1F4;color:#687582; }");box->addWidget(initial);box->addWidget(field);layout->addRow(title,row);};
+    auto header=[&](QFormLayout *layout){auto row=new QWidget;auto box=new QHBoxLayout(row);box->setContentsMargins(0,0,0,0);box->addWidget(label("默认值"),1);box->addWidget(label("使用值"),1);layout->addRow("参数",row);};header(left);header(right);
+    auto hexField=[&](const char *name,int digits,quint32 value){auto e=edit(name,digits);e->setValidator(new QRegularExpressionValidator(QRegularExpression(QString("[0-9A-Fa-f]{1,%1}").arg(digits)),e));e->setText(QString::number(value,16).toUpper());return e;};
+    auto h=[](quint32 v){return QString::number(v,16).toUpper();};
+    auto appLevel=hexField("appSecurityLevel",2,profile.appSecurityLevel),bootLevel=hexField("bootSecurityLevel",2,profile.securityLevel);
+    appLevel->setText(appLevel->text().rightJustified(2,'0'));bootLevel->setText(bootLevel->text().rightJustified(2,'0'));
+    pair(left,"App安全等级 / hex",appLevel,h(defaultProfile.appSecurityLevel).rightJustified(2,'0'));pair(right,"Boot安全等级 / hex",bootLevel,h(defaultProfile.securityLevel).rightJustified(2,'0'));
+    auto flashAddress=edit("settingsFlashAddress",10),appAddress=edit("settingsApplicationAddress",10),appLength=edit("settingsApplicationLength",10);
+    flashAddress->setText(original.flashAddress);appAddress->setText(original.applicationAddress);appLength->setText(original.applicationLength);
+    pair(left,"Driver 地址 / hex",flashAddress,defaults.flashAddress);pair(left,"App 地址 / hex",appAddress,defaults.applicationAddress);pair(left,"App 擦除长度 / hex",appLength,defaults.applicationLength);appLength->setToolTip("从 App 基址开始的擦除范围长度，含旧代码尾部；不表示镜像大小。");
+    QLineEdit *txId=nullptr,*rxId=nullptr;
+    if(original.bus==communication::Bus::Can){txId=edit("downloadTxId",10);rxId=edit("downloadRxId",10);txId->setText(original.downloadTxId.isEmpty()?original.requestId:original.downloadTxId);rxId->setText(original.downloadRxId.isEmpty()?original.responseId:original.downloadRxId);pair(left,"Tx ID / hex",txId,original.requestId);pair(left,"Rx ID / hex",rxId,original.responseId);}
+    auto appNote=edit("applicationNote",256);appNote->setText(original.applicationNote);pair(left,"App 备注",appNote,defaults.applicationNote);
+    auto fingerprint=edit("fingerprintHex",38);fingerprint->setText(original.fingerprintHex);
+    QString fpError;const auto defaultFingerprint=boot::t008::fingerprint(QDate::currentDate(),QByteArray("TEST-PLACEHOLDER"),fpError);
+    fingerprint->setPlaceholderText("留空使用默认值");pair(left,"F184 / 19 bytes hex",fingerprint,QString::fromLatin1(defaultFingerprint.toHex()).toUpper());
+    fingerprint->setToolTip("默认设备号 TEST-PLACEHOLDER 为测试占位；留空时下载使用当天日期。");
+    auto erase=hexField("eraseRoutine",4,profile.eraseRoutine),verifyRid=hexField("verifyRoutine",4,profile.verifyRoutine),dependencyRid=hexField("dependencyRoutine",4,profile.dependencyRoutine),did=hexField("identityDid",4,profile.identityDid);
+    pair(right,"擦除 RID / hex",erase,h(defaultProfile.eraseRoutine));pair(right,"校验 RID / hex",verifyRid,h(defaultProfile.verifyRoutine));pair(right,"依赖 RID / hex",dependencyRid,h(defaultProfile.dependencyRoutine));pair(right,"身份 DID / hex",did,h(defaultProfile.identityDid));
+    auto block=decimal("consecutiveFrameByteLimit",3,4095,profile.consecutiveFrameByteLimit),resetWait=decimal("resetWaitMs",0,60000,profile.resetWaitMs);
+    pair(right,"连续帧字节限制",block,QString::number(defaultProfile.consecutiveFrameByteLimit));pair(right,"复位等待 / ms",resetWait,QString::number(defaultProfile.resetWaitMs));
+    form->addRow(feedbackTitle);form->addRow(checksWidget);form->addRow(policy);
     auto error=label("");error->setObjectName("inlineError");error->setWordWrap(true);error->hide();outer->addWidget(error);
     auto buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel);outer->addWidget(buttons);
     buttons->button(QDialogButtonBox::Ok)->setText("保存");buttons->button(QDialogButtonBox::Cancel)->setText("取消");
     connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
     connect(buttons,&QDialogButtonBox::accepted,&dialog,[&](){
+        for(auto field:{count,interval,erase,verifyRid,dependencyRid,did,block,resetWait})if(!field->hasAcceptableInput()){error->setText("请输入有效范围内的参数");error->show();field->setFocus();return;}
         auto s=m_vm->settings();s.flashRequired=flashRequired->isChecked();
-        s.repeatDownloadEnabled=enabled->isChecked();s.repeatDownloadCount=count->value();s.repeatDownloadIntervalMs=interval->value();
-        s.flashAddress=flashAddress->text();s.applicationAddress=appAddress->text();
+        bool appOk=false,bootOk=false;
+        const auto appValue=appLevel->text().toUInt(&appOk,16),bootValue=bootLevel->text().toUInt(&bootOk,16);
+        if(!appOk||!bootOk||!appLevel->hasAcceptableInput()||!bootLevel->hasAcceptableInput()||
+           appValue<1||appValue>0x7d||!(appValue&1)||bootValue<1||bootValue>0x7d||!(bootValue&1)){
+            error->setText("解锁等级须为单字节十六进制奇数（01–7D），密钥子功能为该值 + 1。");error->show();return;
+        }
+        profile.appSecurityLevel=quint8(appValue);profile.securityLevel=quint8(bootValue);
+        s.repeatDownloadEnabled=enabled->isChecked();s.repeatDownloadCount=count->text().toInt();s.repeatDownloadIntervalMs=interval->text().toInt();
+        s.flashAddress=flashAddress->text();s.applicationAddress=appAddress->text();s.applicationLength=appLength->text();s.applicationNote=appNote->text().trimmed();s.fingerprintHex=fingerprint->text().trimmed();
+        if(txId){s.downloadTxId=txId->text();s.downloadRxId=rxId->text();}
         profile.flow=flow->currentData().toString();profile.stepEnabled={};profile.negativeResponseChecks={};profile.timeoutChecks={};
         for(int i=0;i<stepEnables.size();++i){
             profile.stepEnabled[boot::downloadSteps()[i].id]=stepEnables[i]->isChecked();
@@ -397,8 +440,8 @@ void ChannelPage::editDownload() {
         }
         profile.keyLibrary=keyLibrary->text();profile.simulationOnly=false;
         profile.keyProvider=profile.keyLibrary.trimmed().isEmpty()?"seed-as-key":"external-generatekeyex";
-        profile.eraseRoutine=quint16(erase->value());profile.verifyRoutine=quint16(verifyRid->value());profile.dependencyRoutine=quint16(dependencyRid->value());profile.identityDid=quint16(did->value());
-        profile.consecutiveFrameByteLimit=block->value();profile.resetWaitMs=resetWait->value();
+        profile.eraseRoutine=quint16(erase->text().toUInt(nullptr,16));profile.verifyRoutine=quint16(verifyRid->text().toUInt(nullptr,16));profile.dependencyRoutine=quint16(dependencyRid->text().toUInt(nullptr,16));profile.identityDid=quint16(did->text().toUInt(nullptr,16));
+        profile.consecutiveFrameByteLimit=block->text().toInt();profile.resetWaitMs=resetWait->text().toInt();
         QString message;
         if(!m_vm->updateDownloadSettings(s,profile,message)){error->setText(message);error->show();return;}
         dialog.accept();

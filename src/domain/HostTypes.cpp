@@ -42,6 +42,9 @@ bool ChannelSettings::toConfiguration(communication::SoftwareChannelConfiguratio
            request==response)error="CAN ID 无效，或请求与响应 ID 相同。";
         const QList<int> supported={1000000,800000,500000,250000,125000,100000,50000,20000,10000,5000};
         if(!supported.contains(bitrate))error="请选择支持的 CAN 波特率。";
+        quint32 tx=0,rx=0;
+        if(!hex(downloadTxId.isEmpty()?requestId:downloadTxId,limit,tx)||!hex(downloadRxId.isEmpty()?responseId:downloadRxId,limit,rx)||tx==rx)
+            error="Invalid download CAN IDs";
         c.transport.requestId=request;c.transport.responseId=response;c.transport.functionalId=functional;
         c.transport.extendedId=extendedId;
     }
@@ -52,6 +55,17 @@ bool ChannelSettings::toConfiguration(communication::SoftwareChannelConfiguratio
     }
     if(error.isEmpty() && (!hex(applicationAddress,0xffffffff,address) || !hex(flashAddress,0xffffffff,address)))
         error="镜像基址必须为 32 位十六进制地址。";
+    if(error.isEmpty() && (!hex(applicationLength,0xffffffff,address) || address==0))
+        error="App length must be a nonzero 32-bit hexadecimal value";
+    if(error.isEmpty()&&!fingerprintHex.isEmpty()){
+        static const QRegularExpression fpPattern("^[0-9a-fA-F]{38}$");
+        if(!fpPattern.match(fingerprintHex).hasMatch())error="F184 must contain exactly 19 hexadecimal bytes";
+        else {
+            const auto fp=QByteArray::fromHex(fingerprintHex.toLatin1());
+            const QDate date(2000+quint8(fp[0]),quint8(fp[1]),quint8(fp[2]));QString fpError;
+            if(!boot::t008::fingerprint(date,fp.mid(3),fpError).size())error=fpError;
+        }
+    }
     boot::CanOptions canOptions;canOptions.txId=request;canOptions.rxId=response;canOptions.extended=extendedId;
     if(error.isEmpty() && bus==communication::Bus::Can && !boot::CanOptions::fromJson(canNetwork,canOptions,error))return false;
     boot::FlashProfile profile;
@@ -62,10 +76,10 @@ QJsonObject ChannelSettings::toJson() const {
     return {{"bus",bus==communication::Bus::Can?"CAN":"LIN"},{"softwareId",softwareId},{"profileId",profileId},
         {"canNetwork",canNetwork},{"downloadProfile",downloadProfile},{"hardwareKey",hardwareKey},{"handle",int(handle)},{"bitrate",bitrate},{"simulation",simulation},
         {"autoReconnect",autoReconnect},{"extendedId",extendedId},{"requestId",requestId},{"responseId",responseId},
-        {"functionalId",functionalId},{"nad",nad},{"p2Ms",p2Ms},{"p2StarMs",p2StarMs},
+        {"functionalId",functionalId},{"nad",nad},{"downloadTxId",downloadTxId},{"downloadRxId",downloadRxId},{"fingerprintHex",fingerprintHex},{"p2Ms",p2Ms},{"p2StarMs",p2StarMs},
         {"testerPresentEnabled",testerPresentEnabled},{"testerPresentMs",testerPresentMs},{"maxPendingMs",maxPendingMs},{"programmingSession",programmingSession},
         {"securityLevel",securityLevel},{"flashPath",flashPath},{"applicationPath",applicationPath},
-        {"flashAddress",flashAddress},{"applicationAddress",applicationAddress},{"flashRequired",flashRequired},{"rxdEnabled",rxdEnabled},{"repeatDownloadEnabled",repeatDownloadEnabled},
+        {"flashAddress",flashAddress},{"applicationAddress",applicationAddress},{"applicationLength",applicationLength},{"applicationNote",applicationNote},{"flashRequired",flashRequired},{"rxdEnabled",rxdEnabled},{"repeatDownloadEnabled",repeatDownloadEnabled},
         {"repeatDownloadCount",repeatDownloadCount},{"repeatDownloadIntervalMs",repeatDownloadIntervalMs},
         {"cddPath",cddPath},{"cddEcu",cddEcu},{"cddVariant",cddVariant},{"signalConfiguration",signalConfiguration},
         {"udsRepeatCount",udsRepeatCount},{"udsRepeatDelayMs",udsRepeatDelayMs},{"udsRepeatEnabled",udsRepeatEnabled},
@@ -105,7 +119,8 @@ bool ChannelSettings::fromJson(const QJsonObject &o,ChannelSettings &result,QStr
     s.bitrate=o.value("bitrate").toInt(s.bitrate);s.simulation=o.value("simulation").toBool(s.simulation);
     s.autoReconnect=o.value("autoReconnect").toBool(s.autoReconnect);s.extendedId=o.value("extendedId").toBool(s.extendedId);
     s.requestId=text("requestId",s.requestId);s.responseId=text("responseId",s.responseId);
-    s.functionalId=text("functionalId",s.functionalId);s.nad=text("nad",s.nad);
+    if(o.contains("fingerprintHex")&&!o.value("fingerprintHex").isString()){error="F184 must be a hexadecimal string";return false;}
+    s.functionalId=text("functionalId",s.functionalId);s.nad=text("nad",s.nad);s.downloadTxId=text("downloadTxId",{});s.downloadRxId=text("downloadRxId",{});s.fingerprintHex=text("fingerprintHex",{});
     s.p2Ms=o.value("p2Ms").toInt(s.p2Ms);s.p2StarMs=o.value("p2StarMs").toInt(s.p2StarMs);
     s.testerPresentMs=o.value("testerPresentMs").toInt(s.testerPresentMs);
     s.testerPresentEnabled=o.value("testerPresentEnabled").toBool(s.testerPresentEnabled);
@@ -114,6 +129,7 @@ bool ChannelSettings::fromJson(const QJsonObject &o,ChannelSettings &result,QStr
     s.securityLevel=o.value("securityLevel").toInt(s.securityLevel);
     s.flashPath=text("flashPath",s.flashPath);s.applicationPath=text("applicationPath",s.applicationPath);
     s.flashAddress=text("flashAddress",s.flashAddress);s.applicationAddress=text("applicationAddress",s.applicationAddress);
+    s.applicationLength=text("applicationLength",s.applicationLength);s.applicationNote=text("applicationNote",{});
     s.flashRequired=o.value("flashRequired").toBool(s.flashRequired);
     s.rxdEnabled=o.value("rxdEnabled").toBool(s.rxdEnabled);
     s.repeatDownloadEnabled=o.value("repeatDownloadEnabled").toBool(s.repeatDownloadEnabled);

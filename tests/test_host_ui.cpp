@@ -33,6 +33,9 @@
 #include <QWheelEvent>
 #include "infrastructure/SettingsStore.h"
 #include "infrastructure/ChannelWorker.h"
+#include "protocol/LinTransport.h"
+#include "protocol/CanTransport.h"
+#include "protocol/FlashJob.h"
 using namespace host;
 using communication::Bus;
 class StartupWindowEvents : public QObject {
@@ -130,6 +133,68 @@ class HostUiTest : public QObject {
         return s;
     }
 private slots:
+    void candidateConfigurationLoads() {
+        const auto path=qEnvironmentVariable("T008_TEST_CANDIDATE_CONFIG");if(path.isEmpty())QSKIP("Candidate config not supplied");
+        QVector<ChannelSettings> channels;QString error;QVERIFY2(SettingsStore(path).load(channels,error),qPrintable(error));
+        QCOMPARE(channels.size(),1);const auto &c=channels[0];QCOMPARE(c.applicationAddress,QString("00020000"));
+        QCOMPARE(c.applicationLength,QString("00057000"));QCOMPARE(c.flashAddress,QString("20001400"));
+        QCOMPARE(c.requestId,QString("715"));QCOMPARE(c.responseId,QString("795"));QCOMPARE(c.handle,quint32(0x51));
+        QVERIFY(imageReady(c.applicationPath));QVERIFY(imageReady(c.flashPath));
+    }
+    void canSavedEraseRangeReachesWire(){
+        auto settings=preview(Bus::Can);settings.applicationPath=fixture("can-range.bin",16);settings.flashRequired=false;
+        settings.applicationAddress="25000";settings.applicationLength="200";settings.requestId="715";settings.responseId="795";settings.downloadTxId="715";settings.downloadRxId="795";settings.downloadProfile=boot::FlashProfile().toJson();
+        const auto path=m_temp.path()+"/can-range.json";QString error;SettingsStore store(path);QVERIFY2(store.save({settings},error),qPrintable(error));
+        QVector<ChannelSettings> loaded;QVERIFY2(store.load(loaded,error),qPrintable(error));QCOMPARE(loaded.size(),1);
+        boot::CanOptions opts;opts.txId=0x795;opts.rxId=0x715;boot::CanTransport *receiver=nullptr;
+        boot::CanTransport decoder(opts,[&](const boot::CanFrame &,quint64 token,QString &){receiver->confirmTransmitted(token);return true;});receiver=&decoder;decoder.listen();
+        QList<QByteArray> requests;connect(&decoder,&boot::DiagnosticTransport::received,this,[&](const QByteArray &pdu){requests.append(pdu);});
+        ChannelWorker worker(loaded[0]);connect(&worker,&ChannelWorker::framesReceived,this,[&](const FrameBatch &frames){
+            for(const auto &f:frames)if(f.simulated&&f.direction.compare("SIM TX",Qt::CaseInsensitive)==0&&f.id==0x715)
+                decoder.receiveFrame({f.id,false,false,false,false,f.payload});
+        });
+        QSignalSpy tasks(&worker,&ChannelWorker::taskChanged);worker.initialize();worker.connectChannel(loaded[0]);worker.startPreview(loaded[0]);
+        QTRY_VERIFY_WITH_TIMEOUT(!tasks.isEmpty()&&qvariant_cast<TaskState>(tasks.last()[0])==TaskState::Completed,8000);
+        QCOMPARE(requests.count(QByteArray::fromHex("3101ff00440002500000000200")),1);worker.shutdown();
+    }
+    void linSavedEraseRangeReachesWire(){
+        auto settings=preview(Bus::Lin);settings.applicationPath=fixture("lin-range.bin",16);settings.flashRequired=false;
+        settings.applicationAddress="25000";settings.applicationLength="200";settings.nad="15";settings.downloadProfile=boot::FlashProfile().toJson();
+        const auto path=m_temp.path()+"/lin-range.json";QString error;SettingsStore store(path);QVERIFY2(store.save({settings},error),qPrintable(error));
+        QVector<ChannelSettings> loaded;QVERIFY2(store.load(loaded,error),qPrintable(error));QCOMPARE(loaded.size(),1);
+        ChannelWorker worker(loaded[0]);boot::LinCodec decoder;QList<QByteArray> requests;
+        connect(&worker,&ChannelWorker::framesReceived,this,[&](const FrameBatch &frames){
+            for(const auto &f:frames)if(f.simulated&&f.direction.compare("SIM TX",Qt::CaseInsensitive)==0&&f.id==0x3c){
+                QByteArray pdu;QString why;const auto bytes=QByteArray::fromHex(f.data.toLatin1());
+                if(decoder.accept(0x15,bytes,pdu,why)==boot::LinCodec::Complete)requests.append(pdu);
+            }
+        });
+        QSignalSpy tasks(&worker,&ChannelWorker::taskChanged);worker.initialize();worker.connectChannel(loaded[0]);worker.startPreview(loaded[0]);
+        QTRY_VERIFY_WITH_TIMEOUT(!tasks.isEmpty()&&qvariant_cast<TaskState>(tasks.last()[0])==TaskState::Completed,8000);
+        QCOMPARE(requests.count(QByteArray::fromHex("3101ff00440002500000000200")),1);worker.shutdown();
+    }
+    void fingerprintConfigurationValidation() {
+        auto s=ChannelSettings::defaults(Bus::Can);auto json=s.toJson();ChannelSettings restored;QString error;
+        const QString valid="1A0A1C544553542D504C414345484F4C444552";
+        json["fingerprintHex"]=valid;QVERIFY2(ChannelSettings::fromJson(json,restored,error),qPrintable(error));QCOMPARE(restored.fingerprintHex,valid);
+        for(int bytes:{2,18,20}){json["fingerprintHex"]=QString(bytes*2,'0');QVERIFY(!ChannelSettings::fromJson(json,restored,error));}
+        json["fingerprintHex"]=123;QVERIFY(!ChannelSettings::fromJson(json,restored,error));
+    }
+    void downloadLengthRoundTripAndValidation() {
+        for (auto bus : {Bus::Can, Bus::Lin}) {
+            auto s=ChannelSettings::defaults(bus);auto json=s.toJson();
+            json["applicationLength"]="407B8";
+            if(bus==Bus::Can){json["downloadTxId"]="715";json["downloadRxId"]="795";}
+            ChannelSettings restored;QString error;
+            QVERIFY2(ChannelSettings::fromJson(json,restored,error),qPrintable(error));
+            QCOMPARE(restored.toJson().value("applicationLength").toString(),QString("407B8"));
+            if(bus==Bus::Can){QCOMPARE(restored.toJson().value("downloadTxId").toString(),QString("715"));QCOMPARE(restored.toJson().value("downloadRxId").toString(),QString("795"));auto bad=json;bad["downloadTxId"]="nothex";QVERIFY(!ChannelSettings::fromJson(bad,restored,error));}
+            json["applicationLength"]="xyz";
+            QVERIFY(!ChannelSettings::fromJson(json,restored,error));
+            json["applicationLength"]="0";
+            QVERIFY(!ChannelSettings::fromJson(json,restored,error));
+        }
+    }
     void initTestCase(){
         QVERIFY(m_temp.isValid());QApplication::setStyle("Fusion");QApplication::setFont(QFont("Microsoft YaHei UI",9));
         QDir().mkpath(QCoreApplication::applicationDirPath()+"/artifacts");
@@ -644,9 +709,9 @@ private slots:
         QTimer::singleShot(30,&window,[&](){
             auto dialog=page->findChild<QDialog*>("downloadSettingsDialog");QVERIFY(dialog);
             auto enable=dialog->findChild<QCheckBox*>("repeatDownloadEnabled");
-            auto count=dialog->findChild<QSpinBox*>("repeatDownloadCount"),interval=dialog->findChild<QSpinBox*>("repeatDownloadIntervalMs");
+            auto count=dialog->findChild<QLineEdit*>("repeatDownloadCount"),interval=dialog->findChild<QLineEdit*>("repeatDownloadIntervalMs");
             QVERIFY(!count->isEnabled());enable->setChecked(true);QVERIFY(count->isEnabled());QVERIFY(interval->isEnabled());
-            count->setValue(2);interval->setValue(500);
+            count->setText("2");interval->setText("500");
             QVERIFY(dialog->grab().save(artifactDir()+"/download-settings.png"));
             QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok),Qt::LeftButton);
         });
@@ -654,7 +719,7 @@ private slots:
         QVERIFY(vm->settings().repeatDownloadEnabled);QCOMPARE(vm->settings().repeatDownloadCount,2);QCOMPARE(vm->settings().repeatDownloadIntervalMs,500);
         QTimer::singleShot(30,&window,[&](){
             auto dialog=page->findChild<QDialog*>("downloadSettingsDialog");QVERIFY(dialog);
-            dialog->findChild<QSpinBox*>("repeatDownloadCount")->setValue(99);dialog->reject();
+            dialog->findChild<QLineEdit*>("repeatDownloadCount")->setText("99");dialog->reject();
         });
         QTest::mouseClick(button,Qt::LeftButton);QCOMPARE(vm->settings().repeatDownloadCount,2);
         saveChannelsFromDialog(window);

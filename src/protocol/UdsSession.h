@@ -27,8 +27,10 @@ private:
     struct Request {QByteArray bytes,expected;Reply reply;bool suppressed=false;bool functional=false;};
     void pump();
     void response(const QByteArray &);
+    bool responseExpired();
     void finish(bool,const QByteArray &,const QString &);
     DiagnosticTransport &m_transport;SessionOptions m_options;QQueue<Request> m_queue;Request m_current;
     QTimer m_response,m_limit,m_keepalive;bool m_active=false,m_sent=false,m_established=false,m_pending=false;quint64 m_epoch=0;
+    QElapsedTimer m_responseElapsed,m_limitElapsed;
 };
 }

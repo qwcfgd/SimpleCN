@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(QtController VERSION 1.45 LANGUAGES CXX)
+project(QtController VERSION 1.46 LANGUAGES CXX)
 if(MINGW)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
 endif()
@@ -50,6 +50,7 @@ add_library(bootloader_protocol STATIC
     src/protocol/LinTransport.h src/protocol/LinTransport.cpp
     src/protocol/UdsSession.h src/protocol/UdsSession.cpp
     src/protocol/FlashJob.h src/protocol/FlashJob.cpp
+    src/protocol/T008Target.h src/protocol/T008Target.cpp
     src/protocol/SimulatedLinEcu.h src/protocol/SimulatedLinEcu.cpp)
 target_include_directories(bootloader_protocol PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(bootloader_protocol PUBLIC Qt${QT_VERSION_MAJOR}::Core)
@@ -68,6 +69,7 @@ add_library(bootloader_ui STATIC
     src/views/SignalPlotDialog.h src/views/SignalPlotDialog.cpp
     src/domain/HostTypes.h src/domain/HostTypes.cpp
     src/infrastructure/SettingsStore.h src/infrastructure/SettingsStore.cpp
+    src/infrastructure/SafeTraceRecorder.h src/infrastructure/SafeTraceRecorder.cpp
     src/infrastructure/ChannelWorker.h src/infrastructure/ChannelWorker.cpp
     src/infrastructure/SignalTransmitter.h src/infrastructure/SignalTransmitter.cpp
     src/model/ChannelModel.h src/model/ChannelModel.cpp

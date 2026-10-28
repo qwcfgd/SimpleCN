@@ -2,6 +2,7 @@
 #include "FirmwareImage.h"
 #include "UdsSession.h"
 #include "DownloadSteps.h"
+#include "T008Target.h"
 #include <QJsonObject>
 #include <memory>
 namespace boot {
@@ -26,19 +27,23 @@ public: QByteArray calculate(quint8,const QByteArray &,QString &error) override 
 struct FlashProfile {
     QString name="Simulated UDS ECU",keyProvider="simulation-xor-v1";
     bool simulationOnly=true;
-    QString flow="legacy",keyLibrary;
+    QString flow="legacy",keyLibrary,target="generic";
+    bool isT008()const{return target==t008::Target;}
     QJsonObject stepEnabled,negativeResponseChecks,timeoutChecks;
     bool enabled(const QString &id)const{
+        if(isT008())for(const auto &step:downloadSteps())if(id==step.id)return flow!="boot"||!step.appOnly||id=="pre1003";
         for(const auto &step:downloadSteps())if(id==step.id)return stepEnabled.value(id).toBool(flow!="boot"||!step.appOnly);
         return false;
     }
-    bool checksNegativeResponse(const QString &step)const{return negativeResponseChecks.value(step).toBool(flow=="legacy");}
+    bool checksNegativeResponse(const QString &step)const{return isT008()||negativeResponseChecks.value(step).toBool(flow=="legacy");}
     bool checksTimeout(const QString &step)const{
-        return !suppressesPositiveResponse(step)&&timeoutChecks.value(step).toBool(flow=="legacy");
+        return !suppressesPositiveResponse(step)&&(isT008()||timeoutChecks.value(step).toBool(flow=="legacy"));
     }
-    quint8 session=2,securityLevel=0x11;
+    quint8 session=2,appSecurityLevel=0x01,securityLevel=0x11;
     quint16 eraseRoutine=0xff00,verifyRoutine=0xff01,dependencyRoutine=0xff02,identityDid=0xf180;
     int consecutiveFrameByteLimit=4095,resetWaitMs=10;
+    quint32 applicationEraseBase=0,applicationEraseLength=0x4000000;
+    QByteArray fingerprintData;
     static bool fromJson(const QJsonObject &,FlashProfile &,QString &);
     QJsonObject toJson() const;
 };
@@ -63,6 +68,7 @@ private:
     void postSteps(int);
     void unlock(quint8,const QString &,const QString &,std::function<void()>);
     void identify();
+    bool withinDeadline();
     void done();
     void step(const QString &,const QByteArray &,const QByteArray &,std::function<void(const QByteArray &)>,bool requiredData=false);
     void nextSegment();
@@ -76,6 +82,7 @@ private:
     UdsSession &m_session;FlashProfile m_profile;std::unique_ptr<KeyProvider> m_key;
     QVector<Segment> m_segments;int m_driverCount=0,m_index=0,m_offset=0,m_blockSize=0,m_blockLength=0;
     quint8 m_sequence=1;quint64 m_epoch=0;qint64 m_total=0,m_acked=0;bool m_running=false;
-    int m_ignored=0,m_transferPacket=0;
+    int m_ignored=0,m_transferPacket=0;bool m_isV2=false;
+    t008::Plan m_targetPlan;QTimer m_deadline;QElapsedTimer m_wall;QString m_versionObservation;
 };
 }

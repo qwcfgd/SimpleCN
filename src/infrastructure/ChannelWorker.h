@@ -7,8 +7,10 @@
 #include "domain/HostTypes.h"
 #include "model/CddDatabase.h"
 #include <QPointer>
+#include <QSet>
 #include "communication/SoftwareChannel.h"
 #include "SignalTransmitter.h"
+#include "SafeTraceRecorder.h"
 #include "BusHardware.h"
 #include "protocol/OperationCoordinator.h"
 namespace host {
@@ -23,6 +25,7 @@ public slots:
     void disconnectChannel();
     void refresh();
     void startPreview(host::ChannelSettings);
+    void confirmPackage(quint64,bool);
     void cancelTask();
     void startHeaderScan();
     void sendDiagnostic(host::ChannelSettings,host::diag::Request);
@@ -49,13 +52,16 @@ signals:
     void signalStatus(host::signal::RunStatus);
     void busEvents(host::signal::BusFrameEvents);
     void connectionGenerationChanged(quint64);
+    void packageConfirmationRequested(quint64,QString);
 private:
+    bool traceRecord(const QString &,quint32,int,const QByteArray &,bool valid=true);
+    void traceFailure();
     void createSession();
     bool apply(const ChannelSettings &);
     void receive();
     void beginPreviewRound();
     void failPreview(const QString &);
-    void beginDownload();
+    void beginDownload(bool confirmed=false);
     void completeRound(const QString &result);
     void clearProtocol();
     bool createProtocol(const boot::FlashProfile &,QString &error,bool manual);
@@ -65,6 +71,9 @@ private:
     void projectSignalEvents(const host::signal::BusFrameEvents &);
     void publishFrames(host::FrameBatch);
     ChannelSettings m_settings;
+    SafeTraceRecorder m_safeTrace;
+    QSet<quint32> m_traceDiagnosticIds;
+    bool m_traceEnabled=false,m_traceFailed=false;
     std::unique_ptr<CanHardware> m_can;
     std::unique_ptr<LinHardware> m_lin;
     std::unique_ptr<communication::SoftwareChannel> m_session;
@@ -77,6 +86,7 @@ private:
     QTimer *m_receive=nullptr,*m_scan=nullptr,*m_repeat=nullptr;
     qint64 m_traceOffsetUs=0,m_lastCaptureUs=0;
     bool m_running=false,m_scanning=false,m_waiting=false;
+    boot::FirmwareImage m_stagedApp,m_stagedDriver;quint64 m_confirmationId=0;bool m_confirmationPending=false;
     int m_round=0,m_totalRounds=1;
     int m_progress=0,m_scanId=0,m_scanSent=0,m_scanEvents=0,m_scanResponses=0,m_scanErrors=0;
     QString m_receiveError;

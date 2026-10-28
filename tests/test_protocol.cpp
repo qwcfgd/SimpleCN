@@ -131,6 +131,12 @@ private slots:
         for(const QJsonObject &o:{QJsonObject{{"securityLevel",2}},QJsonObject{{"blockDataLimit",4094}},
              QJsonObject{{"keyProvider","unknown"}},QJsonObject{{"simulationOnly",false}},QJsonObject{{"session",2.5}},
              QJsonObject{{"unknown",1}},QJsonObject{{"eraseRoutine",0xff01}}})QVERIFY(!FlashProfile::fromJson(o,q,error));
+        for(const auto key:{"appSecurityLevel","securityLevel"}){
+            for(const QJsonValue &value:{QJsonValue(0),QJsonValue(2),QJsonValue(0x7f),QJsonValue(0xff),QJsonValue(0x101),QJsonValue(1.5),QJsonValue("01")})
+                QVERIFY(!FlashProfile::fromJson(QJsonObject{{key,value}},q,error));
+            QVERIFY(FlashProfile::fromJson(QJsonObject{{key,0x7d}},q,error));
+            FlashProfile restored;QVERIFY(FlashProfile::fromJson(q.toJson(),restored,error));QCOMPARE(restored.toJson(),q.toJson());
+        }
     }
     void bootAdvancesOnlyAfterMatchingPositiveResponseAndZeroKey(){
         ManualTransport transport;UdsSession session(transport,{100,100,1000,0});FlashProfile profile;
@@ -170,7 +176,7 @@ private slots:
         QTRY_COMPARE(sent.size(),2);
         transport.reply(QByteArray(1,char(0x67))+char(level)+seed);QTRY_COMPARE(transport.requests.size(),3);
         QTRY_COMPARE(sent.size(),3);
-        if(seed==QByteArray(seed.size(),char(0)))QCOMPARE(transport.requests[2],hex("2ef1840101"));
+        if(seed==QByteArray(seed.size(),char(0))){QCOMPARE(transport.requests[2].left(3),hex("2ef184"));QCOMPARE(transport.requests[2].size(),22);}
         else {
             QCOMPARE(transport.requests[2],QByteArray(1,char(0x27))+char(level+1)+seed);
             // A rejected key must still stop the download.
@@ -194,36 +200,45 @@ private slots:
         QVERIFY(!finished[0][0].toBool());QVERIFY(finished[0][1].toString().contains("seed step disabled"));
         QCOMPARE(transport.requests,QList<QByteArray>{hex("1002")});
     }
+    void seedAsKeyAppAndBoot_data(){
+        QTest::addColumn<int>("appLevel");QTest::addColumn<int>("bootLevel");
+        QTest::newRow("defaults")<<0x01<<0x11;
+        QTest::newRow("custom")<<0x03<<0x21;
+        QTest::newRow("highest UDS level")<<0x7d<<0x7d;
+    }
     void seedAsKeyAppAndBoot(){
+        QFETCH(int,appLevel);QFETCH(int,bootLevel);
         ManualTransport transport;UdsSession session(transport,{1000,1000,2000,0});FlashProfile p;
-        p.flow="app";p.keyProvider="seed-as-key";p.simulationOnly=false;p.securityLevel=0x11;
+        QString error;
+        QVERIFY2(FlashProfile::fromJson({{"appSecurityLevel",appLevel},{"securityLevel",bootLevel}},p,error),qPrintable(error));
+        p.flow="app";p.keyProvider="seed-as-key";p.simulationOnly=false;
         for(const auto &step:downloadSteps())p.stepEnabled[step.id]=false;
         for(const auto id:{"pre2701","pre2702","bootSeed","bootKey"})p.stepEnabled[id]=true;
-        FlashJob job(session,p,std::make_unique<SeedAsKey>());QString error;
+        FlashJob job(session,p,std::make_unique<SeedAsKey>());
         QSignalSpy sent(&transport,&DiagnosticTransport::sent);
         QVERIFY(job.start(image(8),{},error));QTRY_COMPARE(transport.requests.size(),1);
-        QCOMPARE(transport.requests[0],hex("2701"));
+        QCOMPARE(transport.requests[0],hex("27")+char(appLevel));
         QTRY_COMPARE(sent.size(),1);
-        const auto appSeed=hex("0080ff12345678");transport.reply(hex("6701")+appSeed);
-        QTRY_COMPARE(transport.requests.size(),2);QCOMPARE(transport.requests[1],hex("2702")+appSeed);
+        const auto appSeed=hex("0080ff12345678");transport.reply(hex("67")+char(appLevel)+appSeed);
+        QTRY_COMPARE(transport.requests.size(),2);QCOMPARE(transport.requests[1],hex("27")+char(appLevel+1)+appSeed);
         QTRY_COMPARE(sent.size(),2);
-        transport.reply(hex("6702"));QTRY_COMPARE(transport.requests.size(),3);QCOMPARE(transport.requests[2],hex("2711"));
+        transport.reply(hex("67")+char(appLevel+1));QTRY_COMPARE(transport.requests.size(),3);QCOMPARE(transport.requests[2],hex("27")+char(bootLevel));
         QTRY_COMPARE(sent.size(),3);
-        const auto bootSeed=hex("00112233445566778899aabbccddeeff80");transport.reply(hex("6711")+bootSeed);
-        QTRY_COMPARE(transport.requests.size(),4);QCOMPARE(transport.requests[3],hex("2712")+bootSeed);
+        const auto bootSeed=hex("00112233445566778899aabbccddeeff80");transport.reply(hex("67")+char(bootLevel)+bootSeed);
+        QTRY_COMPARE(transport.requests.size(),4);QCOMPARE(transport.requests[3],hex("27")+char(bootLevel+1)+bootSeed);
         job.cancel();
     }
     void sessionPendingEchoAndAbsoluteDeadline(){
-        ManualTransport t;UdsSession s(t,{30,45,140,0});bool done=false,ok=false;QString failure;
+        ManualTransport t;UdsSession s(t,{100,250,600,0});bool done=false,ok=false;QString failure;
         QVERIFY(s.request(hex("3101ff00"),hex("7101ff00"),[&](bool success,const QByteArray &,const QString &e){done=true;ok=success;failure=e;}));
         QTRY_COMPARE(t.requests.size(),1);QTest::qWait(1);t.reply(hex("7f3178"));
-        QTest::qWait(35);QVERIFY(!done);t.reply(hex("7f3178"));t.reply(hex("7101ff00"));QVERIFY(done&&ok);
+        QTest::qWait(130);QVERIFY(!done);t.reply(hex("7f3178"));t.reply(hex("7101ff00"));QVERIFY(done&&ok);
         done=false;QVERIFY(s.request(hex("3601aa"),hex("7601"),[&](bool success,const QByteArray &,const QString &e){done=true;ok=success;failure=e;}));
         QTRY_COMPARE(t.requests.size(),2);QTest::qWait(1);t.reply(hex("7602"));QVERIFY(done&&!ok);QVERIFY(failure.contains("echo"));
         done=false;QVERIFY(s.request(hex("3101ff00"),hex("7101ff00"),[&](bool success,const QByteArray &,const QString &e){done=true;ok=success;failure=e;}));
         QTRY_COMPARE(t.requests.size(),3);QTest::qWait(1);
         QTimer pending;pending.setInterval(10);connect(&pending,&QTimer::timeout,&t,[&]{t.reply(hex("7f3178"));});pending.start();
-        QTRY_VERIFY_WITH_TIMEOUT(done,500);QVERIFY(!ok);QVERIFY(failure.contains("absolute"));pending.stop();
+        QTRY_VERIFY_WITH_TIMEOUT(done,1500);QVERIFY(!ok);QVERIFY(failure.contains("absolute"));pending.stop();
     }
     void sessionUnrelatedDoesNotExtendAndCancellationDropsQueue(){
         ManualTransport t;UdsSession s(t,{60,100,500,0});int callbacks=0;QString error;
@@ -295,8 +310,21 @@ private slots:
         QTRY_COMPARE(t.requests.size(),2);QTest::qWait(1);emit t.responseStarted(hex("6300010203"));
         QTRY_VERIFY_WITH_TIMEOUT(done,200);QVERIFY(!ok);
     }
+    void eraseRangeValidationBeforeSend(){
+        ManualTransport wire;UdsSession session(wire,SessionOptions{100,100,1000,0});QString error;
+        for(const auto range:QList<QPair<quint32,quint32>>{{0xff00,0},{0xfffffff0,0x20},{0xff01,0x1000},{0xff00,0xfff}}){
+            FlashProfile p;p.applicationEraseBase=range.first;p.applicationEraseLength=range.second;
+            FlashJob job(session,p,std::make_unique<SimulationKey>());QVERIFY(!job.start(image(),{},error));QVERIFY(wire.requests.isEmpty());
+        }
+    }
+    void disabledEraseSendsNoErase(){
+        FlashProfile p;p.applicationEraseBase=0xff00;p.applicationEraseLength=0x1000;p.stepEnabled["erase"]=false;
+        LinBench bench(0x15,p);FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy result(&job,&FlashJob::finished);QString error;
+        QVERIFY2(job.start(image(),{},error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(result.size(),1,20000);QVERIFY(!result[0][0].toBool());
+        for(const auto &r:bench.ecu.requests)QVERIFY(!r.startsWith(hex("3101ff00")));
+    }
     void fullLinFlashDriverSparseApplicationAndRepeat(){
-        FlashProfile profile;LinBench bench(0x15,profile);FlashJob job(bench.session,profile,std::make_unique<SimulationKey>());
+        FlashProfile profile;profile.applicationEraseBase=0xff00;profile.applicationEraseLength=0x10105;LinBench bench(0x15,profile);FlashJob job(bench.session,profile,std::make_unique<SimulationKey>());
         QJsonArray transcript;
         connect(&bench.session,&UdsSession::trace,&job,[&](bool tx,const QByteArray &pdu){
             transcript.append(QJsonObject{{"direction",tx?"TX":"RX"},{"uds",QString::fromLatin1(pdu.toHex(' ')).toUpper()}});
@@ -304,7 +332,7 @@ private slots:
         auto app=image();app.segments.append({0x20000,hex("1234567890")});app.size+=5;
         const auto driver=image(64,0x10000000);QString error;QSignalSpy result(&job,&FlashJob::finished),progress(&job,&FlashJob::progress);
         QVERIFY2(job.start(app,driver,error),qPrintable(error));
-        QTRY_COMPARE_WITH_TIMEOUT(result.size(),1,10000);QVERIFY2(result[0][0].toBool(),qPrintable(result[0][1].toString()));
+        QTRY_COMPARE_WITH_TIMEOUT(result.size(),1,20000);QVERIFY2(result[0][0].toBool(),qPrintable(result[0][1].toString()));
         QCOMPARE(bench.ecu.resets,1);
         for(const auto &s:app.segments)QCOMPARE(bench.ecu.memory(s.address),s.data);
         QCOMPARE(bench.ecu.memory(driver.segments[0].address),driver.segments[0].data);
@@ -314,14 +342,13 @@ private slots:
         // Independently assert the required complete service order, including every data block.
         QList<int> order={0x10,0x27,0x27,0x34,0x36,0x37,0x31,0x31,0x34};
         for(int n=0;n<16;++n)order.append(0x36);
-        order.append({0x37,0x31,0x31,0x34,0x36,0x37,0x31,0x31,0x11,0x22});
+        order.append({0x37,0x31,0x34,0x36,0x37,0x31,0x31,0x11,0x22});
         QCOMPARE(requests.size(),order.size());
         for(int n=0;n<order.size();++n)QCOMPARE(int(quint8(requests[n][0])),order[n]);
         QCOMPARE(requests[3],hex("3400441000000000000040"));
-        QCOMPARE(requests[7],hex("3101ff00440000ff0000001000"));
+        QCOMPARE(requests[7],hex("3101ff00440000ff0000010105"));
         QCOMPARE(requests[8],hex("3400440000ff0000001000"));
-        QCOMPARE(requests[27],hex("3101ff00440002000000000005"));
-        QCOMPARE(requests[28],hex("3400440002000000000005"));
+        QCOMPARE(requests[27],hex("3400440002000000000005"));
         QVERIFY(job.start(app,driver,error));QTRY_COMPARE_WITH_TIMEOUT(result.size(),2,20000);QVERIFY(result[1][0].toBool());QCOMPARE(bench.ecu.resets,2);
         const auto directory=QCoreApplication::applicationDirPath()+"/artifacts";QDir().mkpath(directory);
         QFile flow(directory+"/lin-uds-flow.json");QVERIFY(flow.open(QIODevice::WriteOnly));

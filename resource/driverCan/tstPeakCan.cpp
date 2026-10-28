@@ -348,6 +348,14 @@ QString tstPeakCan::lastErrorText() const
     t_pPCANBasic->GetErrorText(t_PCANStatus,0,text);
     return QString("PCAN 0x%1: %2").arg(t_PCANStatus,0,16).arg(QString::fromLocal8Bit(text));
 }
+bool tstPeakCan::enableEcho()
+{
+    if (!t_open) { t_PCANStatus = PCAN_ERROR_INITIALIZE; return false; }
+    DWORD enabled = PCAN_PARAMETER_ON;
+    t_PCANStatus = SimTxCAN ? PCAN_ERROR_OK :
+        t_pPCANBasic->SetValue(t_hHw,PCAN_ALLOW_ECHO_FRAMES,&enabled,sizeof(enabled));
+    return t_PCANStatus == PCAN_ERROR_OK;
+}
 bool tstPeakCan::sendRaw(TPCANMsg message)
 {
     if (!t_open) { t_PCANStatus = PCAN_ERROR_INITIALIZE; return false; }

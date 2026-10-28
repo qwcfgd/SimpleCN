@@ -7,13 +7,15 @@ UdsSession::UdsSession(DiagnosticTransport &transport,SessionOptions options,QOb
     m_response.setSingleShot(true);m_limit.setSingleShot(true);
     connect(&transport,&DiagnosticTransport::sent,this,[this]{
         if(!m_active)return;m_sent=true;
-        m_limit.start(qMax(m_options.maxPendingMs,m_current.suppressed?m_options.p3Ms:0));
-        m_response.start(m_current.suppressed?qMax(m_options.p2Ms,m_options.p3Ms):m_options.p2Ms);
+        m_limitElapsed.start();m_limit.start(qMax(m_options.maxPendingMs,m_current.suppressed?m_options.p3Ms:0));
+        m_responseElapsed.start();m_response.start(m_current.suppressed?qMax(m_options.p2Ms,m_options.p3Ms):m_options.p2Ms);
     });
     connect(&transport,&DiagnosticTransport::responseStarted,this,[this](const QByteArray &prefix){
         if(!m_active||!m_sent||prefix.isEmpty())return;
         const auto sid=quint8(m_current.bytes[0]);
-        if(quint8(prefix[0])==quint8(sid+0x40)||(prefix.size()>=2&&quint8(prefix[0])==0x7f&&quint8(prefix[1])==sid))m_response.stop();
+        if(quint8(prefix[0])==quint8(sid+0x40)||(prefix.size()>=2&&quint8(prefix[0])==0x7f&&quint8(prefix[1])==sid)){
+            if(responseExpired())return;m_response.stop();
+        }
     });
     connect(&transport,&DiagnosticTransport::received,this,&UdsSession::response);
     connect(&transport,&DiagnosticTransport::failed,this,[this](const QString &e){if(m_active)finish(false,{},e);});
@@ -37,19 +39,21 @@ bool UdsSession::request(QByteArray b,QByteArray expected,Reply reply,bool suppr
 }
 void UdsSession::pump(){
     if(m_active||m_queue.isEmpty())return;
-    m_current=m_queue.dequeue();m_active=true;m_sent=m_pending=false;m_limit.start(60000);
+    m_current=m_queue.dequeue();m_active=true;m_sent=m_pending=false;m_limitElapsed.start();m_limit.start(60000);
     emit trace(true,m_current.bytes);
     QString error;if(!m_transport.send(m_current.bytes,error,m_current.functional))finish(false,{},error);
 }
 void UdsSession::response(const QByteArray &pdu){
     if(!m_active||!m_sent||pdu.isEmpty())return;
+    if(responseExpired())return;
     emit trace(false,pdu);
+    if(!m_active||responseExpired())return;
     const quint8 sid=quint8(m_current.bytes[0]);
     if(quint8(pdu[0])==0x7f){
         if(pdu.size()<2||quint8(pdu[1])!=sid)return;
         if(pdu.size()!=3){finish(false,pdu,"Malformed negative response");return;}
         const auto nrc=quint8(pdu[2]);
-        if(nrc==0x78){m_pending=true;m_response.start(m_options.p2StarMs);emit notice("UDS response pending (78)");return;}
+        if(nrc==0x78){m_pending=true;m_responseElapsed.start();m_response.start(m_options.p2StarMs);emit notice("UDS response pending (78)");return;}
         finish(false,pdu,QString("UDS service %1 NRC %2").arg(sid,2,16,QChar('0')).arg(nrc,2,16,QChar('0')));return;
     }
     if(quint8(pdu[0])!=quint8(sid+0x40))return;
@@ -65,6 +69,16 @@ void UdsSession::response(const QByteArray &pdu){
     }
     if(sid==0x11)m_established=false;
     finish(true,pdu,{});
+}
+bool UdsSession::responseExpired(){
+    if(m_limit.isActive()&&m_limitElapsed.elapsed()>=m_limit.interval()){
+        finish(false,{},m_sent?"UDS absolute response deadline":"UDS transmit timeout");return true;
+    }
+    if(m_response.isActive()&&m_responseElapsed.elapsed()>=m_response.interval()){
+        if(m_current.suppressed&&!m_pending)finish(true,{},{});else finish(false,{},"UDS P2/P2* timeout");
+        return true;
+    }
+    return false;
 }
 void UdsSession::finish(bool ok,const QByteArray &pdu,const QString &error){
     if(!m_active)return;
@@ -83,7 +97,7 @@ void UdsSession::finish(bool ok,const QByteArray &pdu,const QString &error){
     QTimer::singleShot(0,this,[this,epoch]{if(epoch==m_epoch)pump();});
 }
 void UdsSession::cancel(){
-    ++m_epoch;m_response.stop();m_limit.stop();m_transport.cancel();m_queue.clear();m_current={};m_active=m_sent=m_established=false;
+    ++m_epoch;m_response.stop();m_limit.stop();m_keepalive.stop();m_transport.cancel();m_queue.clear();m_current={};m_active=m_sent=m_established=false;
     emit activityChanged(false);
 }
 }

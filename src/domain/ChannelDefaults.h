@@ -24,7 +24,7 @@ struct ChannelPageInitialValues {
             checks[step.id]=feedbackChecked;timeouts[step.id]=!boot::suppressesPositiveResponse(step.id)&&feedbackChecked;
         }
         return {{"flow","app"},{"stepEnabled",initialStepEnabled("app")},{"negativeResponseChecks",checks},{"timeoutChecks",timeouts},{"simulationOnly",false},
-            {"keyProvider","seed-as-key"},{"keyLibrary",""},
+            {"keyProvider","seed-as-key"},{"keyLibrary",""},{"appSecurityLevel",0x01},{"securityLevel",0x11},
             {"eraseRoutine",0xff00},{"verifyRoutine",0xff01},{"dependencyRoutine",0xff02},
             {"identityDid",0xf180},{"consecutiveFrameByteLimit",4095},{"resetWaitMs",1000}};
     }
@@ -33,10 +33,10 @@ struct ChannelPageInitialValues {
         {"nAsMs",1000},{"nBsMs",1000},{"nCrMs",1000},{"receiveCapacity",4095},{"padding",255}};
     QString hardwareKey;quint32 handle=0;
     int bitrate=500000;bool simulation=defaultSimulation,autoReconnect=false,extendedId=false;
-    QString requestId="7E0",responseId="7E8",functionalId="7DF",nad="01";
+    QString requestId="7E0",responseId="7E8",functionalId="7DF",nad="01",downloadTxId,downloadRxId,fingerprintHex,applicationNote;
     int p2Ms=1000,p2StarMs=5500,testerPresentMs=2000,maxPendingMs=60000;
     int programmingSession=2,securityLevel=0x01;
-    QString flashPath,applicationPath,flashAddress="00000000",applicationAddress="00010000";
+    QString flashPath,applicationPath,flashAddress="20001400",applicationAddress="00020000",applicationLength="00057000";
     bool flashRequired=true,testerPresentEnabled=false,rxdEnabled=ChannelPageInitialValues::defaultRxdEnabled;
     bool repeatDownloadEnabled=false;
     int repeatDownloadCount=2,repeatDownloadIntervalMs=1000;

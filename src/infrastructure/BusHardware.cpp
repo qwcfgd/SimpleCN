@@ -3,18 +3,18 @@
 namespace host {
 namespace {
 class PeakCan final:public CanHardware {
-    PCANBasicClass api; tstPeakCan driver; communication::PeakCanBackend backend;quint32 handle=0;
+    PCANBasicClass api; tstPeakCan driver; communication::PeakCanBackend backend;
 public:
     PeakCan():driver(nullptr,&api),backend(driver){}
     communication::HardwareChannels scan(QString&e)override{return backend.scan(e);}
-    bool open(const communication::HardwareChannel&h,const communication::SoftwareChannelConfiguration&c,QString&e)override{handle=h.handle;return backend.open(h,c,e);}
+    bool open(const communication::HardwareChannel&h,const communication::SoftwareChannelConfiguration&c,QString&e)override{return backend.open(h,c,e);}
     bool close(QString&e)override{return backend.close(e);}
     communication::Health health(QString&e)override{return backend.health(e);}
     bool sendRaw(TPCANMsg m)override{return driver.sendRaw(m);}
     DWORD recvRaw(DWORD n,TPCANMsg*m,TPCANTimestamp*t)override{return driver.recvRaw(n,m,t);}
     unsigned long lastErrorCode()const override{return driver.lastErrorCode();}
     QString lastErrorText()const override{return driver.lastErrorText();}
-    bool enableEcho()override{DWORD enabled=PCAN_PARAMETER_ON;return api.SetValue(TPCANHandle(handle),PCAN_ALLOW_ECHO_FRAMES,&enabled,sizeof(enabled))==PCAN_ERROR_OK;}
+    bool enableEcho()override{return driver.enableEcho();}
 };
 class PeakLin final:public LinHardware {
     tstPeakLin driver;communication::PeakLinBackend backend;

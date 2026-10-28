@@ -15,6 +15,9 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QGroupBox>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSpinBox>
 #include "views/MainWindow.h"
 #include "views/ChannelHardwareEditor.h"
@@ -207,27 +210,31 @@ private slots:
     }
     void appAndBootWireSequence_data(){
         QTest::addColumn<QString>("flow");QTest::addColumn<bool>("checked");
-        QTest::newRow("APP unchecked")<<QString("app")<<false;
-        QTest::newRow("APP checked")<<QString("app")<<true;
-        QTest::newRow("Boot unchecked")<<QString("boot")<<false;
-        QTest::newRow("Boot checked")<<QString("boot")<<true;
+        QTest::addColumn<bool>("customLevels");
+        QTest::newRow("APP unchecked")<<QString("app")<<false<<false;
+        QTest::newRow("APP checked")<<QString("app")<<true<<false;
+        QTest::newRow("Boot unchecked")<<QString("boot")<<false<<false;
+        QTest::newRow("Boot checked")<<QString("boot")<<true<<false;
+        QTest::newRow("APP custom levels")<<QString("app")<<true<<true;
+        QTest::newRow("Boot custom level")<<QString("boot")<<true<<true;
     }
     void appAndBootWireSequence(){
-        QFETCH(QString,flow);QFETCH(bool,checked);
-        auto p=profile(flow,checked);WireBench bench(p);
+        QFETCH(QString,flow);QFETCH(bool,checked);QFETCH(bool,customLevels);
+        auto p=profile(flow,checked);p.applicationEraseBase=0xff00;p.applicationEraseLength=0x20;if(customLevels){p.appSecurityLevel=0x03;p.securityLevel=0x21;}WireBench bench(p);
         FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished),events(&job,&FlashJob::stepEvent);
         QString error;const auto app=image(0xff00,32),driver=image(0x10000000,16);
         QVERIFY2(job.start(app,driver,error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);
         QVERIFY2(done[0][0].toBool(),qPrintable(done[0][1].toString()));
         const auto requests=bench.ecu.requests;
         if(flow=="app"){
-            QCOMPARE(requests[0],hex("1001"));QCOMPARE(requests[1],hex("1003"));QCOMPARE(requests[2],hex("2701"));
+            QCOMPARE(requests[0],hex("1001"));QCOMPARE(requests[1],hex("1003"));QCOMPARE(requests[2],hex("27")+char(p.appSecurityLevel));
+            QVERIFY(requests[3].startsWith(hex("27")+char(p.appSecurityLevel+1)));
             for(const auto request:{"1083","8582","288301"})QVERIFY(requests.contains(hex(request)));
         }
         else {QCOMPARE(requests[0],hex("1002"));QVERIFY(!requests.contains(hex("2701")));QVERIFY(!requests.contains(hex("220101")));}
         const int programming=requests.indexOf(hex("1002"));QVERIFY(programming>=0);
-        QCOMPARE(requests[programming+1],hex("2711"));QVERIFY(requests[programming+2].startsWith(hex("2712")));
-        QCOMPARE(requests[programming+3],hex("2ef1840101"));
+        QCOMPARE(requests[programming+1],hex("27")+char(p.securityLevel));QVERIFY(requests[programming+2].startsWith(hex("27")+char(p.securityLevel+1)));
+        QCOMPARE(requests[programming+3].left(3),hex("2ef184"));QCOMPARE(requests[programming+3].size(),22);
         QCOMPARE(requests[programming+4],hex("3400441000000000000010"));
         QVERIFY(requests.contains(hex("3101ff00440000ff0000000020")));
         const int reset=requests.indexOf(hex("1101"));QVERIFY(reset>programming);
@@ -241,20 +248,27 @@ private slots:
     }
     void negativeResponsePolicy_data(){
         QTest::addColumn<bool>("checked");QTest::addColumn<int>("service");QTest::addColumn<bool>("success");
-        QTest::newRow("unchecked ignores NRC")<<false<<0x85<<true;
+        QTest::newRow("unchecked ignores NRC")<<false<<0x85<<false;
+        QTest::newRow("post14 NRC is mandatory")<<false<<0x14<<false;
         QTest::newRow("checked stops NRC")<<true<<0x85<<false;
         QTest::newRow("seed data always required")<<false<<0x27<<false;
         QTest::newRow("block length always required")<<false<<0x34<<false;
+    }
+    void ignoredTransferIsNotConfirmed(){
+        auto p=profile("app",false);WireBench bench(p);bench.ecu.faults.negativeService=0x36;bench.ecu.faults.negativeCode=0x22;
+        FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished),progress(&job,&FlashJob::progress);
+        QString error;QVERIFY(job.start(image(0xff00,16),{},error));QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);
+        QVERIFY(!done[0][0].toBool());QVERIFY(!progress.isEmpty());QVERIFY(progress.last()[0].toInt()<100);
     }
     void negativeResponsePolicy(){
         QFETCH(bool,checked);QFETCH(int,service);QFETCH(bool,success);
         auto p=profile("app",checked);WireBench bench(p);
         bench.ecu.faults.negativeService=service;bench.ecu.faults.negativeCode=0x22;
-        FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished),notice(&job,&FlashJob::notice),events(&job,&FlashJob::stepEvent);
+        FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished),notice(&job,&FlashJob::notice),events(&job,&FlashJob::stepEvent),progress(&job,&FlashJob::progress);
         QString error;QVERIFY(job.start(image(0xff00,16),{},error));QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);
         QCOMPARE(done[0][0].toBool(),success);
-        if(success){QCOMPARE(notice.count(),2);QVERIFY(done[0][1].toString().contains("未全部确认"));}
-        else {QVERIFY(!bench.ecu.requests.contains(hex("1101")));QVERIFY(done[0][1].toString().contains("NRC"));}
+        if(!checked&&service==0x85){QCOMPARE(notice.count(),3);QVERIFY(done[0][1].toString().contains("未完全确认"));QVERIFY(bench.ecu.requests.contains(hex("1101")));QVERIFY(progress.last()[0].toInt()<100);}
+        else {if(service==0x14)QVERIFY(!bench.ecu.requests.contains(hex("288001")));else QVERIFY(!bench.ecu.requests.contains(hex("1101")));QVERIFY(done[0][1].toString().contains("NRC"));}
         if(service==0x85){
             bool found=false;for(const auto &args:events)found|=args[0].toString().contains("负响应NRC(0x22)");
             QVERIFY(found);
@@ -264,9 +278,9 @@ private slots:
         auto p=profile("app",true);p.stepEnabled=ChannelPageInitialValues::initialStepEnabled("app");
         p.stepEnabled["pre8502"]=false;
         WireBench bench(p);FlashJob job(bench.session,p,std::make_unique<SimulationKey>());
-        QSignalSpy done(&job,&FlashJob::finished);QString error;
+        QSignalSpy done(&job,&FlashJob::finished),progress(&job,&FlashJob::progress);QString error;
         QVERIFY(job.start(image(0xff00,16),{},error));QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);
-        QVERIFY2(done[0][0].toBool(),qPrintable(done[0][1].toString()));
+        QVERIFY(!done[0][0].toBool());QVERIFY(done[0][1].toString().contains("未完全确认"));QVERIFY(progress.last()[0].toInt()<100);
         QVERIFY(!bench.ecu.requests.contains(hex("8582")));
         QVERIFY(bench.ecu.requests.contains(hex("288301")));
     }
@@ -283,13 +297,8 @@ private slots:
         FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished),events(&job,&FlashJob::stepEvent);
         QString error;QVERIFY(job.start(image(0xff00,16),{},error));
         QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);
-        QCOMPARE(done[0][0].toBool(),!drop||!checked);
-        if(drop&&checked)QVERIFY(done[0][1].toString().contains("timeout"));
-        if(drop&&!checked)QVERIFY(done[0][1].toString().contains("未全部确认"));
-        if(drop){
-            bool found=false;for(const auto &args:events)found|=args[0].toString().contains("响应超时(")&&args[0].toString().endsWith("ms)");
-            QVERIFY(found);
-        }
+        QCOMPARE(done[0][0].toBool(),!drop);
+        if(drop){QVERIFY(done[0][1].toString().contains("timeout"));QVERIFY(!bench.ecu.requests.contains(hex("288001")));}
     }
 
     void seedkeyRejectsInvalidInputs(){
@@ -304,6 +313,8 @@ private slots:
         QVERIFY(!defaults.rxdEnabled);QVERIFY(!defaults.toJson()["rxdEnabled"].toBool());
         QCOMPARE(defaults.downloadProfile["flow"].toString(),QString("app"));
         QCOMPARE(defaults.downloadProfile["keyProvider"].toString(),QString("seed-as-key"));
+        QCOMPARE(defaults.downloadProfile["appSecurityLevel"].toInt(),0x01);
+        QCOMPARE(defaults.downloadProfile["securityLevel"].toInt(),0x11);
         for(const auto &step:downloadSteps()){
             QVERIFY(defaults.downloadProfile["stepEnabled"].toObject()[step.id].toBool());
             QCOMPARE(defaults.downloadProfile["negativeResponseChecks"].toObject()[step.id].toBool(),ChannelPageInitialValues::feedbackChecked);
@@ -324,10 +335,17 @@ private slots:
         auto quick=vm->settings();quick.p2Ms=30;quick.p2StarMs=60;QVERIFY(vm->setSettings(quick));
         QTimer::singleShot(30,&window,[&]{
             auto dialog=page->findChild<QDialog*>("downloadSettingsDialog");QVERIFY(dialog);
+            QVERIFY(!dialog->findChild<QComboBox*>("downloadTarget"));
+            auto appLevel=dialog->findChild<QLineEdit*>("appSecurityLevel");
+            auto bootLevel=dialog->findChild<QLineEdit*>("bootSecurityLevel");QVERIFY(appLevel);QVERIFY(bootLevel);
+            QCOMPARE(appLevel->text(),QString("01"));QCOMPARE(bootLevel->text(),QString("11"));
+            QCOMPARE(appLevel->maxLength(),2);QCOMPARE(bootLevel->maxLength(),2);
             auto keyRow=dialog->findChild<QWidget*>("keyLibraryRow");QVERIFY(keyRow);
             auto form=qobject_cast<QFormLayout*>(keyRow->parentWidget()->layout());QVERIFY(form);
             int keyRowIndex=-1;QFormLayout::ItemRole keyRole;
             form->getWidgetPosition(keyRow,&keyRowIndex,&keyRole);QCOMPARE(keyRowIndex,0);
+            QVERIFY(dialog->findChild<QGroupBox*>("repeatDownloadGroup"));QVERIFY(dialog->findChild<QGroupBox*>("downloadParametersGroup"));
+            QVERIFY(dialog->findChild<QLineEdit*>("settingsFlashAddress"));
             QVERIFY(dialog->findChild<QPushButton*>("browseKeyLibrary"));
             QVERIFY(dialog->findChild<QLineEdit*>("keyLibrary"));
             auto flow=dialog->findChild<QComboBox*>("downloadFlow");QVERIFY(flow);QCOMPARE(flow->currentData().toString(),QString("app"));
@@ -335,8 +353,8 @@ private slots:
             QCOMPARE(flashRequired->text(),QString("Flash Driver使能"));
             QCOMPARE(flow->count(),2);QCOMPARE(flow->itemText(0),QString("App下载流程"));QCOMPARE(flow->itemText(1),QString("Boot下载流程"));
             QCOMPARE(dialog->findChild<QLabel*>("feedbackDecisionTitle")->text(),QString("反馈判定"));
-            auto limit=dialog->findChild<QSpinBox*>("consecutiveFrameByteLimit");QVERIFY(limit);
-            QCOMPARE(limit->value(),4095);QCOMPARE(limit->suffix(),QString(" Byte"));
+            auto limit=dialog->findChild<QLineEdit*>("consecutiveFrameByteLimit");QVERIFY(limit);
+            QCOMPARE(limit->text(),QString("4095"));QVERIFY(limit->hasAcceptableInput());
             auto first=dialog->findChild<QCheckBox*>("negative_pre1001");QVERIFY(first);
             auto stepGrid=qobject_cast<QGridLayout*>(first->parentWidget()->layout());QVERIFY(stepGrid);
             for(int i=0;i<downloadSteps().size();++i){
@@ -345,16 +363,22 @@ private slots:
                 auto negative=dialog->findChild<QCheckBox*>("negative_"+QString(step.id));
                 auto timeout=dialog->findChild<QCheckBox*>("timeout_"+QString(step.id));
                 QVERIFY(stepEnable);QVERIFY(negative);QVERIFY(timeout);QVERIFY(stepEnable->isChecked());
+                auto defaultEnable=dialog->findChild<QLabel*>("download_default_enable_"+QString(step.id));
+                auto defaultNegative=dialog->findChild<QLabel*>("download_default_negative_"+QString(step.id));
+                auto defaultTimeout=dialog->findChild<QLabel*>("download_default_timeout_"+QString(step.id));
+                QVERIFY(defaultEnable&&defaultEnable->text()==QString("是"));
+                QVERIFY(defaultNegative&&defaultNegative->text()==QString("否"));
+                QVERIFY(defaultTimeout&&defaultTimeout->text()==QString("否"));
                 QVERIFY(negative->isEnabled());QCOMPARE(timeout->isEnabled(),!suppressesPositiveResponse(step.id));
                 QVERIFY(!negative->isChecked());QVERIFY(!timeout->isChecked());
                 int row=0,column=0,rowSpan=0,columnSpan=0;
                 stepGrid->getItemPosition(stepGrid->indexOf(stepEnable),&row,&column,&rowSpan,&columnSpan);
                 const int rowsPerColumn=(downloadSteps().size()+1)/2;
-                QCOMPARE(row,i%rowsPerColumn+1);QCOMPARE(column,(i/rowsPerColumn)*5+1);
+                QCOMPARE(row,i%rowsPerColumn+1);QCOMPARE(column,(i/rowsPerColumn)*8+2);
                 stepGrid->getItemPosition(stepGrid->indexOf(negative),&row,&column,&rowSpan,&columnSpan);
-                QCOMPARE(row,i%rowsPerColumn+1);QCOMPARE(column,(i/rowsPerColumn)*5+2);
+                QCOMPARE(row,i%rowsPerColumn+1);QCOMPARE(column,(i/rowsPerColumn)*8+4);
                 stepGrid->getItemPosition(stepGrid->indexOf(timeout),&row,&column,&rowSpan,&columnSpan);
-                QCOMPARE(row,i%rowsPerColumn+1);QCOMPARE(column,(i/rowsPerColumn)*5+3);
+                QCOMPARE(row,i%rowsPerColumn+1);QCOMPARE(column,(i/rowsPerColumn)*8+6);
             }
             const auto labels=dialog->findChildren<QLabel*>();bool has27Dll=false,hasOldDllText=false;
             for(const auto value:labels){has27Dll|=value->text()=="27 DLL";hasOldDllText|=value->text().contains("External Generate",Qt::CaseInsensitive);}
@@ -382,10 +406,23 @@ private slots:
                 QVERIFY(enabled);QVERIFY(!enabled->isChecked());QVERIFY(!enabled->isEnabled());
             }
             QDir().mkpath("artifacts");dialog->grab().save("artifacts/download-settings-boot.png");
-            dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+            auto scroll=dialog->findChild<QScrollArea*>();QVERIFY(scroll);scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());QTest::qWait(20);
+            QVERIFY(dialog->grab().save("artifacts/download-settings-feedback.png"));
+            auto save=dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok);
+            for(auto field:{appLevel,bootLevel}){
+                const auto original=field->text();
+                for(const auto invalid:{"","00","02","7F","FF","GG"}){
+                    field->setText(invalid);save->click();
+                    QVERIFY(dialog->isVisible());QVERIFY(!dialog->findChild<QLabel*>("inlineError")->isHidden());
+                }
+                field->setText(original);
+            }
+            appLevel->setText("03");bootLevel->setText("21");save->click();
         });
         page->findChild<QPushButton*>("downloadSettings")->click();
         QCOMPARE(vm->settings().downloadProfile["flow"].toString(),QString("boot"));
+        QCOMPARE(vm->settings().downloadProfile["appSecurityLevel"].toInt(),0x03);
+        QCOMPARE(vm->settings().downloadProfile["securityLevel"].toInt(),0x21);
         QVERIFY(!vm->settings().flashRequired);
         QVERIFY(!page->findChild<QLineEdit*>("flashPath")->isEnabled());
         QVERIFY(!page->findChild<QPushButton*>("browseFlash")->isEnabled());
@@ -398,9 +435,20 @@ private slots:
         QVERIFY(SettingsStore(temp.path()+"/saved.json").save({vm->settings()},error));
         QVector<ChannelSettings> restored;QVERIFY(SettingsStore(temp.path()+"/saved.json").load(restored,error));
         QCOMPARE(restored[0].downloadProfile,vm->settings().downloadProfile);
+        QTimer::singleShot(0,&window,[&]{
+            auto dialog=page->findChild<QDialog*>("downloadSettingsDialog");QVERIFY(dialog);
+            QCOMPARE(dialog->findChild<QLineEdit*>("appSecurityLevel")->text(),QString("03"));
+            QCOMPARE(dialog->findChild<QLineEdit*>("bootSecurityLevel")->text(),QString("21"));dialog->reject();
+        });
+        page->findChild<QPushButton*>("downloadSettings")->click();
         const auto path=temp.path()+"/test.bin";QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QByteArray(32,1));file.close();
         QVERIFY(vm->chooseImage(false,path));QTRY_VERIFY(vm->canConnect());vm->toggleConnection();QTRY_VERIFY(vm->connected()&&!vm->pending());
         vm->start();QTRY_COMPARE_WITH_TIMEOUT(vm->taskState(),TaskState::Completed,6000);
+        const auto sentLevel=[&](const char *prefix){
+            for(const auto &frame:vm->frames()->history())if(frame.payload.startsWith(hex(prefix)))return true;
+            return false;
+        };
+        QTRY_VERIFY(sentLevel("022721"));QVERIFY(sentLevel("062722"));
         QString firstTx;for(const auto &line:vm->logs())if(line.contains("step10 10 02编程会话发送")){firstTx=line;break;}
         QVERIFY(!firstTx.isEmpty());
         const auto logs=vm->logs();

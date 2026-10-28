@@ -50,6 +50,7 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent):
         m_health=h;m_healthDetail=std::move(detail);emit changed();});
     connect(m_model,&ChannelModel::framesReceived,&m_frames,&FrameTableModel::append);
     connect(m_model,&ChannelModel::logMessage,this,&ChannelViewModel::log);
+    connect(m_model,&ChannelModel::packageConfirmationRequested,this,&ChannelViewModel::packageConfirmationRequested);
     connect(m_model,&ChannelModel::taskChanged,this,[this](TaskState state,int progress,QString text){
         m_downloadStartBlocked=false;
         m_task=state;m_progress=progress;m_taskText=std::move(text);emit changed();
@@ -188,6 +189,7 @@ void ChannelViewModel::start(){
     }
     m_downloadStartBlocked=false;m_error.clear();m_pending=true;m_model->previewRequested(m_settings);emit changed();
 }
+void ChannelViewModel::confirmPackage(quint64 id,bool accepted){m_model->packageConfirmationReply(id,accepted);}
 void ChannelViewModel::cancel(){
     if(m_signals->running())m_signals->stop();
     if(m_repeatActive){m_repeatActive=false;m_diagnosticRepeatTimer.stop();m_diagnosticResult+="\n自动重发已停止";log("自动重发已停止");}

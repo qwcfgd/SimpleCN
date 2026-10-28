@@ -12,13 +12,17 @@ public:
     QVector<TPCANHandle> handles={PCAN_USBBUS1};
     QHash<quint32,int> openedPorts,resetPorts,releasedPorts;
     TPCANStatus initializeResult=PCAN_ERROR_OK,resetResult=PCAN_ERROR_OK,filterResult=PCAN_ERROR_OK;
+    TPCANStatus echoResult=PCAN_ERROR_OK;int echoCalls=0;DWORD echoValue=0;TPCANHandle echoHandle=0;
     QQueue<TPCANMsg> frames;
     TPCANMsg lastWrite={};int writes=0;
     TPCANStatus Write(TPCANHandle,TPCANMsg *message) override {++writes;lastWrite=*message;return PCAN_ERROR_OK;}
     TPCANStatus Initialize(TPCANHandle h,TPCANBaudrate,TPCANType,DWORD,WORD) override {++openedPorts[h];++opens;return initializeResult;}
     TPCANStatus Reset(TPCANHandle h) override {++resetPorts[h];++resets;return resetResult;}
     TPCANStatus Uninitialize(TPCANHandle h) override {++releasedPorts[h];++releases;return PCAN_ERROR_OK;}
-    TPCANStatus SetValue(TPCANHandle,TPCANParameter,void*,DWORD) override {return filterResult;}
+    TPCANStatus SetValue(TPCANHandle handle,TPCANParameter parameter,void*value,DWORD) override {
+        if(parameter==PCAN_ALLOW_ECHO_FRAMES){++echoCalls;echoHandle=handle;echoValue=*static_cast<DWORD*>(value);return echoResult;}
+        return filterResult;
+    }
     TPCANStatus GetValue(TPCANHandle,TPCANParameter parameter,void *data,DWORD) override {
         if (parameter==PCAN_ATTACHED_CHANNELS_COUNT) *static_cast<DWORD*>(data)=handles.size();
         else if (parameter==PCAN_ATTACHED_CHANNELS) {
@@ -149,6 +153,13 @@ private slots:
         QVERIFY(driver.sendRaw(msg));QCOMPARE(api.lastWrite.ID,DWORD(0x18daf110));QCOMPARE(api.writes,1);
         msg.MSGTYPE=PCAN_MESSAGE_STANDARD;QVERIFY(!driver.sendRaw(msg));
         msg.ID=0x123;msg.LEN=9;QVERIFY(!driver.sendRaw(msg));QCOMPARE(api.writes,1);
+    }
+    void canEchoUsesOpenedHandleAndRetainsFailure(){
+        FakeCanApi api;api.handles={PCAN_USBBUS2};tstPeakCan driver(nullptr,&api);
+        QVERIFY(!driver.enableEcho());QCOMPARE(driver.lastErrorCode(),static_cast<unsigned long>(PCAN_ERROR_INITIALIZE));QCOMPARE(api.echoCalls,0);
+        QVERIFY(driver.setHardwareHandle(PCAN_USBBUS2));QVERIFY(driver.startDevice());QVERIFY(driver.enableEcho());
+        QCOMPARE(api.echoCalls,1);QCOMPARE(api.echoHandle,TPCANHandle(PCAN_USBBUS2));QCOMPARE(api.echoValue,DWORD(PCAN_PARAMETER_ON));
+        api.echoResult=PCAN_ERROR_ILLPARAMVAL;QVERIFY(!driver.enableEcho());QCOMPARE(driver.lastErrorCode(),static_cast<unsigned long>(PCAN_ERROR_ILLPARAMVAL));QVERIFY(driver.lastErrorText().contains("8000"));
     }
     void rawLinDiagnosticUsesClassicChecksumAndProtectedId() {
         FakeLinApi api;tstPeakLin driver(nullptr,&api);driver.setHardwareHandle(21);driver.setDevMode(modMaster);driver.setDevBaudrate(19200);

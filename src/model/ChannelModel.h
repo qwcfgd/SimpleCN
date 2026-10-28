@@ -16,6 +16,7 @@ signals:
     void disconnectionRequested();
     void refreshRequested();
     void previewRequested(host::ChannelSettings);
+    void packageConfirmationReply(quint64,bool);
     void cancelRequested();
     void scanRequested();
     void diagnosticRequested(host::ChannelSettings,host::diag::Request);
@@ -27,6 +28,7 @@ signals:
     void signalStatus(host::signal::RunStatus);
     void busEvents(host::signal::BusFrameEvents);
     void connectionGenerationChanged(quint64);
+    void packageConfirmationRequested(quint64,QString);
     void diagnosticFinished(bool,QByteArray,QString);
     void diagnosticActivity(bool);
     void bindingChanged(QString,quint32);

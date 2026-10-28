@@ -33,12 +33,12 @@ QByteArray SimulatedUdsEcu::process(const QByteArray &r){
         if(sid==0x28&&r.size()==3&&(r[1]==0||r[1]==3)&&r[2]==1)return positive(2);
         if(r==QByteArray::fromHex("14ffffff"))return positive(1);
         if(r==QByteArray::fromHex("31010203"))return positive(4)+char(0);
-        if(r==QByteArray::fromHex("2ef1840101"))return positive(3);
+        if(r.size()==22&&r.startsWith(QByteArray::fromHex("2ef184")))return positive(3);
     }
     if(!m_programming)return nrc(0x7f);
     if(sid==0x27){
         if(r.size()<2)return nrc(0x13);const int level=quint8(r[1]);
-        if(level==m_profile.securityLevel||(m_profile.flow!="legacy"&&level==1)){
+        if(level==m_profile.securityLevel||(m_profile.flow!="legacy"&&level==m_profile.appSecurityLevel)){
             if(r.size()!=2)return nrc(0x13);m_seedRequested=true;m_seedLevel=quint8(level);
             return positive(2)+(m_unlocked?QByteArray(4,0):QByteArray::fromHex("12345678"));
         }

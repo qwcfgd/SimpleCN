@@ -12,7 +12,7 @@ struct CanFrame {
 };
 struct CanOptions {
     quint32 txId=0x715,rxId=0x795,functionalTxId=0x7df;
-    bool extended=false,functionalRx=false;
+    bool extended=false,functionalRx=false,strictClassicCc=false;
     int blockSize=8,stMin=1,maxWaitFrames=3,nAsMs=1000,nBsMs=1000,nCrMs=1000,receiveCapacity=4095,padding=0xff;
     int nArMs=0; // Legacy profiles use N_As for flow-control confirmations.
     bool valid(QString &) const;
@@ -50,7 +50,8 @@ private:
     CanOptions m_options;Write m_write;
     QTimer m_as,m_bs,m_cr,m_cf;
     QByteArray m_tx,m_rx,m_earlyFc;
-    QElapsedTimer m_lastCf;
+    QElapsedTimer m_lastCf,m_transmitElapsed,m_bsElapsed,m_crElapsed;
+    int m_transmitDeadlineMs=0;
     int m_txOffset=0,m_txSequence=1,m_remainingBlock=0,m_peerBlock=0,m_peerStUs=0,m_waitFrames=0;
     int m_rxLength=0,m_rxSequence=1,m_rxBlock=0,m_pendingCount=0;
     quint64 m_serial=0,m_token=0,m_epoch=0;

@@ -14,6 +14,8 @@ ChannelModel::ChannelModel(ChannelSettings settings,QObject *parent):QObject(par
     connect(this,&ChannelModel::disconnectionRequested,m_worker,&ChannelWorker::disconnectChannel);
     connect(this,&ChannelModel::refreshRequested,m_worker,&ChannelWorker::refresh);
     connect(this,&ChannelModel::previewRequested,m_worker,&ChannelWorker::startPreview);
+    connect(this,&ChannelModel::packageConfirmationReply,m_worker,&ChannelWorker::confirmPackage);
+    connect(m_worker,&ChannelWorker::packageConfirmationRequested,this,&ChannelModel::packageConfirmationRequested);
     connect(this,&ChannelModel::cancelRequested,m_worker,&ChannelWorker::cancelTask);
     connect(this,&ChannelModel::scanRequested,m_worker,&ChannelWorker::startHeaderScan);
     connect(this,&ChannelModel::diagnosticRequested,m_worker,&ChannelWorker::sendDiagnostic);

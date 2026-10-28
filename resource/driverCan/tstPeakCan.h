@@ -33,6 +33,7 @@ public:
     QString lastErrorText() const;
     communication::Health hardwareHealth();
     bool isDeviceActive();
+    bool enableEcho();
     bool sendRaw(TPCANMsg message);
     DWORD recvRaw(DWORD capacity, TPCANMsg messages[], TPCANTimestamp timestamps[] = nullptr);
 

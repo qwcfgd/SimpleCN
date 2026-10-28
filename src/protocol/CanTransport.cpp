@@ -6,6 +6,7 @@ int CanTransport::separationUs(int value){
     return -1;
 }
 bool CanOptions::valid(QString &error) const {
+    if(strictClassicCc&&(extended||padding!=0xcc)){error="Strict CAN requires 11-bit Classic CAN and CC padding";return false;}
     const quint32 max=extended?0x1fffffff:0x7ff;
     if(txId>max||rxId>max||functionalTxId>max||txId==rxId||blockSize<0||blockSize>255||CanTransport::separationUs(stMin)<0||
        maxWaitFrames<0||maxWaitFrames>255||nAsMs<1||nAsMs>60000||nBsMs<1||nBsMs>60000||
@@ -16,12 +17,13 @@ bool CanOptions::valid(QString &error) const {
 }
 QJsonObject CanOptions::toJson() const{
     return {{"txId",int(txId)},{"rxId",int(rxId)},{"functionalTxId",int(functionalTxId)},{"blockSize",blockSize},{"stMin",stMin},{"maxWaitFrames",maxWaitFrames},{"nAsMs",nAsMs},
-      {"nBsMs",nBsMs},{"nCrMs",nCrMs},{"nArMs",nArMs},{"receiveCapacity",receiveCapacity},{"padding",padding}};
+      {"nBsMs",nBsMs},{"nCrMs",nCrMs},{"nArMs",nArMs},{"receiveCapacity",receiveCapacity},{"padding",padding},{"strictClassicCc",strictClassicCc}};
 }
 bool CanOptions::fromJson(const QJsonObject &json,CanOptions &out,QString &error){
     CanOptions options=out;
     const auto defaults=options.toJson();
     for(auto it=json.begin();it!=json.end();++it){
+        if(it.key()=="strictClassicCc"&&it.value().isBool())continue;
         if(!defaults.contains(it.key())||!it.value().isDouble()||it.value().toDouble()!=it.value().toInt(-1)){
             error="Unknown or non-integer CAN network setting";return false;
         }
@@ -35,6 +37,10 @@ bool CanOptions::fromJson(const QJsonObject &json,CanOptions &out,QString &error
     options.nCrMs=json.value("nCrMs").toInt(options.nCrMs);
     options.receiveCapacity=json.value("receiveCapacity").toInt(options.receiveCapacity);
     options.padding=json.value("padding").toInt(options.padding);
+    if(json.contains("strictClassicCc")){
+        if(!json["strictClassicCc"].isBool()){error="strictClassicCc must be boolean";return false;}
+        options.strictClassicCc=json["strictClassicCc"].toBool();
+    }
     if(json.contains("functionalTxId"))options.functionalTxId=quint32(json.value("functionalTxId").toInt(int(options.functionalTxId)));
     if(!options.valid(error))return false;out=options;return true;
 }
@@ -71,28 +77,35 @@ void CanTransport::submit(QByteArray bytes,Kind kind){
     while(bytes.size()<8)bytes.append(char(m_options.padding));
     const CanFrame frame{m_txFunctional?m_options.functionalTxId:m_options.txId,m_options.extended,false,false,false,bytes};
     m_pending=kind;m_token=++m_serial;const auto token=m_token,epoch=m_epoch;
-    m_as.start((kind==FlowControl||kind==Overflow)&&m_options.nArMs>0?m_options.nArMs:m_options.nAsMs);
+    m_transmitDeadlineMs=(kind==FlowControl||kind==Overflow)&&m_options.nArMs>0?m_options.nArMs:m_options.nAsMs;
+    m_transmitElapsed.start();m_as.start(m_transmitDeadlineMs);
     // Always return from send() before publishing frames or completing a PDU.
     QTimer::singleShot(0,this,[this,frame,token,epoch]{
         if(epoch!=m_epoch||token!=m_token)return;
+        if(m_transmitElapsed.elapsed()>=m_transmitDeadlineMs){fail("CAN N_As/N_Ar transmit confirmation timeout");return;}
         emit trace(true,frame);
         if(epoch!=m_epoch||token!=m_token)return;
-        QString error;if(!m_write(frame,token,error))fail(error.isEmpty()?"CAN write failed":error);
+        if(m_transmitElapsed.elapsed()>=m_transmitDeadlineMs){fail("CAN N_As/N_Ar transmit confirmation timeout");return;}
+        QString error;const bool written=m_write(frame,token,error);
+        if(epoch!=m_epoch||token!=m_token)return;
+        if(!written)fail(error.isEmpty()?"CAN write failed":error);
+        else if(m_transmitElapsed.elapsed()>=m_transmitDeadlineMs)fail("CAN N_As/N_Ar transmit confirmation timeout");
     });
 }
 void CanTransport::confirmTransmitted(quint64 token,bool success){
     if(!token||token!=m_token||m_pending==None)return;
+    if(m_transmitElapsed.elapsed()>=m_transmitDeadlineMs){fail("CAN N_As/N_Ar transmit confirmation timeout");return;}
     if(!success){fail("CAN transmit confirmation failed");return;}
     const auto kind=m_pending;m_as.stop();m_pending=None;m_token=0;
     if(kind==Overflow){fail("CAN receive capacity exceeded");return;}
-    if(kind==FlowControl){if(m_rxLength)m_cr.start(m_options.nCrMs);return;}
+    if(kind==FlowControl){if(m_rxLength){m_crElapsed.start();m_cr.start(m_options.nCrMs);}return;}
     if(kind==Single){txComplete();return;}
     if(kind==First){
-        m_txState=WaitingFc;m_bs.start(m_options.nBsMs);m_lastCf.start();
+        m_txState=WaitingFc;m_bsElapsed.start();m_bs.start(m_options.nBsMs);m_lastCf.start();
     }else{
         m_txOffset+=m_pendingCount;m_txSequence=(m_txSequence+1)&15;m_lastCf.start();
         if(m_txOffset>=m_tx.size()){txComplete();return;}
-        if(m_peerBlock&&--m_remainingBlock==0){m_txState=WaitingFc;m_bs.start(m_options.nBsMs);}
+        if(m_peerBlock&&--m_remainingBlock==0){m_txState=WaitingFc;m_bsElapsed.start();m_bs.start(m_options.nBsMs);}
         else {m_txState=SendingCf;scheduleCf();}
     }
     if(m_txState==WaitingFc&&!m_earlyFc.isEmpty()){const auto fc=m_earlyFc;m_earlyFc.clear();flowControl(fc);}
@@ -104,7 +117,7 @@ void CanTransport::flowControl(const QByteArray &bytes){
     if(status==2){fail("CAN peer overflow");return;}
     if(status==1){
         if(++m_waitFrames>m_options.maxWaitFrames){fail("CAN WAIT frame limit exceeded");return;}
-        m_bs.start(m_options.nBsMs);return;
+        m_bsElapsed.start();m_bs.start(m_options.nBsMs);return;
     }
     if(status!=0){fail("Invalid CAN flow status");return;}
     const int separation=separationUs(quint8(bytes[2]));
@@ -131,13 +144,21 @@ void CanTransport::sendFc(bool overflow){
 }
 void CanTransport::receiveFrame(const CanFrame &frame){
     const bool idMatch=(frame.id==m_options.rxId)||(m_options.functionalRx&&frame.id==m_options.functionalTxId);
-    if(!m_listening||!idMatch||frame.extended!=m_options.extended||frame.rtr||frame.fd)return;
+    if(!m_listening||!idMatch)return;
+    if(frame.extended!=m_options.extended||frame.rtr||frame.fd){if(m_options.strictClassicCc)fail("Strict CAN received non-classic 11-bit data frame");return;}
     if(frame.error){fail("CAN receive error");return;}
     const auto &bytes=frame.data;
-    if(bytes.isEmpty()||bytes.size()>8){fail("Invalid Classic CAN DLC");return;}
+    if(bytes.isEmpty()||bytes.size()>8||(m_options.strictClassicCc&&bytes.size()!=8)){fail("Invalid Classic CAN DLC");return;}
+    const auto padding=[&](int used){
+        if(m_options.strictClassicCc&&bytes.mid(used)!=QByteArray(bytes.size()-used,char(0xcc))){fail("Strict CAN unused bytes must be CC");return false;}return true;
+    };
     emit trace(false,frame);
     const int pci=quint8(bytes[0]),kind=pci>>4;
+    if(m_pending!=None&&m_as.isActive()&&m_transmitElapsed.elapsed()>=m_transmitDeadlineMs){fail("CAN N_As/N_Ar transmit confirmation timeout");return;}
+    if(kind==3&&m_bs.isActive()&&m_bsElapsed.elapsed()>=m_options.nBsMs){fail("CAN N_Bs flow control timeout");return;}
+    if(kind==2&&m_cr.isActive()&&m_crElapsed.elapsed()>=m_options.nCrMs){fail("CAN N_Cr consecutive frame timeout");return;}
     if(kind==3){
+        if(bytes.size()<3||!padding(3)){if(bytes.size()<3)fail("Short CAN flow control frame");return;}
         if(m_txState==WaitingFc){flowControl(bytes);return;}
         // A real adapter can report peer FC before its own TX echo.
         if(m_pending==First||(m_pending==Consecutive&&m_peerBlock&&m_remainingBlock==1)){
@@ -151,6 +172,7 @@ void CanTransport::receiveFrame(const CanFrame &frame){
         const bool lastTxFrame=(m_pending==Single)||(m_pending==Consecutive&&m_txOffset+m_pendingCount>=m_tx.size());
         if(lastTxFrame&&(kind==0||kind==1)){
             confirmTransmitted(m_token,true);
+            if(!m_listening)return;
         }else{
             fail("CAN response arrived before request transmission completed");return;
         }
@@ -158,6 +180,7 @@ void CanTransport::receiveFrame(const CanFrame &frame){
     if(kind==0){
         const int size=pci&15;
         if(m_rxLength||size<1||size>7||bytes.size()<size+1){fail("Invalid CAN single frame");return;}
+        if(!padding(size+1))return;
         emit received(bytes.mid(1,size));return;
     }
     if(kind==1){
@@ -174,12 +197,13 @@ void CanTransport::receiveFrame(const CanFrame &frame){
         if(!m_rxLength||(pci&15)!=m_rxSequence){fail("CAN consecutive frame sequence mismatch");return;}
         const int count=qMin(7,m_rxLength-int(m_rx.size()));
         if(bytes.size()<count+1){fail("Short CAN consecutive frame");return;}
+        if(!padding(count+1))return;
         m_rx+=bytes.mid(1,count);m_rxSequence=(m_rxSequence+1)&15;
         if(m_rx.size()==m_rxLength){
             const auto pdu=m_rx;m_rx.clear();m_rxLength=0;m_cr.stop();emit received(pdu);return;
         }
         if(m_options.blockSize&&++m_rxBlock==m_options.blockSize){m_rxBlock=0;sendFc(false);}
-        else m_cr.start(m_options.nCrMs);
+        else {m_crElapsed.start();m_cr.start(m_options.nCrMs);}
         return;
     }
     fail("Unsupported CAN PCI");

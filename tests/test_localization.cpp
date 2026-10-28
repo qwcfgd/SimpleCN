@@ -3,8 +3,11 @@
 #include <QHeaderView>
 #include <QTableView>
 #include <QLabel>
+#include <QGroupBox>
 #include <QPushButton>
+#include <QAbstractButton>
 #include <QDialog>
+#include <QTimer>
 #include <QTabWidget>
 #include <QTabBar>
 #include <QMouseEvent>
@@ -18,6 +21,7 @@
 #include <QFile>
 #include "localization/Language.h"
 #include "views/MainWindow.h"
+#include "views/ChannelPage.h"
 #include "views/UiLanguageController.h"
 #include "views/SignalTransmitPage.h"
 #include "views/SignalPlotDialog.h"
@@ -51,6 +55,33 @@ private slots:
         Language::instance().setCode("en");tabs.setTabText(0,"取消");tabs.tabBar()->update();
         QTRY_COMPARE(tabs.tabText(0),QString("Cancel"));
         Language::instance().setCode("zh_CN");QCOMPARE(tabs.tabText(0),QString("取消"));
+    }
+    void downloadSettingsLanguageRoundTrip(){
+        QTemporaryDir dir;MainWindow window(dir.filePath("settings.json"),true);window.show();
+        auto page=window.findChild<ChannelPage*>("canPage");QVERIFY(page);auto button=page->findChild<QPushButton*>("downloadSettings");QVERIFY(button);
+        QString enFlow,zhFlow,enDefault,enInput,zhInput,enHeader,zhHeader;QStringList untranslated;bool found=false;
+        QTimer::singleShot(50,&window,[&]{
+            auto d=page->findChild<QDialog*>("downloadSettingsDialog");if(!d)return;
+            auto flow=d->findChild<QLineEdit*>("download_default_flow");auto user=d->findChild<QLineEdit*>("applicationNote");
+            auto baseline=d->findChild<QLabel*>("download_default_enable_pre1001");
+            if(!flow||!user||!baseline){d->reject();return;}found=true;user->setText("用户内容");
+            Language::instance().setCode("en");UiLanguageController::instance().refresh();
+            enFlow=flow->text();enInput=user->text();enDefault=baseline->text();
+            enHeader=d->findChild<QGroupBox*>("downloadParametersGroup")->title();
+            QRegularExpression chinese("[\\x{3400}-\\x{9fff}]");
+            for(auto w:d->findChildren<QWidget*>()){
+                QString text=w->toolTip();if(auto label=qobject_cast<QLabel*>(w))text+=" "+label->text();
+                if(auto button=qobject_cast<QAbstractButton*>(w))text+=" "+button->text();
+                if(auto group=qobject_cast<QGroupBox*>(w))text+=" "+group->title();
+                if(auto line=qobject_cast<QLineEdit*>(w))text+=" "+line->placeholderText();
+                if(text.contains(chinese))untranslated.append(w->objectName()+": "+text);
+            }
+            Language::instance().setCode("zh_CN");UiLanguageController::instance().refresh();
+            zhFlow=flow->text();zhInput=user->text();zhHeader=d->findChild<QGroupBox*>("downloadParametersGroup")->title();d->reject();
+        });
+        button->click();QVERIFY(found);QCOMPARE(enFlow,QString("App download sequence"));QCOMPARE(zhFlow,QString("App下载流程"));
+        QCOMPARE(enDefault,QString("Yes"));QCOMPARE(enHeader,QString("Download parameters"));QCOMPARE(zhHeader,QString("下载参数"));
+        QCOMPARE(enInput,QString("用户内容"));QCOMPARE(zhInput,QString("用户内容"));QVERIFY2(untranslated.isEmpty(),qPrintable(untranslated.join("\n")));
     }
     void catalog(){
         Language::instance().setCode("en");

@@ -62,6 +62,7 @@ public slots:
     void toggleConnection();
     void refresh();
     void start();
+    void confirmPackage(quint64,bool);
     void cancel();
     void scanHeaders();
     void clearLogs();
@@ -74,6 +75,7 @@ signals:
     void logsCleared();
     void diagnosticDatabaseChanged();
     void diagnosticFinished(bool,QByteArray,QString);
+    void packageConfirmationRequested(quint64,QString);
 private:
     QString downloadInputHint()const;
     void selectAvailableHardware();
