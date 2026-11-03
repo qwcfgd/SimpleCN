@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QUuid>
 #include <QStringList>
+#include <QElapsedTimer>
 namespace host {
 bool SafeTraceRecorder::open(const QString &root){
  m_healthy=false;
@@ -13,12 +14,12 @@ bool SafeTraceRecorder::open(const QString &root){
  return open(&m_file);
 }
 bool SafeTraceRecorder::open(QIODevice *device){
- m_device=device; m_sequence=0; m_healthy=false;
+ m_device=device; m_sequence=0; m_previousWriteUs=-1; m_healthy=false;
  if(!device || !device->isOpen() || !device->isWritable())return false;
- const QByteArray header="sequence,host_epoch_ms,host_capture_us,direction,can_id,dlc,data\n";
+ const QByteArray header="sequence,host_epoch_ms,host_capture_us,direction,can_id,dlc,data,pcan_timestamp_us,host_read_end_us,send_call_us,previous_log_write_us,timeout_kind,timeout_limit_ms,timeout_elapsed_ms,can_frame_flags,hardware_operation,hardware_duration_us\n";
  m_healthy=m_device->write(header)==header.size() && (m_device!=&m_file || m_file.flush()); return m_healthy;
 }
-bool SafeTraceRecorder::append(const QString &direction,quint32 id,int dlc,const QByteArray &data,qint64 epochMs,qint64 captureUs,bool diagnosticId){
+bool SafeTraceRecorder::append(const QString &direction,quint32 id,int dlc,const QByteArray &data,qint64 epochMs,qint64 captureUs,bool diagnosticId,const TraceTiming &timing){
  if(!m_healthy)return false;
  QStringList bytes; const int n=data.size();
  int keep=0;
@@ -37,7 +38,13 @@ bool SafeTraceRecorder::append(const QString &direction,quint32 id,int dlc,const
  }
  for(int i=0;i<n;++i)bytes<<(i<keep?QString("%1").arg(quint8(data[i]),2,16,QChar('0')).toUpper():QString("**"));
 
- const QByteArray line=QString("%1,%2,%3,%4,0x%5,%6,%7\n").arg(++m_sequence).arg(epochMs).arg(captureUs).arg(direction).arg(id,0,16).arg(dlc).arg(bytes.join(' ')).toUtf8();
- m_healthy=m_device->write(line)==line.size() && (m_device!=&m_file || m_file.flush());return m_healthy;
+ const QByteArray line=QString("%1,%2,%3,%4,0x%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,%16,%17\n").arg(++m_sequence).arg(epochMs).arg(captureUs).arg(direction).arg(id,0,16).arg(dlc).arg(bytes.join(' ')).arg(timing.driverTimestampUs).arg(timing.hostReadEndUs).arg(timing.sendCallUs).arg(m_previousWriteUs).arg(timing.timeoutKind).arg(timing.timeoutLimitMs).arg(timing.timeoutElapsedMs).arg(timing.frameFormat).arg(timing.hardwareOperation).arg(timing.hardwareDurationUs).toUtf8();
+ QElapsedTimer writeTimer;writeTimer.start();
+ m_healthy=m_device->write(line)==line.size() && (m_device!=&m_file || m_file.flush());
+ m_previousWriteUs=writeTimer.nsecsElapsed()/1000;return m_healthy;
+}
+bool SafeTraceRecorder::sendSignal(quint32 id,const QByteArray &data,bool extended,qint64 epochMs,qint64 captureUs,const std::function<bool()> &send){
+ TraceTiming timing;timing.frameFormat=extended?"EXT":"STD";
+ return append("TX request",id,data.size(),data,epochMs,captureUs,false,timing) && sendIfHealthy(send);
 }
 }

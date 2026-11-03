@@ -26,7 +26,9 @@ signals:
     void stateChanged(communication::ConnectionState state, const QString &detail);
     void healthChanged(communication::Health health, const QString &detail);
     void connectionClosing(); // Stop consumers before the SDK resources are released.
+    void enumerationMeasured(qint64 elapsedUs);
 private:
+    void monitorTick();
     void transition(ConnectionState,const QString &detail=QString());
     bool refresh();
     bool choose(HardwareChannel &selected) const;

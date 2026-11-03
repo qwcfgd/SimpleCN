@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <cstring>
 
-tstPeakCan::tstPeakCan(void *parent, PCANBasicClass *api)
+tstPeakCan::tstPeakCan(void *parent, PCANBasicClass *api, ReceiveEventFactory eventFactory)
 {
     SimTxCAN = false;
     SimRxCAN = false;
@@ -10,6 +10,7 @@ tstPeakCan::tstPeakCan(void *parent, PCANBasicClass *api)
     //device parameter configure:
     Q_UNUSED(parent);
     t_ownsApi = api == nullptr;
+    t_eventFactory=eventFactory;
     t_pPCANBasic = api ? api : new PCANBasicClass(); // the masked API pointer.
 
     t_PCANStatus = PCAN_ERROR_OK; // latest function response device status
@@ -54,10 +55,19 @@ bool tstPeakCan::startDevice()
     t_PCANStatus = t_pPCANBasic->Initialize(t_hHw,t_baudrate);
     if (t_PCANStatus != PCAN_ERROR_OK) return false;
     t_acquired = true;
+    DWORD autoReset=PCAN_PARAMETER_OFF;
+    t_PCANStatus=t_pPCANBasic->SetValue(t_hHw,PCAN_BUSOFF_AUTORESET,&autoReset,sizeof(autoReset));
+    if(t_PCANStatus!=PCAN_ERROR_OK){const auto error=t_PCANStatus;stopDevice();t_PCANStatus=error;return false;}
     if (!setFilter(true)) {
         const auto error = t_PCANStatus;
         stopDevice(); t_PCANStatus = error;
         return false;
+    }
+    // Notification is optional: retain the existing polling path on failure.
+    HANDLE receiveEvent=t_eventFactory?t_eventFactory():CreateEvent(nullptr,FALSE,FALSE,nullptr);
+    if(receiveEvent){
+        if(t_pPCANBasic->SetValue(t_hHw,PCAN_RECEIVE_EVENT,&receiveEvent,sizeof(receiveEvent))==PCAN_ERROR_OK)t_receiveEvent=receiveEvent;
+        else CloseHandle(receiveEvent);
     }
     t_open = true;
     return true;
@@ -67,12 +77,19 @@ bool tstPeakCan::stopDevice()
 {
     t_open = false;
     if (!t_acquired) { t_PCANStatus = PCAN_ERROR_OK; return true; }
+    HANDLE event=t_receiveEvent;t_receiveEvent=nullptr;TPCANStatus unregisterResult=PCAN_ERROR_OK;
+    if(event){HANDLE disabled=nullptr;unregisterResult=t_pPCANBasic->SetValue(t_hHw,PCAN_RECEIVE_EVENT,&disabled,sizeof(disabled));}
     // Reset failure (including unplug) must never skip Uninitialize.
-    const auto reset = t_pPCANBasic->Reset(t_hHw);
+    // A failed attempt to disarm hard reset must not cause another reset here.
+    const auto reset = t_hardResetArmed ? PCAN_ERROR_OK : t_pPCANBasic->Reset(t_hHw);
     const auto release = t_pPCANBasic->Uninitialize(t_hHw);
+    // If neither unregister nor uninitialize succeeded, retain the OS handle:
+    // the driver may still reference it. It is reclaimed when the process exits.
+    if(event && (unregisterResult==PCAN_ERROR_OK || release==PCAN_ERROR_OK))CloseHandle(event);
+    if(release==PCAN_ERROR_OK)t_hardResetArmed=false;
     t_acquired = false;
     t_MsgRxArrSize = 0;
-    t_PCANStatus = release != PCAN_ERROR_OK ? release : reset;
+    t_PCANStatus = release != PCAN_ERROR_OK ? release : reset != PCAN_ERROR_OK ? reset : unregisterResult;
     return t_PCANStatus == PCAN_ERROR_OK;
 }
 

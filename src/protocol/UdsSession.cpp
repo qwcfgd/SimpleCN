@@ -18,7 +18,7 @@ UdsSession::UdsSession(DiagnosticTransport &transport,SessionOptions options,QOb
         }
     });
     connect(&transport,&DiagnosticTransport::received,this,&UdsSession::response);
-    connect(&transport,&DiagnosticTransport::failed,this,[this](const QString &e){if(m_active)finish(false,{},e);});
+    connect(&transport,&DiagnosticTransport::failed,this,[this](const QString &e){if(m_active)finish(false,{},"Transport failure: "+e);});
     connect(&m_response,&QTimer::timeout,this,[this]{
         if(m_current.suppressed&&!m_pending)finish(true,{},{});else finish(false,{},"UDS P2/P2* timeout");
     });
@@ -82,6 +82,8 @@ bool UdsSession::responseExpired(){
 }
 void UdsSession::finish(bool ok,const QByteArray &pdu,const QString &error){
     if(!m_active)return;
+    if(error=="UDS P2/P2* timeout")emit deadlineObserved(m_pending?"UDS_P2_STAR":"UDS_P2",m_response.interval(),m_responseElapsed.elapsed());
+    else if(error=="UDS absolute response deadline"||error=="UDS transmit timeout")emit deadlineObserved(m_sent?"UDS_RESPONSE_LIMIT":"UDS_TX_LIMIT",m_limit.interval(),m_limitElapsed.elapsed());
     m_transport.cancel();m_response.stop();m_limit.stop();m_active=m_sent=false;
     auto reply=std::move(m_current.reply);m_current={};
     QQueue<Request> abandoned;

@@ -38,9 +38,15 @@ public:
 SignalTransmitter::SignalTransmitter(QObject*parent):QObject(parent){m_clock.start();m_timer.setTimerType(Qt::PreciseTimer);m_timer.setInterval(1);connect(&m_timer,&QTimer::timeout,this,&SignalTransmitter::tick);}
 SignalTransmitter::~SignalTransmitter(){stop();}
 void SignalTransmitter::start(const TxPlan&plan,int bitrate,bool simulation,CanHardware*can,LinHardware*lin){
-    if(running())return;m_plan=plan;m_status={};m_status.run=plan.run;m_status.state=RunState::Starting;m_can=can;m_simulation=simulation;m_once=0;m_events.clear();m_remaining.fill(qBound(1,plan.repeatCount,1000000),plan.items.size());m_due.fill(captureTimeUs(),plan.items.size());m_lin.reset();m_device.reset();
+    if(running())return;if(m_can!=can)m_canOutstanding=false;m_canPaused=false;m_replayResumeUs=0;m_plan=plan;m_status={};m_status.run=plan.run;m_status.state=RunState::Starting;m_can=can;m_simulation=simulation;m_once=0;m_events.clear();m_remaining.fill(qBound(1,plan.repeatCount,1000000),plan.items.size());m_due.fill(captureTimeUs(),plan.items.size());m_lin.reset();m_device.reset();
     m_replayResponses.clear();m_replayLin=lin;m_replayIndex=0;m_replayRound=0;m_loggedKeys.clear();m_itemIndex.clear();m_extraDue.fill(0,plan.items.size());
     for(int n=0;n<plan.items.size();++n)m_itemIndex[plan.items[n].key]=n;
+    // PEAK disables self-sent frames by default. Enable their hardware readback
+    // before either ordinary transmission or replay can submit a CAN frame.
+    if(plan.bus==Bus::Can&&!simulation&&(!plan.items.isEmpty()||plan.replay)){
+        if(!can){fail("CAN 驱动不可用");return;}
+        if(!can->enableEcho()){fail("开启 CAN 发送回显失败："+can->lastErrorText());return;}
+    }
     if(plan.replay){
         if(plan.replayDurationUs<=0||plan.repeatCount<1){fail("回放时间或次数无效");return;}
         for(const auto &r:plan.replayFrames){if(r.timeUs<0||r.timeUs>=plan.replayDurationUs||r.id>(plan.bus==Bus::Can?0x1fffffff:61)||r.length<0||r.length>(r.fd?64:8)||(!r.rtr&&r.payload.size()!=r.length)||(!simulation&&r.fd)){fail("回放记录无效，或当前驱动不支持 CAN FD 硬件发送");return;}m_loggedKeys.insert(frameKey(plan.bus,r.id,r.extended));}
@@ -67,25 +73,56 @@ void SignalTransmitter::start(const TxPlan&plan,int bitrate,bool simulation,CanH
     }else {if(!simulation&&!can){fail("CAN 驱动不可用");return;}if(plan.periodic)m_scheduler.start(plan.items,captureTimeUs());m_status.state=RunState::Running;m_status.detail=simulation?"SIM CAN 运行":"CAN 请求提交中";}
     emit statusChanged(m_status);m_timer.start();tick();
 }
+bool SignalTransmitter::canWriteFailed(){
+    if(!m_can)return false;
+    auto state=m_can->classifyStatus(m_can->lastErrorCode());
+    if(state==CanBusState::Warning||state==CanBusState::BusOff){setCanPaused(true);emit canRecoveryNeeded(int(state),m_plan.connection);return true;}
+    return false;
+}
+void SignalTransmitter::rememberCanWrite(quint32 id,bool extended,bool rtr,const QByteArray &bytes,int length){
+    m_canOutstanding=true;m_canPendingAtUs=captureTimeUs();m_canPending={};
+    m_canPending.bus=Bus::Can;m_canPending.id=id;m_canPending.extended=extended;m_canPending.rtr=rtr;m_canPending.bytes=bytes;m_canPending.length=length<0?bytes.size():length;
+}
+void SignalTransmitter::setCanPaused(bool paused,bool controllerReset){
+    if(m_plan.bus!=Bus::Can)return;
+    if(controllerReset)m_canOutstanding=false;
+    const bool changed=m_canPaused!=paused;m_canPaused=paused;
+    const auto now=captureTimeUs();m_scheduler.setPaused(paused,now);
+    if(changed&&!paused){m_due.fill(now,m_plan.items.size());m_replayResumeUs=now;if(m_canOutstanding)m_canPendingAtUs=now;}
+    if(changed&&running()){m_status.detail=paused?"CAN transmission paused: recoverable bus fault":"CAN transmission resumed; expired cycles discarded";flush();}
+}
 bool SignalTransmitter::send(const TxItem&i,QString&error){
     if(!m_simulation){TPCANMsg message={};message.ID=i.id;message.MSGTYPE=i.extended?PCAN_MESSAGE_EXTENDED:PCAN_MESSAGE_STANDARD;message.LEN=BYTE(i.payload.size());std::memcpy(message.DATA,i.payload.constData(),size_t(i.payload.size()));
-        if(!m_can||!m_can->sendRaw(message)){error=m_can?m_can->lastErrorText():"CAN 驱动已释放";return false;}}
+        if(guardedCanSend){if(!guardedCanSend(i,error)){canWriteFailed();return false;}}
+        else if(!m_can||!m_can->sendRaw(message)){error=m_can?m_can->lastErrorText():"CAN device unavailable";canWriteFailed();return false;}
+        rememberCanWrite(i.id,i.extended,false,i.payload);}
     BusFrameEvent event;event.bus=Bus::Can;event.id=i.id;event.extended=i.extended;event.bytes=i.payload;event.arrivalUs=captureTimeUs();
     event.source=m_simulation?EventSource::Simulated:EventSource::RequestAccepted;event.detail=m_simulation?"SIM TX（无 ECU 响应）":"驱动已接受发送请求（非 ECU 确认）";m_events.append(event);return true;
 }
-void SignalTransmitter::tick(){if(!running())return;const auto now=captureTimeUs();QString error;if(m_plan.replay){replayTick(now);return;}
+void SignalTransmitter::tick(){if(!running())return;const auto now=captureTimeUs();QString error;
+    if(m_plan.bus==Bus::Can&&!m_simulation){
+        if(m_canPaused){if(now-m_lastFlush>=20000)flush();return;}
+        if(m_canOutstanding){if(now-m_canPendingAtUs>=qint64(m_canEchoTimeoutMs)*1000)fail("CAN transmit echo timeout; frame outcome unknown");else if(now-m_lastFlush>=20000)flush();return;}
+    }
+    if(m_plan.replay){replayTick(now);return;}
     if(m_lin){if(!m_lin->tick(now,error)){fail(error);return;}const auto previous=m_status.state;m_status=m_lin->status();if(previous!=m_status.state)emit statusChanged(m_status);if(!running()){m_timer.stop();flush();return;}}
     else if(m_plan.bus==Bus::Can&&m_plan.items.isEmpty()){
         if(now-m_lastFlush>=20000)flush();
         return;
-    }else if(m_plan.periodic){m_scheduler.pump(now,[this](const auto&i,QString&e){return send(i,e);});const auto stats=m_scheduler.statistics();
+    }else if(m_plan.periodic){m_scheduler.pump(now,[this](const auto&i,QString&e){return send(i,e);},m_simulation?256:1,[this]{return m_canPaused;});const auto stats=m_scheduler.statistics();
         m_status.sent=stats.sent;m_status.missed=stats.missed;m_status.failures=stats.failures;
         if(!m_scheduler.running()){fail("全部 CAN 周期发送项已停止：驱动写入失败");return;}
     }else{int budget=256;bool pending=false;
         for(int n=0;n<m_plan.items.size();++n){const auto &i=m_plan.items[n];if(!i.enabled){m_remaining[n]=0;continue;}
-            if(m_remaining[n]>0&&now>=m_due[n]&&budget>0){--budget;if(send(i,error)){++m_status.sent[i.key];--m_remaining[n];m_due[n]=now+qMax(1,i.periodMs)*1000LL;}else{m_status.failures[i.key]=error;m_remaining[n]=0;}}
+            if(m_remaining[n]>0&&now>=m_due[n]&&budget>0){--budget;
+                if(send(i,error)){++m_status.sent[i.key];--m_remaining[n];m_due[n]=now+qMax(1,i.periodMs)*1000LL;}
+                else if(m_canPaused){m_due[n]=now+qMax(1,i.periodMs)*1000LL;break;}
+                else{m_status.failures[i.key]=error;m_remaining[n]=0;}
+                if(m_canOutstanding)break;
+            }
             pending|=m_remaining[n]>0;}
-        if(!pending){m_status.state=RunState::Stopped;m_status.detail="多次发送已完成";m_timer.stop();flush();return;}}
+        pending=std::any_of(m_remaining.cbegin(),m_remaining.cend(),[](int n){return n>0;});
+        if(!pending&&!m_canOutstanding){m_status.state=RunState::Stopped;m_status.detail="多次发送已完成";m_timer.stop();flush();return;}}
     // Deliver timestamps before the worker receives another bus batch. Status
     // updates remain throttled, but holding frames for 20 ms reorders captures.
     if(!m_events.isEmpty()){emit events(m_events);m_events.clear();}
@@ -110,6 +147,7 @@ void SignalTransmitter::stop(quint64 run){
     flush();
 }
 void SignalTransmitter::hardwareClosed(){
+    m_canOutstanding=false;m_canPaused=false;m_can=nullptr;
     if(!m_status.cleanupPending)return;
     m_status.cleanupPending=false;m_status.state=RunState::Stopped;m_status.detail="硬件通道已断开";
     m_lin.reset();m_device.reset();m_can=nullptr;m_replayLin=nullptr;flush();
@@ -124,7 +162,12 @@ void SignalTransmitter::update(const PayloadUpdate&u){if(!running()||u.run!=m_pl
 void SignalTransmitter::switchSchedule(quint64 run,const QString&name){if(!running()||run!=m_plan.run||!m_lin)return;QString error;
     if(!m_lin->switchTo(name,captureTimeUs(),error)){fail(error);return;}m_status=m_lin->status();flush();}
 bool SignalTransmitter::publishesLin(quint32 id)const{if(m_plan.replay&&running()){for(const auto&r:m_plan.replayFrames)if(r.id==id&&r.publish)return true;}return m_lin&&running()&&m_lin->publishes(id);}
-void SignalTransmitter::observe(const BusFrameEvents&events){if(m_lin&&running())for(const auto&e:events)m_lin->observe(e);}
+void SignalTransmitter::observe(const BusFrameEvents&events){
+    for(const auto&e:events){
+        if(m_lin&&running())m_lin->observe(e);
+        if(m_canOutstanding&&e.bus==Bus::Can&&e.valid&&e.source==EventSource::HardwareEcho&&e.id==m_canPending.id&&e.extended==m_canPending.extended&&e.rtr==m_canPending.rtr&&(e.length<0?e.bytes.size():e.length)==m_canPending.length&&(e.rtr||e.bytes==m_canPending.bytes))m_canOutstanding=false;
+    }
+}
 }
 
 namespace host {
@@ -135,7 +178,8 @@ bool SignalTransmitter::replaySend(signal::ReplayRecord r,qint64 logicalUs,QStri
     event.arrivalUs=(m_simulation?logicalUs:captureTimeUs())+m_plan.replayStampOffsetUs;event.source=r.rx?signal::EventSource::Received:signal::EventSource::Simulated;event.detail=m_simulation?"日志快速回放":"日志回放";
     if(!m_simulation){
         if(m_plan.bus==signal::Bus::Can){TPCANMsg msg={};msg.ID=r.id;msg.LEN=BYTE(r.length);msg.MSGTYPE=TPCANMessageType((r.extended?PCAN_MESSAGE_EXTENDED:PCAN_MESSAGE_STANDARD)|(r.rtr?PCAN_MESSAGE_RTR:0));std::memcpy(msg.DATA,r.payload.constData(),size_t(qMin(8,int(r.payload.size()))));
-            if(!m_can||!m_can->sendRaw(msg)){error=m_can?m_can->lastErrorText():"CAN 驱动不可用";return false;}event.source=signal::EventSource::RequestAccepted;}
+            if(!m_can||!m_can->sendRaw(msg)){error=m_can?m_can->lastErrorText():"CAN device unavailable";canWriteFailed();return false;}
+            rememberCanWrite(r.id,r.extended,r.rtr,r.payload,r.length);event.source=signal::EventSource::RequestAccepted;}
         else if(m_plan.role==signal::LinRole::Monitor){event.source=signal::EventSource::Received;event.detail="观测节点：仅软件重现日志";}
         else if(m_plan.role==signal::LinRole::Master){TLINMsg msg={};msg.FrameId=BYTE(r.id);msg.Length=BYTE(r.length);msg.Direction=r.publish?dirPublisher:dirSubscriber;msg.ChecksumType=r.classicChecksum?cstClassic:cstEnhanced;std::memcpy(msg.Data,r.payload.constData(),size_t(qMin(8,int(r.payload.size()))));
             if(!m_replayLin||!m_replayLin->sendRaw(msg)){error=m_replayLin?m_replayLin->lastErrorText():"LIN 驱动不可用";return false;}event.source=signal::EventSource::RequestAccepted;event.detail=r.publish?"回放：主节点帧头与数据请求":"回放：主节点帧头请求，等待外部数据";if(!r.publish){event.bytes.clear();event.length=0;}}
@@ -164,7 +208,12 @@ void SignalTransmitter::replayTick(qint64 now){
         if(logged)record=m_plan.replayFrames[m_replayIndex++];
         else if(extra>=0){const auto&i=m_plan.items[extra];record.id=i.id;record.extended=i.extended;record.payload=i.payload;record.length=i.payload.size();record.classicChecksum=i.classicChecksum;record.publish=i.publisher==m_plan.node;m_extraDue[extra]+=qMax(1,i.periodMs)*1000LL;}
         else break;
-        if(!replaySend(record,logical,error)){fail(error);return;}
+        if(m_plan.bus==Bus::Can&&!m_simulation&&logical<m_replayResumeUs){++m_status.missed[frameKey(Bus::Can,record.id,record.extended)];continue;}
+        if(!replaySend(record,logical,error)){
+            if(m_canPaused){if(logged)--m_replayIndex;else if(extra>=0)m_extraDue[extra]-=qMax(1,m_plan.items[extra].periodMs)*1000LL;break;}
+            fail(error);return;
+        }
+        if(m_canOutstanding)break;
     }
     if(!m_events.isEmpty()){emit events(m_events);m_events.clear();}if(now-m_lastFlush>=20000)flush();
 }

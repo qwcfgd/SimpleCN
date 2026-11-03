@@ -15,7 +15,7 @@ public:
     ChannelSettings snapshotSettings()const;
     communication::HardwareChannels hardware()const;
     void setReservations(const QSet<quint32> &);
-    // 0: idle, 1: healthy, 2: communication lost.
+    // 0: idle, 1: healthy, 2: lost/error, 3: CAN warning/recovery.
     int communicationIndicator()const;
     bool reservesHardware()const{return connected() || m_connecting;}
     communication::ConnectionState state()const{return m_state;}

@@ -1,6 +1,7 @@
 #include "SignalConfigurationStore.h"
 #include "model/DatabaseImporter.h"
 #include "model/SignalCodec.h"
+#include "model/TransmitPayload.h"
 #include <QFileInfo>
 #include <QDir>
 #include <QJsonArray>
@@ -16,7 +17,7 @@ QJsonObject SignalConfigurationStore::serialize(const Database&db,const WorkingS
     if(db->bus==Bus::Can){root["canNode"]=work.canNode;root["canDirection"]=work.canDirection;}
     QJsonArray custom;for(const auto&f:work.customFrames)custom.append(QJsonObject{{"name",f.name},{"id",QString::number(f.id)},{"length",f.length},{"publisher",f.publisher},{"classicChecksum",f.classicChecksum},{"key",f.key},{"source",f.custom?QString():frameKey(db->bus,f.id,f.extended)}});root["custom"]=custom;
     QJsonArray frames;for(const auto&f:definitions(db,work)){const auto d=work.frames.value(f.key);QJsonArray values;for(int i=0;i<f.fields.size();++i)values.append(SignalCodec::rawText(f.fields[i],d.appliedValues.value(i)));
-        frames.append(QJsonObject{{"key",f.key},{"payload",QString::fromLatin1(d.applied.bytes.toHex())},{"values",values},{"enabled",d.enabled},{"sendEnabled",d.sendEnabled},{"cycleMs",d.cycleMs}});}root["frames"]=frames;
+        frames.append(QJsonObject{{"key",f.key},{"dlc",int(d.applied.bytes.size())},{"payload",QString::fromLatin1(d.applied.bytes.toHex())},{"values",values},{"enabled",d.enabled},{"sendEnabled",d.sendEnabled},{"cycleMs",d.cycleMs}});}root["frames"]=frames;
     QJsonArray schedules;for(const auto&s:work.schedules){QJsonArray entries;for(const auto&slot:s.entries)entries.append(QJsonObject{{"frame",slot.frame},{"delayMs",slot.delayMs},{"issue",slot.issue}});schedules.append(QJsonObject{{"name",s.name},{"issue",s.issue},{"slots",entries}});}root["schedules"]=schedules;return root;
 }
 bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QString&directory,ConfigurationSnapshot&snapshot,QString&error){
@@ -44,10 +45,12 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
     const auto all=definitions(next.database,work);QMap<QString,FrameDefinition> byKey;for(const auto&f:all)byKey[f.key]=f;
     QSet<QString> seen;for(const auto&value:root["frames"].toArray()){
         const auto o=value.toObject();const auto key=o["key"].toString();if(!byKey.contains(key)||seen.contains(key))return reject("配置帧引用未知或重复："+key);seen.insert(key);const auto&f=byKey[key];auto&d=work.frames[key];QByteArray bytes;
-        if(!o["payload"].isString()||!SignalCodec::parseBytes(o["payload"].toString(),f.length,bytes,error))return reject(error.isEmpty()?"缺少帧 payload":error);
+        const int length=o.contains("dlc")?o["dlc"].toInt(-1):f.length;
+        if((o.contains("dlc")&&(!o["dlc"].isDouble()||o["dlc"].toDouble()!=length))||(!TransmitPayload::validLength(bus,f.id,length)&&!(length==f.length&&!f.issue.isEmpty())))return reject("无效 DLC");
+        if(!o["payload"].isString()||!SignalCodec::parseBytes(o["payload"].toString(),length,bytes,error))return reject(error.isEmpty()?"缺少帧 payload":error);
         if(!o["values"].isArray())return reject("缺少信号使用值数组");const auto values=o["values"].toArray();if(values.size()!=f.fields.size())return reject("配置信号数量不一致");
         QVector<RawValue> raw;for(int i=0;i<values.size();++i){if(!values[i].isString())return reject("64 位/raw 值必须使用字符串");const auto r=SignalCodec::parseRaw(f.fields[i],values[i].toString());if(!r.ok())return reject(r.error);raw.append(r.raw);d.warnings[i]=r.warning;}
-        if(f.issue.isEmpty()){auto check=bytes;if(!SignalCodec::encode(f,raw,check,error))return false;if(check!=bytes)return reject("配置 payload 与信号使用值不一致");}
+        if(f.issue.isEmpty()){auto check=bytes;if(!TransmitPayload::encode(f,raw,check,error))return false;if(check!=bytes)return reject("配置 payload 与信号使用值不一致");}
         const auto cycle=o["cycleMs"];if(!cycle.isDouble()||cycle.toDouble()!=cycle.toInt(-1)||cycle.toInt(-1)<0||!o["enabled"].isBool())return reject("无效周期/启用字段");
         if(o.contains("sendEnabled")&&!o["sendEnabled"].isBool())return reject("无效发送使能");d.sendEnabled=o.value("sendEnabled").toBool(true);
         d.values=d.appliedValues=raw;d.applied.bytes=bytes;d.enabled=o["enabled"].toBool();d.cycleMs=cycle.toInt();

@@ -32,7 +32,7 @@ namespace host {
 static QIcon statusIcon(int state) {
     QPixmap pix(32,32);pix.setDevicePixelRatio(2);pix.fill(Qt::transparent);
     QPainter p(&pix);p.setRenderHint(QPainter::Antialiasing);
-    const QColor color=state==1?QColor("#16A06B"):state==2?QColor("#DC4040"):QColor("#96A1AD");
+    const QColor color=state==1?QColor("#16A06B"):state==2?QColor("#DC4040"):state==3?QColor("#D09A00"):QColor("#96A1AD");
     p.setPen(QPen(color,1.6));p.setBrush(state?QBrush(color):Qt::NoBrush);
     p.drawEllipse(QRectF(3,3,10,10));return QIcon(pix);
 }
@@ -123,7 +123,7 @@ void MainWindow::updateChannels() {
         const int state=vm->communicationIndicator();
         ui->channelTabs->setTabText(i,vm->settings().softwareId);
         ui->channelTabs->setTabIcon(i,statusIcon(state));
-        ui->channelTabs->setTabToolTip(i,state==1?"通讯正常":state==2?"通讯丢失":"未通讯");
+        ui->channelTabs->setTabToolTip(i,state==1?"通讯正常":state==2?"通讯丢失":state==3?"通讯告警":"未通讯");
         ui->channelTabs->tabBar()->setTabData(i,vm->settings().bus==communication::Bus::Lin?"LIN":"CAN");
     }
 }

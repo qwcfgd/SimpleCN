@@ -183,6 +183,18 @@ host_deploy(test_t008_target)
 add_test(NAME t008_target COMMAND test_t008_target -o "${CMAKE_CURRENT_BINARY_DIR}/t008-target-results.xml,xml")
 set_tests_properties(t008_target PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
 
+add_executable(test_frame_columns test_frame_columns.cpp)
+target_link_libraries(test_frame_columns PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
+target_compile_definitions(test_frame_columns PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+host_deploy(test_frame_columns)
+add_test(NAME frame_columns COMMAND test_frame_columns -o "${CMAKE_CURRENT_BINARY_DIR}/frame-columns-results.xml,xml")
+set_tests_properties(frame_columns PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
+add_executable(test_trace_signal test_trace_signal.cpp)
+target_link_libraries(test_trace_signal PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
+host_deploy(test_trace_signal)
+add_test(NAME trace_signal COMMAND test_trace_signal)
+
 add_executable(test_safe_trace_recorder test_safe_trace_recorder.cpp ../src/infrastructure/SafeTraceRecorder.cpp)
 target_include_directories(test_safe_trace_recorder PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(test_safe_trace_recorder PRIVATE Qt${QT_VERSION_MAJOR}::Core)

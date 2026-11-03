@@ -1,4 +1,6 @@
 #include <QtTest>
+#include <QQueue>
+#include <QThread>
 #include <QTemporaryDir>
 #include <QFile>
 #include <QFileDialog>
@@ -30,6 +32,9 @@
 #include "views/MainWindow.h"
 #include "views/ChannelHardwareEditor.h"
 #include "views/ChannelTabs.h"
+#include "views/UiLanguageController.h"
+#include <QSlider>
+#include <QVBoxLayout>
 #include <QWheelEvent>
 #include "infrastructure/SettingsStore.h"
 #include "infrastructure/ChannelWorker.h"
@@ -38,6 +43,26 @@
 #include "protocol/FlashJob.h"
 using namespace host;
 using communication::Bus;
+class ReceiveEventFakeCan final:public CanHardware {
+public:
+    explicit ReceiveEventFakeCan(bool eventSupported):event(eventSupported?CreateEvent(nullptr,FALSE,FALSE,nullptr):nullptr){}
+    ~ReceiveEventFakeCan()override{if(event)CloseHandle(event);}
+    HANDLE event=nullptr;QQueue<TPCANMsg> frames;int reads=0,delayMs=0,writes=0,scans=0;TPCANMsg lastWrite={};bool opened=false;bool warning=false,failClose=false,failOpen=false,failWrite=false;
+    communication::HardwareChannels scan(QString &error)override{++scans;error.clear();communication::HardwareChannel h;h.bus=Bus::Can;h.handle=0x51;h.key="can:fake:1";h.available=true;h.persistentIdentity=true;return {h};}
+    bool open(const communication::HardwareChannel&,const communication::SoftwareChannelConfiguration&,QString &error)override{if(failOpen){error="fake open failure";return false;}opened=true;error.clear();return true;}
+    bool close(QString &error)override{opened=false;frames.clear();if(event)ResetEvent(event);if(failClose){error="fake close failure";return false;}error.clear();return true;}
+    communication::Health health(QString &detail)override{detail.clear();return opened?communication::Health::Ready:communication::Health::Removed;}
+    bool enableEcho()override{return true;}
+    void *receiveEventHandle()const override{return event;}
+    bool sendRaw(TPCANMsg m)override{++writes;lastWrite=m;return !failWrite;}
+    DWORD recvRaw(DWORD count,TPCANMsg *out,TPCANTimestamp *time)override{++reads;if(delayMs)QThread::msleep(unsigned(delayMs));DWORD n=0;while(n<count&&!frames.isEmpty()){out[n]=frames.dequeue();if(time)time[n]={};++n;}return n;}
+    unsigned long lastErrorCode()const override{return warning?PCAN_ERROR_BUSHEAVY:PCAN_ERROR_OK;}
+    QString lastErrorText()const override{return {};}
+    CanBusState classifyStatus(unsigned long status)const override{return status&PCAN_ERROR_BUSHEAVY?CanBusState::Warning:CanBusState::Ready;}
+    CanBusState busState()override{return warning?CanBusState::Warning:CanBusState::Ready;}
+    CanBusState statusFrame(const TPCANMsg &frame)const override{return frame.MSGTYPE&PCAN_MESSAGE_STATUS?CanBusState::Warning:CanBusState::Unsupported;}
+    void enqueue(int count){for(int n=0;n<count;++n){TPCANMsg f={};f.ID=0x123;f.LEN=1;f.DATA[0]=BYTE(n);frames.enqueue(f);}}
+};
 class StartupWindowEvents : public QObject {
 public:
     QString phase;
@@ -133,6 +158,152 @@ class HostUiTest : public QObject {
         return s;
     }
 private slots:
+    void failedWriteRemainsUnresolvedUntilManualRecovery(){
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        QSignalSpy done(&worker,&ChannelWorker::diagnosticFinished);worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);fake->failWrite=true;
+        diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex("1003");worker.sendDiagnostic(settings,request);
+        QTRY_VERIFY_WITH_TIMEOUT(!done.isEmpty(),1000);QVERIFY(!done.last()[0].toBool());QCOMPARE(fake->writes,1);
+        const int previous=done.size();worker.sendDiagnostic(settings,request);QCOMPARE(done.size(),previous+1);
+        QVERIFY(!done.last()[0].toBool());QVERIFY(done.last()[2].toString().contains("unresolved"));QCOMPARE(fake->writes,1);worker.shutdown();
+    }
+    void cancellationBeforeWriteDoesNotBlockNextDiagnostic(){
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);
+        diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex("1003");worker.sendDiagnostic(settings,request);worker.cancelTask();QCOMPARE(fake->writes,0);
+        worker.sendDiagnostic(settings,request);QTRY_COMPARE_WITH_TIMEOUT(fake->writes,1,1000);worker.shutdown();
+    }
+    void completedResetThenCancelDoesNotLockChannel(){
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        QSignalSpy done(&worker,&ChannelWorker::diagnosticFinished);worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);
+        diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex("1101");worker.sendDiagnostic(settings,request);QTRY_COMPARE_WITH_TIMEOUT(fake->writes,1,1000);
+        auto echo=fake->lastWrite;echo.MSGTYPE=BYTE(echo.MSGTYPE|PCAN_MESSAGE_ECHO);fake->frames.enqueue(echo);
+        TPCANMsg reply={};reply.ID=settings.responseId.toUInt(nullptr,16);reply.LEN=8;reply.DATA[0]=2;reply.DATA[1]=0x51;reply.DATA[2]=1;fake->frames.enqueue(reply);QVERIFY(SetEvent(fake->event));
+        QTRY_VERIFY_WITH_TIMEOUT(!done.isEmpty(),1000);QVERIFY(done.last()[0].toBool());worker.cancelTask();worker.sendDiagnostic(settings,request);QTRY_COMPARE_WITH_TIMEOUT(fake->writes,2,1000);worker.shutdown();
+    }
+    void settledEchoDoesNotBlockOrdinarySignal(){
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        QSignalSpy generation(&worker,&ChannelWorker::connectionGenerationChanged);worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened&&!generation.isEmpty());
+        diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex("1003");worker.sendDiagnostic(settings,request);QTRY_COMPARE_WITH_TIMEOUT(fake->writes,1,1000);worker.cancelTask();
+        auto echo=fake->lastWrite;echo.MSGTYPE=BYTE(echo.MSGTYPE|PCAN_MESSAGE_ECHO);fake->frames.enqueue(echo);QVERIFY(SetEvent(fake->event));QTRY_VERIFY_WITH_TIMEOUT(fake->frames.isEmpty(),1000);
+        signal::TxPlan plan;plan.bus=signal::Bus::Can;plan.run=1;plan.connection=generation.last()[0].toULongLong();plan.periodic=false;plan.repeatCount=1;
+        plan.items={{"CAN:STD:825",0x339,false,QByteArray::fromHex("aabbccddeeff0102"),10,1,{},false,true}};
+        worker.startSignals(plan);QTRY_COMPARE_WITH_TIMEOUT(fake->writes,2,1000);worker.shutdown();
+    }
+    void manualReconnectDiscardsUnresolvedTransaction_data(){QTest::addColumn<bool>("closeFails");QTest::addColumn<bool>("openFails");QTest::newRow("successful close and reconnect")<<false<<false;QTest::newRow("failed close")<<true<<false;QTest::newRow("failed reconnect")<<false<<true;}
+    void manualReconnectDiscardsUnresolvedTransaction(){
+        QFETCH(bool,closeFails);QFETCH(bool,openFails);auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        QSignalSpy done(&worker,&ChannelWorker::diagnosticFinished);QStringList logs;connect(&worker,&ChannelWorker::logMessage,&worker,[&](const QString &v){logs<<v;});
+        worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex("1003");worker.sendDiagnostic(settings,request);
+        QTRY_COMPARE_WITH_TIMEOUT(fake->writes,1,1000);worker.cancelTask();fake->failClose=closeFails;worker.disconnectChannel();QVERIFY(logs.join(' ').contains("may already have executed"));
+        const int previousScans=fake->scans;settings.p2Ms=777;worker.updateSettings(settings);QVERIFY(fake->scans>previousScans);int previous=done.size();worker.sendDiagnostic(settings,request);QCOMPARE(done.size(),previous+1);QVERIFY(done.last()[2].toString().contains("unresolved"));
+        fake->failOpen=openFails;worker.connectChannel(settings);previous=done.size();worker.sendDiagnostic(settings,request);
+        if(closeFails||openFails){QCOMPARE(done.size(),previous+1);QVERIFY(done.last()[2].toString().contains("unresolved"));QCOMPARE(fake->writes,1);}
+        else QTRY_COMPARE_WITH_TIMEOUT(fake->writes,2,1000);
+        worker.shutdown();
+    }
+    void cancelledDiagnosticCannotReuseLateEcho(){
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        QSignalSpy done(&worker,&ChannelWorker::diagnosticFinished);worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);
+        diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex("1003");worker.sendDiagnostic(settings,request);
+        QTRY_COMPARE_WITH_TIMEOUT(fake->writes,1,1000);worker.cancelTask();QVERIFY(!done.isEmpty());
+        auto echo=fake->lastWrite;echo.MSGTYPE=BYTE(echo.MSGTYPE|PCAN_MESSAGE_ECHO);fake->frames.enqueue(echo);QVERIFY(SetEvent(fake->event));QTest::qWait(50);
+        const int previous=done.size();worker.sendDiagnostic(settings,request);QCOMPARE(done.size(),previous+1);
+        QVERIFY(!done.last()[0].toBool());QVERIFY(done.last()[2].toString().contains("unresolved"));QCOMPARE(fake->writes,1);worker.shutdown();
+    }
+    void faultedCanBatchStillPublishesEveryReadFrame(){
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        int total=0;QSignalSpy health(&worker,&ChannelWorker::healthChanged);
+        connect(&worker,&ChannelWorker::framesReceived,&worker,[&](const FrameBatch &batch){total+=batch.size();});
+        worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);QTest::qWait(30);
+        fake->enqueue(3);fake->warning=true;QVERIFY(SetEvent(fake->event));QTRY_COMPARE_WITH_TIMEOUT(total,3,2000);
+        bool warned=false;for(const auto &event:health)if(event[0].value<communication::Health>()==communication::Health::BusWarning)warned=true;
+        QVERIFY(warned);worker.shutdown();
+    }
+    void faultedBatchKeepsEchoButDoesNotAdvanceCancelledTransaction(){
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        int total=0;QSignalSpy done(&worker,&ChannelWorker::diagnosticFinished);
+        connect(&worker,&ChannelWorker::framesReceived,&worker,[&](const FrameBatch &batch){total+=batch.size();});
+        worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);
+        diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex("1003");worker.sendDiagnostic(settings,request);
+        QTRY_COMPARE_WITH_TIMEOUT(fake->writes,1,1000);const int before=total;
+        auto echo=fake->lastWrite;echo.MSGTYPE=BYTE(echo.MSGTYPE|PCAN_MESSAGE_ECHO);fake->frames.enqueue(echo);fake->enqueue(1);fake->warning=true;
+        QVERIFY(SetEvent(fake->event));QTRY_COMPARE_WITH_TIMEOUT(total,before+2,2000);QTRY_VERIFY(!done.isEmpty());QVERIFY(!done.last()[0].toBool());
+        fake->warning=false;QVERIFY(SetEvent(fake->event));QTest::qWait(40);const int previous=done.size();worker.sendDiagnostic(settings,request);
+        QCOMPARE(done.size(),previous+1);QVERIFY(done.last()[2].toString().contains("unresolved"));QCOMPARE(fake->writes,1);worker.shutdown();
+    }
+    void statusFrameDoesNotDiscardFollowingBatchFrames(){
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        int total=0;QSignalSpy health(&worker,&ChannelWorker::healthChanged);
+        connect(&worker,&ChannelWorker::framesReceived,&worker,[&](const FrameBatch &batch){total+=batch.size();});
+        worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);QTest::qWait(30);
+        fake->enqueue(1);TPCANMsg status={};status.MSGTYPE=PCAN_MESSAGE_STATUS;status.DATA[3]=PCAN_ERROR_BUSHEAVY;fake->frames.enqueue(status);fake->enqueue(1);
+        QVERIFY(SetEvent(fake->event));QTRY_COMPARE_WITH_TIMEOUT(total,3,2000);
+        bool warned=false;for(const auto &event:health)if(event[0].value<communication::Health>()==communication::Health::BusWarning)warned=true;
+        QVERIFY(warned);worker.shutdown();
+    }
+    void receiveEventDrainsOne64And65FramesAndStopsOnClose(){
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();p->enqueue(1);return p;});
+        int total=0,maxBatch=0;connect(&worker,&ChannelWorker::framesReceived,&worker,[&](const FrameBatch &batch){total+=batch.size();maxBatch=qMax(maxBatch,int(batch.size()));});
+        worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened&&fake->event);
+        QTimer *poll=nullptr;for(auto *timer:worker.findChildren<QTimer*>())if(!timer->isSingleShot()&&timer->interval()==20)poll=timer;
+        QVERIFY(poll);poll->setInterval(60000);QTRY_COMPARE_WITH_TIMEOUT(total,1,2000); // queued before registration, with no event signal
+        int iteration=0;for(int count:{1,64,65,65}){fake->delayMs=iteration++==3?3:0;maxBatch=0;const int previousReads=fake->reads;fake->enqueue(count);QVERIFY(SetEvent(fake->event));const int expected=total+count;QTRY_COMPARE_WITH_TIMEOUT(total,expected,2000);QVERIFY(maxBatch<=64);if(count>=64)QTRY_VERIFY_WITH_TIMEOUT(fake->reads>=previousReads+2,2000);}
+        worker.disconnectChannel();QVERIFY(!fake->opened);const int stopped=total;fake->enqueue(1);QVERIFY(SetEvent(fake->event));QTest::qWait(40);QCOMPARE(total,stopped);
+        worker.connectChannel(settings);QVERIFY(fake->opened);fake->frames.clear();fake->enqueue(1);QVERIFY(SetEvent(fake->event));QTRY_COMPARE_WITH_TIMEOUT(total,stopped+1,2000);worker.shutdown();
+    }
+    void receivePollingFallbackWhenNotificationUnavailable(){
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(false);fake=p.get();return p;});
+        int total=0;QStringList logs;connect(&worker,&ChannelWorker::logMessage,&worker,[&](const QString &text){logs.append(text);});connect(&worker,&ChannelWorker::framesReceived,&worker,[&](const FrameBatch &batch){total+=batch.size();});worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened&&!fake->event);QVERIFY(logs.contains("PCAN receive event unavailable; using polling."));
+        QTimer *poll=nullptr;for(auto *timer:worker.findChildren<QTimer*>())if(!timer->isSingleShot()&&timer->interval()==20)poll=timer;
+        QVERIFY(poll);poll->setInterval(1);fake->enqueue(1);QTRY_COMPARE_WITH_TIMEOUT(total,1,1000);worker.shutdown();
+    }
+    void receiveNotificationIsDiscardedWhenWorkerIsDestroyed(){
+        int total=0;for(int n=0;n<10;++n){
+            auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+            ReceiveEventFakeCan *fake=nullptr;auto *worker=new ChannelWorker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+            connect(worker,&ChannelWorker::framesReceived,this,[&](const FrameBatch &batch){total+=batch.size();});worker->initialize();worker->connectChannel(settings);
+            QVERIFY(fake&&fake->opened);fake->enqueue(1);QVERIFY(SetEvent(fake->event));delete worker;QCoreApplication::processEvents();QCOMPARE(total,0);
+        }
+    }
+    void slowEmptyCanReadIsMeasuredWithoutRawPayload(){
+        QTemporaryDir trace(qEnvironmentVariable("QT_TRACE_TEST_ROOT",QDir::tempPath())+"/worker-trace-XXXXXX");QVERIFY(trace.isValid());
+        struct RestoreEnv {QByteArray old;bool existed;~RestoreEnv(){if(existed)qputenv("QTBOOTLOADER_TRACE_DIR",old);else qunsetenv("QTBOOTLOADER_TRACE_DIR");}} restore{qgetenv("QTBOOTLOADER_TRACE_DIR"),qEnvironmentVariableIsSet("QTBOOTLOADER_TRACE_DIR")};
+        qputenv("QTBOOTLOADER_TRACE_DIR",trace.path().toUtf8());
+        auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);fake->delayMs=15;QVERIFY(SetEvent(fake->event));QTRY_VERIFY_WITH_TIMEOUT(fake->reads>0,1000);
+        fake->delayMs=0;fake->enqueue(1);fake->warning=true;QVERIFY(SetEvent(fake->event));QTRY_VERIFY_WITH_TIMEOUT(fake->frames.isEmpty(),1000);worker.shutdown();
+        const auto runs=QDir(trace.path()).entryList({"run-*"},QDir::Dirs|QDir::NoDotAndDotDot);QCOMPARE(runs.size(),1);QFile file(trace.filePath(runs.first()+"/frames.csv"));QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto bytes=file.readAll();QVERIFY(bytes.contains("CAN_ENUMERATE"));QVERIFY(bytes.contains("CAN_READ_EMPTY_SLOW"));QVERIFY(bytes.contains("CAN_READ_STATUS_0x8"));QVERIFY(bytes.contains("CAN_GET_STATUS_0x8"));QVERIFY(!bytes.contains("AA BB"));
+    }
+    void wheelInputDoesNotChangeValues(){
+        UiLanguageController::instance();
+        QScrollArea area;area.resize(320,200);area.setWidgetResizable(true);
+        auto *content=new QWidget;auto *layout=new QVBoxLayout(content);
+        auto *spin=new QSpinBox;spin->setRange(0,100);spin->setValue(5);
+        auto *combo=new QComboBox;combo->addItems({"one","two"});combo->setCurrentIndex(0);
+        auto *slider=new QSlider(Qt::Horizontal);slider->setRange(0,100);slider->setValue(7);
+        layout->addWidget(spin);layout->addWidget(combo);layout->addWidget(slider);layout->addSpacing(1000);area.setWidget(content);area.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&area));QVERIFY(area.verticalScrollBar()->maximum()>0);
+        for(QWidget *widget:{static_cast<QWidget*>(spin),static_cast<QWidget*>(combo),static_cast<QWidget*>(slider)}){
+            const QPointF pos=widget->rect().center();const QPointF global=widget->mapToGlobal(pos.toPoint());
+            QWheelEvent wheel(pos,global,QPoint(),QPoint(0,-120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
+            QCoreApplication::sendEvent(widget,&wheel);
+        }
+        QCOMPARE(spin->value(),5);QCOMPARE(combo->currentIndex(),0);QCOMPARE(slider->value(),7);
+        QVERIFY2(area.verticalScrollBar()->value()>0,"Wheel input should still scroll the page");
+    }
     void candidateConfigurationLoads() {
         const auto path=qEnvironmentVariable("T008_TEST_CANDIDATE_CONFIG");if(path.isEmpty())QSKIP("Candidate config not supplied");
         QVector<ChannelSettings> channels;QString error;QVERIFY2(SettingsStore(path).load(channels,error),qPrintable(error));
@@ -150,7 +321,7 @@ private slots:
         boot::CanTransport decoder(opts,[&](const boot::CanFrame &,quint64 token,QString &){receiver->confirmTransmitted(token);return true;});receiver=&decoder;decoder.listen();
         QList<QByteArray> requests;connect(&decoder,&boot::DiagnosticTransport::received,this,[&](const QByteArray &pdu){requests.append(pdu);});
         ChannelWorker worker(loaded[0]);connect(&worker,&ChannelWorker::framesReceived,this,[&](const FrameBatch &frames){
-            for(const auto &f:frames)if(f.simulated&&f.direction.compare("SIM TX",Qt::CaseInsensitive)==0&&f.id==0x715)
+            for(const auto &f:frames)if(f.simulated&&f.direction.compare("Tx",Qt::CaseInsensitive)==0&&f.id==0x715)
                 decoder.receiveFrame({f.id,false,false,false,false,f.payload});
         });
         QSignalSpy tasks(&worker,&ChannelWorker::taskChanged);worker.initialize();worker.connectChannel(loaded[0]);worker.startPreview(loaded[0]);
@@ -164,7 +335,7 @@ private slots:
         QVector<ChannelSettings> loaded;QVERIFY2(store.load(loaded,error),qPrintable(error));QCOMPARE(loaded.size(),1);
         ChannelWorker worker(loaded[0]);boot::LinCodec decoder;QList<QByteArray> requests;
         connect(&worker,&ChannelWorker::framesReceived,this,[&](const FrameBatch &frames){
-            for(const auto &f:frames)if(f.simulated&&f.direction.compare("SIM TX",Qt::CaseInsensitive)==0&&f.id==0x3c){
+            for(const auto &f:frames)if(f.simulated&&f.direction.compare("Tx",Qt::CaseInsensitive)==0&&f.id==0x3c){
                 QByteArray pdu;QString why;const auto bytes=QByteArray::fromHex(f.data.toLatin1());
                 if(decoder.accept(0x15,bytes,pdu,why)==boot::LinCodec::Complete)requests.append(pdu);
             }
@@ -180,6 +351,17 @@ private slots:
         for(int bytes:{2,18,20}){json["fingerprintHex"]=QString(bytes*2,'0');QVERIFY(!ChannelSettings::fromJson(json,restored,error));}
         json["fingerprintHex"]=123;QVERIFY(!ChannelSettings::fromJson(json,restored,error));
     }
+    void packageVersionSettingsRoundTrip(){
+        for(const auto bus:{Bus::Can,Bus::Lin}){
+            auto s=ChannelSettings::defaults(bus);QVERIFY(!s.checkDriverAbi&&!s.checkAppVersion&&!s.checkMinimumBoot);
+            s.bootAddress="00000000";s.bootEraseLength="00020000";s.checkDriverAbi=true;s.checkAppVersion=true;s.checkMinimumBoot=true;
+            s.expectedDriverAbi="1.4";s.expectedAppVersion="T008A0001";s.expectedMinimumBoot="001";
+            ChannelSettings restored;QString error;QVERIFY2(ChannelSettings::fromJson(s.toJson(),restored,error),qPrintable(error));
+            QCOMPARE(restored.bootAddress,s.bootAddress);QCOMPARE(restored.bootEraseLength,s.bootEraseLength);
+            QVERIFY(restored.checkDriverAbi&&restored.checkAppVersion&&restored.checkMinimumBoot);
+            QCOMPARE(restored.expectedDriverAbi,s.expectedDriverAbi);QCOMPARE(restored.expectedAppVersion,s.expectedAppVersion);QCOMPARE(restored.expectedMinimumBoot,s.expectedMinimumBoot);
+        }
+    }
     void downloadLengthRoundTripAndValidation() {
         for (auto bus : {Bus::Can, Bus::Lin}) {
             auto s=ChannelSettings::defaults(bus);auto json=s.toJson();
@@ -192,7 +374,7 @@ private slots:
             json["applicationLength"]="xyz";
             QVERIFY(!ChannelSettings::fromJson(json,restored,error));
             json["applicationLength"]="0";
-            QVERIFY(!ChannelSettings::fromJson(json,restored,error));
+            QVERIFY(ChannelSettings::fromJson(json,restored,error));
         }
     }
     void initTestCase(){
@@ -406,7 +588,7 @@ private slots:
             QVERIFY(QRegularExpression("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$").match(f.timestamp).hasMatch());
             QVERIFY(f.captureUs>=0);QVERIFY(f.relativeTime.isEmpty());
             QVERIFY(f.direction!="SIM HEADER");
-            if(f.direction=="SIM TX"&&f.data.startsWith(resetPrefix))++resets;
+            if(f.simulated&&f.direction=="Tx"&&f.data.startsWith(resetPrefix))++resets;
         }
         QCOMPARE(resets,2);
         settings.applicationPath=fixture("invalid-stage3.hex",16);frames.clear();worker.startPreview(settings);
@@ -576,7 +758,11 @@ private slots:
         model->healthChanged(communication::Health::Ready,{});
         QCOMPARE(vm->communicationIndicator(),1);
         model->healthChanged(communication::Health::Sleeping,"idle bus");QCOMPARE(vm->communicationIndicator(),1);
-        model->healthChanged(communication::Health::BusWarning,"bus warning");QCOMPARE(vm->communicationIndicator(),2);
+        model->healthChanged(communication::Health::BusWarning,"bus warning");QCOMPARE(vm->communicationIndicator(),3);
+        QCOMPARE(tabs->tabToolTip(0),QString("通讯告警"));
+        color=tabs->tabIcon(0).pixmap(16,16).toImage().pixelColor(8,8);QVERIFY(color.red()>color.blue());QVERIFY(color.green()>color.blue());
+        model->healthChanged(communication::Health::Error,"unclassified adapter error");QCOMPARE(vm->communicationIndicator(),3);
+        model->healthChanged(communication::Health::Removed,"status alone is not proof of physical removal");QCOMPARE(vm->communicationIndicator(),3);
         model->stateChanged(communication::ConnectionState::Missing,"removed");
         auto ports=vm->hardware();auto other=ports.first();other.key="preview:SECOND:1";other.handle=0xff41;other.label="Second adapter";ports.append(other);
         model->hardwareChanged(ports);
@@ -753,7 +939,7 @@ private slots:
         int valid=0;
         for(int i=0;i<vm->frames()->rowCount();++i){
             const QString status=vm->frames()->data(vm->frames()->index(i,8)).toString();
-            QVERIFY2(!status.contains("错误"),qPrintable(status));if(status=="有效响应")++valid;
+            QVERIFY2(!status.contains("错误"),qPrintable(status));if(status=="正常")++valid;
         }
         qInfo()<<"Physical LIN responses:"<<valid;
         QTRY_COMPARE(vm->health(),communication::Health::Ready);QCOMPARE(vm->communicationIndicator(),1);

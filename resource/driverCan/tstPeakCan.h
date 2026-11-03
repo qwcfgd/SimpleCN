@@ -17,7 +17,8 @@ class tstPeakCan
 
 public:
     /* Constructor function */
-    explicit tstPeakCan(void *parent = nullptr, PCANBasicClass *api = nullptr);
+    using ReceiveEventFactory = HANDLE (*)();
+    explicit tstPeakCan(void *parent = nullptr, PCANBasicClass *api = nullptr, ReceiveEventFactory eventFactory = nullptr);
     ~tstPeakCan();
 
 public:
@@ -34,6 +35,7 @@ public:
     communication::Health hardwareHealth();
     bool isDeviceActive();
     bool enableEcho();
+    void *receiveEventHandle() const { return t_receiveEvent; }
     bool sendRaw(TPCANMsg message);
     DWORD recvRaw(DWORD capacity, TPCANMsg messages[], TPCANTimestamp timestamps[] = nullptr);
 
@@ -84,6 +86,9 @@ private:
     bool t_ownsApi = true;
     bool t_open = false;
     bool t_acquired = false;
+    bool t_hardResetArmed = false;
+    HANDLE t_receiveEvent = nullptr;
+    ReceiveEventFactory t_eventFactory = nullptr;
     //PLinApiClass *m_pPLinApi; // the masked API pointer.
     PCANBasicClass *t_pPCANBasic;
 

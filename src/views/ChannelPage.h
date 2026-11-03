@@ -2,6 +2,7 @@
 #include <QWidget>
 #include <QElapsedTimer>
 #include "viewmodels/ChannelViewModel.h"
+#include "model/FrameFilterProxy.h"
 class QComboBox;class QLineEdit;class QCheckBox;class QLabel;
 class QPushButton;class QProgressBar;class QTableView;class QPlainTextEdit;
 class QTreeView;class QSplitter;class QResizeEvent;class QTabWidget;
@@ -22,6 +23,10 @@ private:
     void render();
     void browseImage(bool flash);
     void exportFrames();
+    void exportFrameBatch(const FrameBatch &,const QString &title);
+    void configureColumnFilter(int,QPoint);
+    void saveFrameFilter();
+    void followLatestFrame();
     void exportLogs();
     ChannelViewModel *m_vm;
     bool m_loading=false,m_applying=false;
@@ -31,6 +36,8 @@ private:
     QPushButton *m_start,*m_cancel,*m_scan,*m_downloadSettings,*m_browseFlash,*m_connectButton=nullptr;
     QProgressBar *m_progress;
     QTreeView *m_table;
+    FrameFilterProxy *m_frameProxy=nullptr;
+    bool m_restoringMonitor=false;
     QPlainTextEdit *m_log;
     QWidget *m_images;
     QSplitter *m_regions=nullptr,*m_outputs=nullptr;

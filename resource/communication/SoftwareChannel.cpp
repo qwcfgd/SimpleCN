@@ -3,10 +3,13 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QScopedValueRollback>
+#include <QSet>
 namespace communication {
 namespace {
 QMutex leasesMutex;
 QHash<QString,const SoftwareChannel*> leases;
+QSet<const SoftwareChannel*> activePeakCan;
+HardwareChannels lastCanDiscovery;
 }
 SoftwareChannel::SoftwareChannel(const SoftwareChannelConfiguration &config,std::unique_ptr<HardwareBackend> backend,QObject *parent)
     : QObject(parent),m_config(config),m_backend(std::move(backend))
@@ -14,7 +17,7 @@ SoftwareChannel::SoftwareChannel(const SoftwareChannelConfiguration &config,std:
     Q_ASSERT(m_backend);
     m_timer.setParent(this);
     m_timer.setTimerType(Qt::CoarseTimer);
-    connect(&m_timer,&QTimer::timeout,this,&SoftwareChannel::poll);
+    connect(&m_timer,&QTimer::timeout,this,&SoftwareChannel::monitorTick);
     qRegisterMetaType<HardwareChannels>();
     qRegisterMetaType<ConnectionState>();
     qRegisterMetaType<Health>();
@@ -38,7 +41,7 @@ bool SoftwareChannel::configure(const SoftwareChannelConfiguration &config)
 void SoftwareChannel::startMonitoring(int intervalMs)
 {
     m_timer.start(qMax(100,intervalMs));
-    QTimer::singleShot(0,this,&SoftwareChannel::poll);
+    QTimer::singleShot(0,this,&SoftwareChannel::monitorTick);
 }
 void SoftwareChannel::transition(ConnectionState state,const QString &detail)
 {
@@ -49,7 +52,8 @@ void SoftwareChannel::transition(ConnectionState state,const QString &detail)
 bool SoftwareChannel::refresh()
 {
     QString error;
-    auto found=m_backend->scan(error);
+    QElapsedTimer elapsed;elapsed.start();auto found=m_backend->scan(error);
+    emit enumerationMeasured(elapsed.nsecsElapsed()/1000);
     if (!error.isEmpty()) {
         m_scanError=error;
         ++m_failures;
@@ -62,6 +66,7 @@ bool SoftwareChannel::refresh()
     m_scanError.clear();
     {
         QMutexLocker lock(&leasesMutex);
+        if(m_config.bus==Bus::Can)lastCanDiscovery=found;
         for(auto &h:found) {
             const auto owner=leases.value(QString("%1:%2").arg(static_cast<int>(h.bus)).arg(h.handle),nullptr);
             if(owner && owner!=this)h.available=false;
@@ -123,6 +128,9 @@ bool SoftwareChannel::connectChannel()
         return false;
     }
     m_active=selected;
+    if(m_config.bus==Bus::Can&&selected.key.startsWith("can:")){
+        QMutexLocker lock(&leasesMutex);activePeakCan.insert(this);
+    }
     m_config.hardwareKey=selected.key;
     m_config.preferredHandle=selected.handle;
     m_health=Health::Ready;
@@ -133,6 +141,7 @@ bool SoftwareChannel::connectChannel()
 void SoftwareChannel::releaseLease()
 {
     QMutexLocker lock(&leasesMutex);
+    activePeakCan.remove(this);
     if (!m_lease.isEmpty() && leases.value(m_lease)==this) leases.remove(m_lease);
     m_lease.clear();
 }
@@ -161,11 +170,55 @@ void SoftwareChannel::lose(ConnectionState next,const QString &reason)
     m_retry.restart();
     transition(next,reason);
 }
+void SoftwareChannel::monitorTick()
+{
+    // While connected to PCAN, GetStatus checks the active channel without
+    // enumerating every adapter on the protocol worker. If the status cannot
+    // establish a live channel, poll() confirms presence before disconnecting.
+    if(m_busy)return;
+    // Another logical channel must not repeatedly enumerate the shared PCAN
+    // provider while an adapter is in use. An explicit connect or a connected
+    // channel's fault confirmation still performs a fresh scan.
+    if(m_config.bus==Bus::Can&&m_state!=ConnectionState::Connected){
+        HardwareChannels cached;bool defer=false;
+        {
+            QMutexLocker lock(&leasesMutex);
+            defer=!activePeakCan.isEmpty();
+            if(defer&&!m_scanned){
+                cached=lastCanDiscovery;
+                for(auto &h:cached){
+                    const auto owner=leases.value(QString("%1:%2").arg(static_cast<int>(h.bus)).arg(h.handle),nullptr);
+                    if(owner&&owner!=this)h.available=false;
+                }
+            }
+        }
+        if(defer){
+            if(!m_scanned&&!cached.isEmpty()){m_scanned=true;m_hardware=cached;emit hardwareChanged(m_hardware);}
+            return;
+        }
+    }
+    bool peakProviderActive=false;
+    {QMutexLocker lock(&leasesMutex);peakProviderActive=!activePeakCan.isEmpty();}
+    if(m_state==ConnectionState::Connected && m_config.bus==Bus::Can &&
+       (m_active.key.startsWith("can:")||peakProviderActive)){
+        QScopedValueRollback<bool> guard(m_busy,true);
+        QString detail;const auto health=m_backend->health(detail);
+        if(health!=Health::Removed && health!=Health::Error){
+            if(health!=m_health){m_health=health;emit healthChanged(health,detail);}
+            return;
+        }
+    }
+    poll();
+}
 void SoftwareChannel::poll()
 {
     if (m_busy) return;
     QScopedValueRollback<bool> guard(m_busy,true);
     if (!refresh()) {
+        if (m_config.bus==Bus::Can && m_state==ConnectionState::Connected) {
+            if (m_health!=Health::Error) {m_health=Health::Error;emit healthChanged(m_health,m_scanError);}
+            return;
+        }
         if (m_state==ConnectionState::Connected && m_failures>=2) lose(ConnectionState::Fault,m_scanError);
         else if (m_state!=ConnectionState::Connected) transition(ConnectionState::Fault,m_scanError);
         return;
@@ -178,7 +231,7 @@ void SoftwareChannel::poll()
         QString detail;
         const auto health=m_backend->health(detail);
         if (health!=m_health) { m_health=health; emit healthChanged(health,detail); }
-        if (health==Health::Removed || health==Health::Error) lose(ConnectionState::Fault,detail);
+        if (m_config.bus!=Bus::Can && (health==Health::Removed || health==Health::Error)) lose(ConnectionState::Fault,detail);
         return;
     }
     HardwareChannel selected;

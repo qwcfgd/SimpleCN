@@ -15,6 +15,25 @@ public:
     unsigned long lastErrorCode()const override{return driver.lastErrorCode();}
     QString lastErrorText()const override{return driver.lastErrorText();}
     bool enableEcho()override{return driver.enableEcho();}
+    void *receiveEventHandle()const override{return driver.receiveEventHandle();}
+    CanBusState classifyStatus(unsigned long status)const override{
+        const auto allowed=PCAN_ERROR_ANYBUSERR|PCAN_ERROR_QRCVEMPTY;
+        if(status & ~allowed)return CanBusState::Fatal;
+        if(status & PCAN_ERROR_BUSOFF)return CanBusState::BusOff;
+        if(status & PCAN_ERROR_ANYBUSERR)return CanBusState::Warning;
+        return CanBusState::Ready;
+    }
+    CanBusState busState()override{
+        const auto health=driver.hardwareHealth();
+        if(health==communication::Health::Removed||health==communication::Health::Error)return CanBusState::Fatal;
+        return classifyStatus(driver.lastErrorCode());
+    }
+    CanBusState statusFrame(const TPCANMsg &frame)const override{
+        if(!(frame.MSGTYPE&PCAN_MESSAGE_STATUS))return CanBusState::Unsupported;
+        // PCAN status frames encode the status in DATA[0..3], big endian; ID/DLC are not meaningful.
+        const auto status=(quint32(frame.DATA[0])<<24)|(quint32(frame.DATA[1])<<16)|(quint32(frame.DATA[2])<<8)|quint32(frame.DATA[3]);
+        return classifyStatus(status);
+    }
 };
 class PeakLin final:public LinHardware {
     tstPeakLin driver;communication::PeakLinBackend backend;
@@ -61,6 +80,10 @@ public:
     bool sendRaw(TPCANMsg m)override{return choice.active->sendRaw(m);}
     DWORD recvRaw(DWORD n,TPCANMsg*m,TPCANTimestamp*t)override{return choice.active->recvRaw(n,m,t);}
     bool enableEcho()override{return choice.active->enableEcho();}
+    void *receiveEventHandle()const override{return choice.active->receiveEventHandle();}
+    CanBusState classifyStatus(unsigned long status)const override{return choice.active->classifyStatus(status);}
+    CanBusState busState()override{return choice.active->busState();}
+    CanBusState statusFrame(const TPCANMsg &frame)const override{return choice.active->statusFrame(frame);}
 };
 class CombinedLin final:public LinHardware {
     Selection<LinHardware> choice{std::make_unique<PeakLin>(),createTosunLin(tosun::sharedRuntime())};

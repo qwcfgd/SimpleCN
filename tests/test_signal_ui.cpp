@@ -8,6 +8,8 @@
 #include <QJsonDocument>
 #include <QPushButton>
 #include <QLineEdit>
+#include <QSpinBox>
+#include <QPointer>
 #include <QComboBox>
 #include <QTabWidget>
 #include <QTableView>
@@ -112,6 +114,119 @@ private slots:
             if(!lin){QVERIFY(!vm.removeQueuedFrame(frame,error));QVERIFY(!vm.selectCanNode("Tester","Rx",error));QVERIFY(!(table->index(0,7).flags()&Qt::ItemIsEditable));}
         }
     }
+    void repeatedPayloadEditsReachRunningBus_data(){
+        QTest::addColumn<bool>("lin");QTest::addColumn<int>("dlc");
+        QTest::newRow("CAN")<<false<<-1;QTest::newRow("LIN")<<true<<-1;
+        QTest::newRow("CAN-shortened-DLC")<<false<<3;QTest::newRow("LIN-increased-DLC")<<true<<4;
+    }
+    void repeatedPayloadEditsReachRunningBus(){
+        QFETCH(bool,lin);QFETCH(int,dlc);ChannelViewModel channel(settings(lin));auto*vm=channel.signalTransmission();QString error;
+        QVERIFY(vm->importFile(fixture(lin?"ldf":"dbc"),error));
+        if(!lin)QVERIFY(vm->setCanOptions(key(),true,5,error));
+        const auto name=lin?vm->working().schedules.first().entries.first().frame:key();
+        if(dlc>=0)QVERIFY(vm->setFrameLength(name,dlc,error));
+        SignalTransmitPage page(vm);page.resize(1400,800);page.show();connectChannel(channel);
+        auto*table=page.findChild<QTableView*>("signalPlanTable");const auto cell=table->model()->index(0,lin?7:8);
+        const auto id=vm->frame(name)->id;
+        const int length=vm->working().frames[name].applied.bytes.size();
+        auto latest=[&]{for(auto it=channel.frames()->history().crbegin();it!=channel.frames()->history().crend();++it)if(it->id==id&&it->simulated)return it->payload;return QByteArray();};
+        table->scrollTo(cell);QCoreApplication::processEvents();QTest::mouseClick(table->viewport(),Qt::LeftButton,Qt::NoModifier,table->visualRect(cell).center());
+        QTRY_VERIFY(table->findChild<QLineEdit*>("transmitPayloadEditor"));QPointer<QLineEdit> editor=table->findChild<QLineEdit*>("transmitPayloadEditor");
+        const auto first=QByteArray(length,char(0x11));editor->selectAll();QTest::keyClicks(editor,QString::fromLatin1(first.toHex(' ')));
+        QCOMPARE(vm->working().frames[name].applied.bytes,first);
+        QTest::mouseClick(page.findChild<QPushButton*>("signalStart"),Qt::LeftButton);
+        QTRY_VERIFY(vm->status().state==RunState::Running);QTRY_COMPARE(latest(),first);QTRY_VERIFY(editor.isNull());
+        // Reopen the same cell, then replace its contents twice without changing
+        // selection or closing the editor. Both revisions must reach the bus.
+        QTest::mouseClick(table->viewport(),Qt::LeftButton,Qt::NoModifier,table->visualRect(cell).center());
+        QTRY_VERIFY(table->findChild<QLineEdit*>("transmitPayloadEditor"));editor=table->findChild<QLineEdit*>("transmitPayloadEditor");
+        QSignalSpy updates(vm,&SignalTransmitViewModel::payloadRequested);auto revision=vm->working().frames[name].applied.revision;
+        editor->selectAll();QTest::keyClicks(editor,"A");vm->applyStatus(vm->status());
+        QCOMPARE(editor->text(),QString("A"));QCOMPARE(updates.size(),0);QCOMPARE(vm->working().frames[name].applied.bytes,first);
+        for(int value:{0x22,0x33}){
+            const auto expected=QByteArray(length,char(value));const auto text=QString::fromLatin1(expected.toHex(' '));
+            editor->selectAll();QTest::keyClicks(editor,text);QCOMPARE(editor->text(),text);
+            QCOMPARE(vm->working().frames[name].applied.bytes,expected);QCOMPARE(vm->working().frames[name].applied.revision,++revision);
+            QCOMPARE(cell.data().toString(),text.toUpper());QTRY_COMPARE(latest(),expected);
+            BusFrameEvent rx;rx.bus=lin?Bus::Lin:Bus::Can;rx.id=id;rx.bytes=first;rx.valid=true;rx.source=EventSource::Received;
+            vm->receive({rx});vm->applyStatus(vm->status());QCOMPARE(editor->text(),text);QCOMPARE(cell.data(Qt::EditRole).toString(),text.toUpper());
+        }
+        QCOMPARE(updates.size(),2);QTest::keyClick(editor,Qt::Key_Return);QTRY_VERIFY(editor.isNull());
+        QCOMPARE(updates.size(),2);QCOMPARE(cell.data().toString(),QString::fromLatin1(QByteArray(length,char(0x33)).toHex(' ')).toUpper());
+        vm->stop();QTRY_VERIFY(!vm->running());
+    }
+    void editableDlcBoundsAndPersistence(){
+        SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY(vm.importFile(fixture(),error));QVERIFY(vm.setCanOptions(key(),true,5,error));
+        CanTxTableModel table(&vm);SignalValueTableModel values(&vm);values.setFrame(key());const auto dlc=table.index(0,6),payload=table.index(0,8);
+        QVERIFY(dlc.flags()&Qt::ItemIsEditable);QCOMPARE(dlc.data().toInt(),8);
+        QVERIFY(vm.editPayload(key(),"01 02 03 04 05 06 07 08",error));QVERIFY(table.setData(dlc,2));
+        QCOMPARE(dlc.data().toInt(),2);QCOMPARE(payload.data().toString(),QString("01 02"));QCOMPARE(vm.frame(key())->length,8);
+        QVERIFY(values.index(0,2).flags()&Qt::ItemIsEditable);QVERIFY(!(values.index(2,2).flags()&Qt::ItemIsEditable));
+        QVERIFY(!vm.editSignal(key(),2,"1",false,error));QVERIFY(!table.setData(payload,"01 02 03"));QCOMPARE(vm.working().frames[key()].applied.bytes,QByteArray::fromHex("0102"));
+        QVERIFY(table.setData(payload,"AA"));QCOMPARE(payload.data().toString(),QString("AA 00"));QVERIFY(values.setData(values.index(1,2),"7"));QCOMPARE(payload.data().toString(),QString("AA 07"));
+        QVERIFY(!table.setData(dlc,-1));QVERIFY(!table.setData(dlc,9));QCOMPARE(dlc.data().toInt(),2);
+        const auto saved=vm.configuration();SignalTransmitViewModel copy(Bus::Can);QVERIFY2(copy.readConfiguration(saved,{},error),qPrintable(error));QCOMPARE(copy.configuration(),saved);
+        vm.back();QCOMPARE(payload.data().toString(),QString("AA 00"));
+        QVERIFY(table.setData(dlc,4));QCOMPARE(payload.data().toString(),QString("AA 00 00 00"));
+        QVERIFY(table.setData(dlc,0));QCOMPARE(dlc.data().toInt(),0);QVERIFY(payload.data().toString().isEmpty());QVERIFY(!table.setData(payload,"AA"));QVERIFY(table.setData(payload,""));
+        QVERIFY(copy.setFrameLength(key(),8,error));QVERIFY(copy.editPayload(key(),"01 02 03 04 05 06 07 08",error));
+        auto legacy=copy.configuration();auto frames=legacy["frames"].toArray();for(int i=0;i<frames.size();++i){auto frame=frames[i].toObject();frame.remove("dlc");frames[i]=frame;}legacy["frames"]=frames;
+        QVERIFY(vm.readConfiguration(legacy,{},error));QCOMPARE(vm.working().frames[key()].applied.bytes.size(),8);
+        auto malformed=saved;frames=malformed["frames"].toArray();auto frame=frames[0].toObject();frame["dlc"]=1.5;frames[0]=frame;malformed["frames"]=frames;
+        const auto before=vm.configuration();QVERIFY(!vm.readConfiguration(malformed,{},error));QCOMPARE(vm.configuration(),before);
+        vm.setAvailability(true,false,500000,1);QSignalSpy starts(&vm,&SignalTransmitViewModel::startRequested);QVERIFY(vm.setFrameLength(key(),3,error));QVERIFY(vm.start(true,error));
+        const auto plan=qvariant_cast<TxPlan>(starts.first().first());QCOMPARE(plan.items.first().payload.size(),3);QVERIFY(!(dlc.flags()&Qt::ItemIsEditable));QVERIFY(!vm.setFrameLength(key(),2,error));
+    }
+    void typingSurvivesFrequentTransmitRefresh_data(){
+        QTest::addColumn<bool>("lin");QTest::addColumn<bool>("payload");
+        QTest::newRow("CAN-payload")<<false<<true;QTest::newRow("LIN-payload")<<true<<true;
+        QTest::newRow("CAN-signal-raw")<<false<<false;QTest::newRow("LIN-signal-raw")<<true<<false;
+    }
+    void typingSurvivesFrequentTransmitRefresh(){
+        QFETCH(bool,lin);QFETCH(bool,payload);ChannelViewModel channel(settings(lin));auto*vm=channel.signalTransmission();QString error;
+        QVERIFY(vm->importFile(fixture(lin?"ldf":"dbc"),error));if(!lin)QVERIFY(vm->setCanOptions(key(),true,1,error));
+        const auto name=lin?vm->working().schedules.first().entries.first().frame:key();const auto definition=*vm->frame(name);
+        SignalTransmitPage page(vm);page.resize(1400,800);page.show();page.activateWindow();connectChannel(channel);QVERIFY(vm->start(true,error));QTRY_COMPARE(vm->status().state,RunState::Running);
+        auto*table=page.findChild<QTableView*>(payload?"signalPlanTable":"signalValues");
+        const auto cell=table->model()->index(payload?0:(lin?0:1),payload?(lin?7:8):2);table->scrollTo(cell);QCoreApplication::processEvents();
+        QTest::mouseClick(table->viewport(),Qt::LeftButton,Qt::NoModifier,table->visualRect(cell).center());
+        QPointer<QLineEdit>editor;for(auto*input:table->findChildren<QLineEdit*>())if(input->isVisible())editor=input;
+        QVERIFY(editor);editor->setFocus();editor->selectAll();
+        BusFrameEvent rx;rx.bus=lin?Bus::Lin:Bus::Can;rx.id=definition.id;rx.valid=true;rx.source=EventSource::Received;rx.bytes=vm->working().frames[name].applied.bytes;
+        int refreshes=0;auto refresh=[&]{
+            vm->receive({rx});vm->applyStatus(vm->status());
+            // Exercise even a full DisplayRole refresh, beyond the normal status
+            // notifications, while QAbstractItemView still owns an active editor.
+            vm->frameChanged(name);++refreshes;
+        };
+        QTimer timer;timer.setTimerType(Qt::PreciseTimer);timer.setInterval(1);connect(&timer,&QTimer::timeout,&page,refresh);timer.start();
+        const auto expected=payload?QString::fromLatin1(QByteArray(definition.length,char(0xAB)).toHex(' ')):QString(lin?"0x7":"0x7F");QString typed;
+        for(auto character:expected){
+            QTest::keyClicks(editor,QString(character),Qt::NoModifier,12);typed+=character;
+            for(int n=0;n<100;++n)refresh();QCoreApplication::processEvents();
+            QVERIFY(editor);QCOMPARE(editor->text(),typed);QCOMPARE(editor->cursorPosition(),typed.size());QVERIFY(editor->hasFocus());QCOMPARE(table->currentIndex(),cell);
+        }
+        timer.stop();QVERIFY(refreshes>=expected.size()*100);const auto countBefore=vm->status().sent.value(name);
+        QTest::keyClick(editor,Qt::Key_Return);QTRY_VERIFY(editor.isNull());
+        if(payload)QCOMPARE(cell.data().toString(),expected.toUpper());else QCOMPARE(vm->working().frames[name].appliedValues[lin?0:1].bits,quint64(lin?7:127));
+        const auto bytes=vm->working().frames[name].applied.bytes;
+        auto latest=[&]{for(auto it=channel.frames()->history().crbegin();it!=channel.frames()->history().crend();++it)if(it->id==definition.id&&it->simulated)return it->payload;return QByteArray();};
+        QTRY_VERIFY(vm->status().sent.value(name)>countBefore);QTRY_COMPARE(latest(),bytes);
+        vm->stop();QTRY_VERIFY(!vm->running());
+    }
+    void dlcEditorLimitsRawInputAndLinSchedules(){
+        SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY(vm.putCustom({},"raw",0x600,4,5,error));
+        SignalTransmitPage page(&vm);page.resize(1400,800);page.show();auto*table=page.findChild<QTableView*>("signalPlanTable");
+        auto cell=table->model()->index(0,6);table->scrollTo(cell);QCoreApplication::processEvents();QTest::mouseClick(table->viewport(),Qt::LeftButton,Qt::NoModifier,table->visualRect(cell).center());
+        QTRY_VERIFY(table->findChild<QSpinBox*>("transmitDlcEditor"));auto*spin=table->findChild<QSpinBox*>("transmitDlcEditor");spin->setValue(2);QTest::keyClick(spin,Qt::Key_Return);QTRY_COMPARE(cell.data().toInt(),2);
+        cell=table->model()->index(0,8);table->scrollTo(cell);QCoreApplication::processEvents();QTest::mouseClick(table->viewport(),Qt::LeftButton,Qt::NoModifier,table->visualRect(cell).center());
+        QTRY_VERIFY(table->findChild<QLineEdit*>("transmitPayloadEditor"));QPointer<QLineEdit>editor=table->findChild<QLineEdit*>("transmitPayloadEditor");editor->selectAll();QTest::keyClicks(editor,"AABBCC");
+        QCOMPARE(editor->text(),QString("AABB"));QCOMPARE(cell.data().toString(),QString("AA BB"));editor->selectAll();QTest::keyClicks(editor,"12");QTest::keyClick(editor,Qt::Key_Return);QTRY_VERIFY(editor.isNull());QCOMPARE(cell.data().toString(),QString("12 00"));
+        SignalTransmitViewModel lin(Bus::Lin);QVERIFY(lin.createSchedule(error));QVERIFY(lin.putCustom({},"short",0x10,1,4,error));LinScheduleTableModel schedule(&lin);
+        QVERIFY(schedule.index(0,5).flags()&Qt::ItemIsEditable);QVERIFY(schedule.setData(schedule.index(0,5),8));QCOMPARE(schedule.index(0,5).data().toInt(),8);
+        lin.setAvailability(true,false,19200,1);QVERIFY(!lin.start(true,error));QVERIFY(lin.setLinDelay(0,"10",error));QVERIFY(lin.start(true,error));
+        SignalTransmitViewModel diag(Bus::Lin);QVERIFY(diag.createSchedule(error));QVERIFY(diag.putCustom({},"diag",0x3c,8,10,error));QVERIFY(!diag.setFrameLength(frameKey(Bus::Lin,60),7,error));QVERIFY(!diag.setFrameLength(frameKey(Bus::Lin,60),0,error));
+    }
     void canQueueContextMenu(){
         SignalTransmitViewModel vm(Bus::Can);SignalTransmitPage page(&vm);page.resize(1200,750);page.show();QString error;QVERIFY(vm.importFile(fixture(),error));
         auto*table=page.findChild<QTableView*>("signalPlanTable");QCOMPARE(table->model()->rowCount(),0);
@@ -163,7 +278,7 @@ private slots:
         QVERIFY(!vm.editSignal(key(),1,"300",false,error));QCOMPARE(vm.working().frames[key()].applied.bytes,before.bytes);QVERIFY(vm.hasInvalidDraft());
         QVERIFY(!vm.editSignal(key(),0,"4",false,error));QCOMPARE(vm.working().frames[key()].applied.bytes,before.bytes);
         QVERIFY(vm.editSignal(key(),1,"200",false,error));auto after=vm.working().frames[key()];QCOMPARE(quint8(after.applied.bytes[0]),quint8(4));QCOMPARE(quint8(after.applied.bytes[1]),quint8(200));QVERIFY(!after.warnings.value(1).isEmpty());QVERIFY(!vm.hasInvalidDraft());
-        QVERIFY(!vm.editPayload(key(),"FF",error));QCOMPARE(vm.working().frames[key()].applied.bytes,after.applied.bytes);QVERIFY(vm.editPayload(key(),"01 02 03 04 05 06 07 08",error));QCOMPARE(vm.working().frames[key()].applied.bytes,QByteArray::fromHex("0102030405060708"));
+        QVERIFY(!vm.editPayload(key(),"F",error));QCOMPARE(vm.working().frames[key()].applied.bytes,after.applied.bytes);QVERIFY(vm.editPayload(key(),"01 02 03 04 05 06 07 08",error));QCOMPARE(vm.working().frames[key()].applied.bytes,QByteArray::fromHex("0102030405060708"));
     }
     void backRestoreAndSaveBaseline(){SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY(vm.importFile(fixture(),error));const auto initial=vm.working().frames[key()].applied.bytes;QTemporaryDir temp;
         QVERIFY(vm.editSignal(key(),0,"4",false,error));const auto saved=vm.configuration();QVERIFY(vm.editSignal(key(),0,"5",false,error));vm.back();QCOMPARE(quint8(vm.working().frames[key()].applied.bytes[0]),quint8(4));vm.restore();QCOMPARE(vm.working().frames[key()].applied.bytes,initial);QVERIFY(!vm.canBack());

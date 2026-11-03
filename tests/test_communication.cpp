@@ -1,5 +1,6 @@
 #include <QtTest>
 #include <QQueue>
+#include <QThread>
 #include <cstring>
 #include "communication/SoftwareChannel.h"
 using namespace communication;
@@ -11,19 +12,28 @@ public:
     int opens=0,resets=0,releases=0,reads=0;
     QVector<TPCANHandle> handles={PCAN_USBBUS1};
     QHash<quint32,int> openedPorts,resetPorts,releasedPorts;
-    TPCANStatus initializeResult=PCAN_ERROR_OK,resetResult=PCAN_ERROR_OK,filterResult=PCAN_ERROR_OK;
+    TPCANStatus initializeResult=PCAN_ERROR_OK,resetResult=PCAN_ERROR_OK,filterResult=PCAN_ERROR_OK,enumerationResult=PCAN_ERROR_OK;
     TPCANStatus echoResult=PCAN_ERROR_OK;int echoCalls=0;DWORD echoValue=0;TPCANHandle echoHandle=0;
+    int enumerationCalls=0,enumerationDelayMs=0;
+    QVector<DWORD> hardResetSettings;int autoResetCalls=0;DWORD autoResetValue=PCAN_PARAMETER_ON;TPCANStatus hardResetOffResult=PCAN_ERROR_OK;
+    int receiveEventRegistrations=0,receiveEventUnregistrations=0;HANDLE receiveEvent=nullptr;DWORD receiveEventSize=0;
+    TPCANStatus receiveEventResult=PCAN_ERROR_OK,receiveEventUnregisterResult=PCAN_ERROR_OK,uninitializeResult=PCAN_ERROR_OK;bool eventAliveAtUninitialize=false;
     QQueue<TPCANMsg> frames;
     TPCANMsg lastWrite={};int writes=0;
     TPCANStatus Write(TPCANHandle,TPCANMsg *message) override {++writes;lastWrite=*message;return PCAN_ERROR_OK;}
     TPCANStatus Initialize(TPCANHandle h,TPCANBaudrate,TPCANType,DWORD,WORD) override {++openedPorts[h];++opens;return initializeResult;}
     TPCANStatus Reset(TPCANHandle h) override {++resetPorts[h];++resets;return resetResult;}
-    TPCANStatus Uninitialize(TPCANHandle h) override {++releasedPorts[h];++releases;return PCAN_ERROR_OK;}
-    TPCANStatus SetValue(TPCANHandle handle,TPCANParameter parameter,void*value,DWORD) override {
+    TPCANStatus Uninitialize(TPCANHandle h) override {++releasedPorts[h];++releases;if(receiveEvent)eventAliveAtUninitialize=WaitForSingleObject(receiveEvent,0)!=WAIT_FAILED;return uninitializeResult;}
+    TPCANStatus SetValue(TPCANHandle handle,TPCANParameter parameter,void*value,DWORD size) override {
         if(parameter==PCAN_ALLOW_ECHO_FRAMES){++echoCalls;echoHandle=handle;echoValue=*static_cast<DWORD*>(value);return echoResult;}
+        if(parameter==PCAN_BUSOFF_AUTORESET){++autoResetCalls;autoResetValue=*static_cast<DWORD*>(value);return PCAN_ERROR_OK;}
+        if(parameter==PCAN_RECEIVE_EVENT){receiveEventSize=size;const auto event=*static_cast<HANDLE*>(value);if(event){++receiveEventRegistrations;if(receiveEventResult==PCAN_ERROR_OK)receiveEvent=event;return receiveEventResult;}++receiveEventUnregistrations;return receiveEventUnregisterResult;}
+        if(parameter==PCAN_HARD_RESET_STATUS){const auto v=*static_cast<DWORD*>(value);hardResetSettings.append(v);return v==PCAN_PARAMETER_OFF?hardResetOffResult:PCAN_ERROR_OK;}
         return filterResult;
     }
     TPCANStatus GetValue(TPCANHandle,TPCANParameter parameter,void *data,DWORD) override {
+        if(parameter==PCAN_ATTACHED_CHANNELS_COUNT){++enumerationCalls;if(enumerationDelayMs)QThread::msleep(unsigned(enumerationDelayMs));}
+        if((parameter==PCAN_ATTACHED_CHANNELS_COUNT||parameter==PCAN_ATTACHED_CHANNELS)&&enumerationResult!=PCAN_ERROR_OK)return enumerationResult;
         if (parameter==PCAN_ATTACHED_CHANNELS_COUNT) *static_cast<DWORD*>(data)=handles.size();
         else if (parameter==PCAN_ATTACHED_CHANNELS) {
             for(int i=0;i<handles.size();++i){
@@ -40,6 +50,10 @@ public:
     }
     TPCANStatus GetStatus(TPCANHandle) override {return PCAN_ERROR_BUSOFF;}
     TPCANStatus GetErrorText(TPCANStatus,WORD,LPSTR buffer) override {std::strcpy(buffer,"fake");return PCAN_ERROR_OK;}
+};
+class HeavyCanApi : public FakeCanApi {
+public:TPCANStatus status=PCAN_ERROR_OK;int statusCalls=0;
+ TPCANStatus GetStatus(TPCANHandle) override{++statusCalls;return status;}
 };
 class FakeLinApi : public PLinApiClass {
 public:
@@ -107,6 +121,12 @@ public:
     bool close(QString &error) override {++closed;error=failClose?"close failed":"";return !failClose;}
     Health health(QString &detail) override {detail="fake bus state";return currentHealth;}
 };
+class FakeCanBackend : public FakeBackend {
+public:
+    int scans=0;
+    Bus bus() const override {return Bus::Can;}
+    HardwareChannels scan(QString &error) override {++scans;return FakeBackend::scan(error);}
+};
 static HardwareChannel hw(quint32 handle=21,QString key="lin:1234:0") {
     HardwareChannel h;h.bus=Bus::Lin;h.handle=handle;h.key=key;h.label="PLIN";h.persistentIdentity=true;return h;
 }
@@ -116,6 +136,54 @@ static SoftwareChannelConfiguration cfg(QString id="LIN-A") {
 class CommunicationTest : public QObject {
     Q_OBJECT
 private slots:
+    void idleCanChannelDefersProviderEnumerationWhilePeerIsConnected(){
+        SoftwareChannelConfiguration c;c.softwareId="CAN-A";c.bus=Bus::Can;c.uds.profileId="A";c.hardwareKey="can:fake:1";
+        HardwareChannel h;h.bus=Bus::Can;h.handle=0x51;h.key=c.hardwareKey;h.persistentIdentity=true;
+        auto *a=new FakeCanBackend;a->items={h};SoftwareChannel first(c,std::unique_ptr<HardwareBackend>(a));
+        c.softwareId="CAN-B";c.uds.profileId="B";auto *b=new FakeCanBackend;b->items={h};SoftwareChannel second(c,std::unique_ptr<HardwareBackend>(b));
+        QVERIFY(first.connectChannel());QCOMPARE(a->scans,1);second.startMonitoring(100);
+        QTRY_VERIFY_WITH_TIMEOUT(!second.hardware().isEmpty(),1000);QTest::qWait(250);QCOMPARE(b->scans,0);
+        QVERIFY(!second.hardware().first().available);QVERIFY(first.disconnectChannel());
+        QTRY_VERIFY_WITH_TIMEOUT(b->scans>0,1000);
+    }
+    void connectedOtherCanProviderAvoidsSharedPcanScan(){
+        SoftwareChannelConfiguration c;c.softwareId="CAN-A";c.bus=Bus::Can;c.uds.profileId="A";c.hardwareKey="can:fake:1";
+        HardwareChannel peak;peak.bus=Bus::Can;peak.handle=0x51;peak.key=c.hardwareKey;peak.persistentIdentity=true;
+        auto *a=new FakeCanBackend;a->items={peak};SoftwareChannel first(c,std::unique_ptr<HardwareBackend>(a));
+        QVERIFY(first.connectChannel());
+        HardwareChannel other=peak;other.key="tosun:fake:2";other.handle=0x52;c.softwareId="CAN-B";c.uds.profileId="B";c.hardwareKey=other.key;
+        auto *b=new FakeCanBackend;b->items={other};SoftwareChannel second(c,std::unique_ptr<HardwareBackend>(b));
+        QVERIFY(second.connectChannel());QCOMPARE(b->scans,1);second.startMonitoring(100);
+        QTest::qWait(350);QCOMPARE(b->scans,1);QVERIFY(second.disconnectChannel());QVERIFY(first.disconnectChannel());
+    }
+    void connectedPcanMonitoringAvoidsSlowEnumerationAndConfirmsRemoval(){
+        HeavyCanApi api;tstPeakCan driver(nullptr,&api);SoftwareChannelConfiguration c;
+        c.softwareId="CAN01";c.bus=Bus::Can;c.bitrate=500000;c.uds.profileId="CAN A";c.preferredHandle=PCAN_USBBUS1;
+        SoftwareChannel session(c,std::unique_ptr<HardwareBackend>(new PeakCanBackend(driver)));QSignalSpy measured(&session,&SoftwareChannel::enumerationMeasured);QVERIFY(session.connectChannel());
+        const int baseline=api.enumerationCalls;api.enumerationDelayMs=200;api.statusCalls=0;session.startMonitoring(100);
+        QTRY_VERIFY_WITH_TIMEOUT(api.statusCalls>=2,3000);QCOMPARE(api.enumerationCalls,baseline);QCOMPARE(session.state(),ConnectionState::Connected);
+        api.status=PCAN_ERROR_BUSHEAVY;QSignalSpy health(&session,&SoftwareChannel::healthChanged);
+        QTRY_VERIFY_WITH_TIMEOUT(!health.isEmpty(),1000);QCOMPARE(session.state(),ConnectionState::Connected);QCOMPARE(api.enumerationCalls,baseline);
+        api.status=PCAN_ERROR_ILLHW;api.enumerationResult=PCAN_ERROR_NODRIVER;
+        QTRY_VERIFY_WITH_TIMEOUT(api.enumerationCalls>baseline,3000);QCOMPARE(session.state(),ConnectionState::Connected);
+        QVERIFY(!measured.isEmpty());QVERIFY(measured.last()[0].toLongLong()>=180000);
+        api.enumerationResult=PCAN_ERROR_OK;api.handles.clear();QTRY_COMPARE_WITH_TIMEOUT(session.state(),ConnectionState::Missing,3000);
+    }
+    void canReceiveEventRegistrationFallbackAndLifetime(){
+        FakeCanApi api;tstPeakCan driver(nullptr,&api);QVERIFY(driver.startDevice());
+        QCOMPARE(api.receiveEventRegistrations,1);QVERIFY(api.receiveEvent!=nullptr);QCOMPARE(api.receiveEventSize,DWORD(sizeof(HANDLE)));
+        QVERIFY(driver.stopDevice());QCOMPARE(api.receiveEventUnregistrations,1);QVERIFY(api.eventAliveAtUninitialize);
+        QCOMPARE(WaitForSingleObject(api.receiveEvent,0),DWORD(WAIT_FAILED));
+        QVERIFY(driver.startDevice());QCOMPARE(api.receiveEventRegistrations,2);QVERIFY(driver.stopDevice());QCOMPARE(api.receiveEventUnregistrations,2);
+        FakeCanApi fallback;fallback.receiveEventResult=PCAN_ERROR_ILLPARAMVAL;tstPeakCan other(nullptr,&fallback);
+        QVERIFY(other.startDevice());QCOMPARE(fallback.receiveEventRegistrations,1);QVERIFY(fallback.receiveEvent==nullptr);QCOMPARE(other.lastErrorCode(),static_cast<unsigned long>(PCAN_ERROR_OK));QVERIFY(other.stopDevice());QCOMPARE(fallback.receiveEventUnregistrations,0);
+        FakeCanApi createFailure;tstPeakCan noEvent(nullptr,&createFailure,[]()->HANDLE{return nullptr;});QVERIFY(noEvent.startDevice());QCOMPARE(createFailure.receiveEventRegistrations,0);QVERIFY(noEvent.stopDevice());
+        FakeCanApi detachFailure;detachFailure.receiveEventUnregisterResult=PCAN_ERROR_ILLPARAMVAL;tstPeakCan released(nullptr,&detachFailure);
+        QVERIFY(released.startDevice());QVERIFY(!released.stopDevice());QCOMPARE(released.lastErrorCode(),static_cast<unsigned long>(PCAN_ERROR_ILLPARAMVAL));QCOMPARE(WaitForSingleObject(detachFailure.receiveEvent,0),DWORD(WAIT_FAILED));
+        FakeCanApi failedRelease;failedRelease.receiveEventUnregisterResult=PCAN_ERROR_ILLPARAMVAL;failedRelease.uninitializeResult=PCAN_ERROR_ILLHW;tstPeakCan retained(nullptr,&failedRelease);
+        QVERIFY(retained.startDevice());QVERIFY(!retained.stopDevice());QVERIFY(failedRelease.eventAliveAtUninitialize);QVERIFY(WaitForSingleObject(failedRelease.receiveEvent,0)!=WAIT_FAILED);
+        CloseHandle(failedRelease.receiveEvent); // Fake API holds no reference after the test.
+    }
     void multiPortLinDoesNotReinitializeActiveSibling() {
         FakeLinApi api;api.handles={21,22};
         tstPeakLin a(nullptr,&api),b(nullptr,&api);
@@ -200,6 +268,23 @@ private slots:
         api.resetResult=PCAN_ERROR_ILLHW;
         QVERIFY(!d.stopDevice());QCOMPARE(api.releases,1);QVERIFY(!d.isOpen());
         QVERIFY(d.stopDevice());QCOMPARE(api.releases,1);
+    }
+    void canBusHeavyDoesNotLatchOrResetChannel(){
+        HeavyCanApi api;tstPeakCan driver(nullptr,&api);SoftwareChannelConfiguration c;
+        c.softwareId="CAN01";c.bus=Bus::Can;c.bitrate=500000;c.uds.profileId="CAN A";c.preferredHandle=PCAN_USBBUS1;
+        SoftwareChannel session(c,std::unique_ptr<HardwareBackend>(new PeakCanBackend(driver)));
+        QVERIFY(session.connectChannel());QCOMPARE(session.state(),ConnectionState::Connected);const int resets=api.resets;
+        QCOMPARE(api.autoResetCalls,1);QCOMPARE(api.autoResetValue,DWORD(PCAN_PARAMETER_OFF));
+        api.status=PCAN_ERROR_BUSHEAVY;session.poll();QCOMPARE(session.state(),ConnectionState::Connected);
+        QCOMPARE(driver.hardwareHealth(),Health::BusWarning);QVERIFY(driver.isDeviceActive());QCOMPARE(api.resets,resets);
+        for(const auto status:{TPCANStatus(PCAN_ERROR_BUSPASSIVE),TPCANStatus(PCAN_ERROR_BUSOFF),TPCANStatus(PCAN_ERROR_ILLPARAMVAL)}){
+            api.status=status;session.poll();QCOMPARE(session.state(),ConnectionState::Connected);QCOMPARE(api.resets,resets);
+        }
+        api.status=PCAN_ERROR_OK;session.poll();QCOMPARE(session.state(),ConnectionState::Connected);
+        QCOMPARE(driver.hardwareHealth(),Health::Ready);QCOMPARE(api.resets,resets);
+        api.enumerationResult=PCAN_ERROR_NODRIVER;session.poll();session.poll();QCOMPARE(session.state(),ConnectionState::Connected);
+        api.enumerationResult=PCAN_ERROR_OK;
+        api.handles.clear();session.poll();QCOMPARE(session.state(),ConnectionState::Missing);
     }
     void canInitRollbackAndBusOff() {
         FakeCanApi api;tstPeakCan d(nullptr,&api);

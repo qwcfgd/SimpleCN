@@ -18,9 +18,11 @@ public:
     bool request(QByteArray bytes,QByteArray expected,Reply reply,bool suppressed=false,bool functional=false);
     void cancel();
     bool busy() const{return m_active||!m_queue.isEmpty();}
+    bool hasActiveRequest() const{return m_active;}
     int maximumPdu() const{return m_transport.maximumPdu();}
 signals:
     void trace(bool transmit,QByteArray pdu);
+    void deadlineObserved(QString kind,int limitMs,qint64 elapsedMs);
     void notice(QString);
     void activityChanged(bool);
 private:

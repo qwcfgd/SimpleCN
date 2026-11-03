@@ -125,7 +125,7 @@ void ChannelViewModel::selectAvailableHardware() {
     if(next.hardwareKey!=m_settings.hardwareKey || next.handle!=m_settings.handle)setSettings(next);
 }
 int ChannelViewModel::communicationIndicator()const {
-    if(connected())return (m_health==Health::Ready || m_health==Health::Sleeping)?1:2;
+    if(connected())return (m_health==Health::Ready || m_health==Health::Sleeping)?1:m_settings.bus==communication::Bus::Can?3:2;
     return m_lost?2:0;
 }
 bool ChannelViewModel::canConnect() const {

@@ -8,7 +8,11 @@
 #include "domain/SignalTypes.h"
 namespace host {
 struct ChannelSettings : ChannelPageInitialValues {
+    ChannelSettings();
     QJsonObject signalConfiguration;
+    QString bootAddress="00000000",bootEraseLength="00020000";
+    bool checkDriverAbi=false,checkAppVersion=false,checkMinimumBoot=false;
+    QString expectedDriverAbi="1.4",expectedAppVersion="T008A0001",expectedMinimumBoot="001";
     QString cddPath,cddEcu,cddVariant;
     int udsRepeatCount=1,udsRepeatDelayMs=1000;
     bool udsRepeatEnabled=false;
@@ -36,6 +40,8 @@ struct FrameRecord {
     bool typed=false,echo=false,request=false,simulated=false,noResponse=false,monitorHidden=false,replay=false;
     int checksum=-1;bool classicChecksum=false;
     quint32 errorFlags=0;
+    QString detail;
+    bool hardwareStatus=false;
 };
 using FrameBatch=QVector<FrameRecord>;
 enum class TaskState {Idle,Running,Completed,Cancelled,Failed};

@@ -3,6 +3,7 @@
 #include "protocol/FlashJob.h"
 #include "protocol/CanTransport.h"
 namespace host {
+ChannelSettings::ChannelSettings(){boot::FlashProfile p;QString error;if(boot::FlashProfile::fromJson(downloadProfile,p,error))downloadProfile=p.toJson();}
 ChannelSettings ChannelSettings::defaults(communication::Bus bus) {
     ChannelSettings s;s.bus=bus;
     if(bus==communication::Bus::Lin){s.softwareId=ChannelPageInitialValues::linName;s.profileId=ChannelPageInitialValues::linProfile;s.bitrate=ChannelPageInitialValues::linBitrate;}
@@ -55,8 +56,10 @@ bool ChannelSettings::toConfiguration(communication::SoftwareChannelConfiguratio
     }
     if(error.isEmpty() && (!hex(applicationAddress,0xffffffff,address) || !hex(flashAddress,0xffffffff,address)))
         error="镜像基址必须为 32 位十六进制地址。";
-    if(error.isEmpty() && (!hex(applicationLength,0xffffffff,address) || address==0))
-        error="App length must be a nonzero 32-bit hexadecimal value";
+    if(error.isEmpty() && !hex(applicationLength,0xffffffff,address))
+        error="App length must be a 32-bit hexadecimal value";
+    if(error.isEmpty() && (!hex(bootAddress,0xffffffff,address)||!hex(bootEraseLength,0xffffffff,address)))
+        error="Boot address and length must be valid 32-bit hexadecimal values";
     if(error.isEmpty()&&!fingerprintHex.isEmpty()){
         static const QRegularExpression fpPattern("^[0-9a-fA-F]{38}$");
         if(!fpPattern.match(fingerprintHex).hasMatch())error="F184 must contain exactly 19 hexadecimal bytes";
@@ -73,13 +76,16 @@ bool ChannelSettings::toConfiguration(communication::SoftwareChannelConfiguratio
     return error.isEmpty() && c.isValid();
 }
 QJsonObject ChannelSettings::toJson() const {
+    boot::FlashProfile p;QString error;const auto effective=boot::FlashProfile::fromJson(downloadProfile,p,error)?p.toJson():downloadProfile;
     return {{"bus",bus==communication::Bus::Can?"CAN":"LIN"},{"softwareId",softwareId},{"profileId",profileId},
-        {"canNetwork",canNetwork},{"downloadProfile",downloadProfile},{"hardwareKey",hardwareKey},{"handle",int(handle)},{"bitrate",bitrate},{"simulation",simulation},
+        {"canNetwork",canNetwork},{"downloadProfile",effective},{"hardwareKey",hardwareKey},{"handle",int(handle)},{"bitrate",bitrate},{"simulation",simulation},
         {"autoReconnect",autoReconnect},{"extendedId",extendedId},{"requestId",requestId},{"responseId",responseId},
         {"functionalId",functionalId},{"nad",nad},{"downloadTxId",downloadTxId},{"downloadRxId",downloadRxId},{"fingerprintHex",fingerprintHex},{"p2Ms",p2Ms},{"p2StarMs",p2StarMs},
         {"testerPresentEnabled",testerPresentEnabled},{"testerPresentMs",testerPresentMs},{"maxPendingMs",maxPendingMs},{"programmingSession",programmingSession},
         {"securityLevel",securityLevel},{"flashPath",flashPath},{"applicationPath",applicationPath},
-        {"flashAddress",flashAddress},{"applicationAddress",applicationAddress},{"applicationLength",applicationLength},{"applicationNote",applicationNote},{"flashRequired",flashRequired},{"rxdEnabled",rxdEnabled},{"repeatDownloadEnabled",repeatDownloadEnabled},
+        {"flashAddress",flashAddress},{"applicationAddress",applicationAddress},{"applicationLength",applicationLength},{"applicationNote",applicationNote},{"bootAddress",bootAddress},{"bootEraseLength",bootEraseLength},
+        {"checkDriverAbi",checkDriverAbi},{"checkAppVersion",checkAppVersion},{"checkMinimumBoot",checkMinimumBoot},{"expectedDriverAbi",expectedDriverAbi},{"expectedAppVersion",expectedAppVersion},{"expectedMinimumBoot",expectedMinimumBoot},
+        {"flashRequired",flashRequired},{"rxdEnabled",rxdEnabled},{"repeatDownloadEnabled",repeatDownloadEnabled},
         {"repeatDownloadCount",repeatDownloadCount},{"repeatDownloadIntervalMs",repeatDownloadIntervalMs},
         {"cddPath",cddPath},{"cddEcu",cddEcu},{"cddVariant",cddVariant},{"signalConfiguration",signalConfiguration},
         {"udsRepeatCount",udsRepeatCount},{"udsRepeatDelayMs",udsRepeatDelayMs},{"udsRepeatEnabled",udsRepeatEnabled},
@@ -130,6 +136,9 @@ bool ChannelSettings::fromJson(const QJsonObject &o,ChannelSettings &result,QStr
     s.flashPath=text("flashPath",s.flashPath);s.applicationPath=text("applicationPath",s.applicationPath);
     s.flashAddress=text("flashAddress",s.flashAddress);s.applicationAddress=text("applicationAddress",s.applicationAddress);
     s.applicationLength=text("applicationLength",s.applicationLength);s.applicationNote=text("applicationNote",{});
+    s.bootAddress=text("bootAddress",s.bootAddress);s.bootEraseLength=text("bootEraseLength",s.bootEraseLength);
+    s.checkDriverAbi=o.value("checkDriverAbi").toBool(false);s.checkAppVersion=o.value("checkAppVersion").toBool(false);s.checkMinimumBoot=o.value("checkMinimumBoot").toBool(false);
+    s.expectedDriverAbi=text("expectedDriverAbi",s.expectedDriverAbi);s.expectedAppVersion=text("expectedAppVersion",s.expectedAppVersion);s.expectedMinimumBoot=text("expectedMinimumBoot",s.expectedMinimumBoot);
     s.flashRequired=o.value("flashRequired").toBool(s.flashRequired);
     s.rxdEnabled=o.value("rxdEnabled").toBool(s.rxdEnabled);
     s.repeatDownloadEnabled=o.value("repeatDownloadEnabled").toBool(s.repeatDownloadEnabled);
@@ -137,6 +146,7 @@ bool ChannelSettings::fromJson(const QJsonObject &o,ChannelSettings &result,QStr
     s.repeatDownloadIntervalMs=o.value("repeatDownloadIntervalMs").toInt(s.repeatDownloadIntervalMs);
     communication::SoftwareChannelConfiguration c;
     if(!s.toConfiguration(c,error))return false;
+    boot::FlashProfile p;if(!boot::FlashProfile::fromJson(s.downloadProfile,p,error))return false;s.downloadProfile=p.toJson();
     result=s;return true;
 }
 QString hardwareDeviceKey(const communication::HardwareChannel &h) {

@@ -4,6 +4,7 @@
 #include "DownloadSteps.h"
 #include "T008Target.h"
 #include <QJsonObject>
+#include <QSet>
 #include <memory>
 namespace boot {
 class KeyProvider {
@@ -35,9 +36,9 @@ struct FlashProfile {
         for(const auto &step:downloadSteps())if(id==step.id)return stepEnabled.value(id).toBool(flow!="boot"||!step.appOnly);
         return false;
     }
-    bool checksNegativeResponse(const QString &step)const{return isT008()||negativeResponseChecks.value(step).toBool(flow=="legacy");}
+    bool checksNegativeResponse(const QString &step)const{return requiresNegativeResponseCheck(step)||negativeResponseChecks.value(step).toBool(isT008()||flow=="legacy");}
     bool checksTimeout(const QString &step)const{
-        return !suppressesPositiveResponse(step)&&(isT008()||timeoutChecks.value(step).toBool(flow=="legacy"));
+        return !suppressesPositiveResponse(step)&&!fixedUncheckedTimeout(step)&&timeoutChecks.value(step).toBool(isT008()||flow=="legacy");
     }
     quint8 session=2,appSecurityLevel=0x01,securityLevel=0x11;
     quint16 eraseRoutine=0xff00,verifyRoutine=0xff01,dependencyRoutine=0xff02,identityDid=0xf180;
@@ -83,6 +84,7 @@ private:
     QVector<Segment> m_segments;int m_driverCount=0,m_index=0,m_offset=0,m_blockSize=0,m_blockLength=0;
     quint8 m_sequence=1;quint64 m_epoch=0;qint64 m_total=0,m_acked=0;bool m_running=false;
     int m_ignored=0,m_transferPacket=0;bool m_isV2=false;
+    QSet<quint8> m_unresolvedSids;
     t008::Plan m_targetPlan;QTimer m_deadline;QElapsedTimer m_wall;QString m_versionObservation;
 };
 }

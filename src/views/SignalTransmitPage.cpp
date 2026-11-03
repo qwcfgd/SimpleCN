@@ -2,6 +2,7 @@
 #include "SignalTransmitPage.h"
 #include "SignalPlotDialog.h"
 #include "SignalValueDelegate.h"
+#include "TransmitFrameDelegate.h"
 #include "viewmodels/SignalTableModels.h"
 #include <QBoxLayout>
 #include <QFormLayout>
@@ -60,7 +61,10 @@ SignalTransmitPage::SignalTransmitPage(SignalTransmitViewModel*vm,QWidget*parent
     m_search=new QLineEdit;m_search->setObjectName("signalSearch");m_search->setPlaceholderText("浏览节点 / 搜索报文，不改变发送选择");bl->addWidget(m_search);
     m_tree=new QTreeView;m_tree->setObjectName("signalTree");auto*treeModel=new SignalTreeModel(vm,this);auto*proxy=new QSortFilterProxyModel(this);proxy->setSourceModel(treeModel);proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);proxy->setFilterKeyColumn(-1);proxy->setRecursiveFilteringEnabled(true);m_tree->setModel(proxy);m_tree->header()->setStretchLastSection(false);m_tree->header()->setSectionResizeMode(0,QHeaderView::Stretch);m_tree->header()->setSectionResizeMode(1,QHeaderView::Fixed);m_tree->setColumnWidth(1,85);bl->addWidget(m_tree);split->addWidget(browser);
     m_plan=new QTableView;m_plan->setObjectName("signalPlanTable");tableStyle(m_plan);
-    m_plan->setItemDelegate(new SignalValueDelegate(m_plan));
+    m_plan->setItemDelegate(new TransmitFrameDelegate(m_plan));
+    connect(m_plan,&QTableView::clicked,this,[this](const QModelIndex&index){
+        if((index.data(TransmitTableRoles::PayloadLengthRole).isValid()||index.data(TransmitTableRoles::DlcMinimumRole).isValid())&&(index.flags()&Qt::ItemIsEditable))m_plan->edit(index);
+    });
     if(vm->database()->bus==Bus::Can){m_canModel=new CanTxTableModel(vm,this);m_plan->setModel(m_canModel);connect(m_canModel,&CanTxTableModel::validation,this,&SignalTransmitPage::feedback);m_plan->setColumnWidth(0,45);m_plan->setColumnWidth(1,45);m_plan->setColumnWidth(2,150);m_plan->setColumnWidth(3,90);m_plan->setColumnWidth(6,45);m_plan->setColumnWidth(7,80);}
     else{m_linModel=new LinScheduleTableModel(vm,this);m_plan->setModel(m_linModel);connect(m_linModel,&LinScheduleTableModel::validation,this,&SignalTransmitPage::feedback);}
     m_activeSchedule=new QComboBox;m_activeSchedule->setObjectName("signalActiveSchedule");auto*planPanel=new QWidget;auto*planLayout=new QVBoxLayout(planPanel);planLayout->setContentsMargins(0,0,0,0);if(m_linModel){auto*scheduleRow=new QHBoxLayout;auto*label=plain("调度表");label->setBuddy(m_activeSchedule);scheduleRow->addWidget(label);scheduleRow->addWidget(m_activeSchedule,1);planLayout->addLayout(scheduleRow);}else m_activeSchedule->setParent(this);m_activeSchedule->setVisible(m_linModel!=nullptr);planLayout->addWidget(m_plan);

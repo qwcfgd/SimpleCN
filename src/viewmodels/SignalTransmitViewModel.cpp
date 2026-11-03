@@ -1,6 +1,7 @@
 #include "SignalTransmitViewModel.h"
 #include "model/DatabaseImporter.h"
 #include "model/SignalCodec.h"
+#include "model/TransmitPayload.h"
 #include "infrastructure/SignalConfigurationStore.h"
 #include <QtConcurrent/QtConcurrentRun>
 #include <limits>
@@ -10,7 +11,8 @@ namespace host {
 using namespace signal;
 static QString validateEnabled(Schedule schedule,const QVector<FrameDefinition>&frames,const WorkingSet&work,int bitrate){
     const auto original=schedule.entries.size();for(int i=schedule.entries.size()-1;i>=0;--i)if(work.frames.contains(schedule.entries[i].frame)&&!work.frames.value(schedule.entries[i].frame).sendEnabled)schedule.entries.removeAt(i);
-    if(schedule.entries.isEmpty())return {};if(original!=schedule.entries.size())schedule.issue.clear();return SignalCodec::validateSchedule(schedule,frames,bitrate);
+    auto effective=frames;for(auto&f:effective)if(work.frames.contains(f.key))f.length=work.frames.value(f.key).applied.bytes.size();
+    if(schedule.entries.isEmpty())return {};if(original!=schedule.entries.size())schedule.issue.clear();return SignalCodec::validateSchedule(schedule,effective,bitrate);
 }
 SignalTransmitViewModel::SignalTransmitViewModel(Bus bus,QObject*parent):QObject(parent),m_bus(bus){
     auto empty=QSharedPointer<DatabaseDefinition>::create();empty->bus=bus;m_database=empty;if(bus==Bus::Lin)m_work.node="Master";
@@ -71,31 +73,51 @@ void SignalTransmitViewModel::importAsync(const QString&path){
 }
 void SignalTransmitViewModel::remember(){m_message.clear();m_history.append(m_work);}
 void SignalTransmitViewModel::changedFrame(const QString&key){emit frameChanged(key);emit changed();}
-bool SignalTransmitViewModel::commit(const QString&key,QString&error){
-    auto &draft=m_work.frames[key];const auto*f=frame(key);if(!f){error="未知帧";return false;}
-    if(!draft.errors.isEmpty()||!draft.frameError.isEmpty()){error="此帧仍有错误草稿；继续上一有效 payload";return false;}
-    auto payload=draft.applied.bytes;if(!SignalCodec::encode(*f,draft.values,payload,error))return false;
-    draft.applied.bytes=payload;draft.appliedValues=draft.values;++draft.applied.revision;
-    if(running())emit payloadRequested({m_replaying?frameKey(m_bus,f->id,f->extended):key,draft.applied,m_status.run,m_connection});return true;
+void SignalTransmitViewModel::publishPayload(const QString&key,TxDraft next,const QByteArray&bytes){
+    // One committed snapshot drives DLC, both tables, persistence and the worker.
+    // Finish the snapshot before emitting any signal (views may read it reentrantly).
+    next.applied.bytes=bytes;next.appliedValues=next.values;
+    next.applied.revision=m_work.frames.value(key).applied.revision+1;
+    const auto payload=next.applied;const auto*f=frame(key);
+    const auto runtimeKey=m_replaying?frameKey(m_bus,f->id,f->extended):key;
+    remember();m_work.frames[key]=std::move(next);
+    if(running())emit payloadRequested({runtimeKey,payload,m_status.run,m_connection});
+    changedFrame(key);
 }
 bool SignalTransmitViewModel::editSignal(const QString&key,int field,const QString&input,bool physical,QString&error,int range){
-    const auto*f=frame(key);if(!canData()||!f||field<0||field>=f->fields.size()||!f->issue.isEmpty()){error="当前不可编辑信号";return false;}
-    remember();auto &draft=m_work.frames[key];auto value=physical?SignalCodec::parsePhysical(f->fields[field],input,range):SignalCodec::parseRaw(f->fields[field],input);
-    draft.inputs[field]=(physical?"物理 ":"raw ")+input;
-    if(!value.ok()){draft.errors[field]=value.error;error=value.error;changedFrame(key);return false;}
-    draft.errors.remove(field);draft.warnings[field]=value.warning;draft.values[field]=value.raw;
-    const bool ok=commit(key,error);changedFrame(key);return ok;
+    const auto*f=frame(key);if(!canData()||!f||!f->issue.isEmpty()||!TransmitPayload::containsSignal(*f,field,m_work.frames.value(key).applied.bytes.size())){error="当前不可编辑信号";return false;}
+    auto next=m_work.frames.value(key);const auto value=physical?SignalCodec::parsePhysical(f->fields[field],input,range):SignalCodec::parseRaw(f->fields[field],input);
+    next.inputs[field]=(physical?"物理 ":"raw ")+input;
+    if(!value.ok()){next.errors[field]=value.error;error=value.error;}
+    else{next.errors.remove(field);next.warnings[field]=value.warning;next.values[field]=value.raw;error.clear();}
+    auto bytes=next.applied.bytes;
+    if(value.ok()&&next.errors.isEmpty()&&next.frameError.isEmpty()&&TransmitPayload::encode(*f,next.values,bytes,error)){
+        publishPayload(key,std::move(next),bytes);return true;
+    }
+    if(error.isEmpty())error="此帧仍有错误草稿；继续上一有效 payload";
+    remember();m_work.frames[key]=std::move(next);changedFrame(key);return false;
 }
 bool SignalTransmitViewModel::editPayload(const QString&key,const QString&input,QString&error){
     const auto*f=frame(key);if(!canData()||!f||!f->issue.isEmpty()){error="当前不可编辑帧数据";return false;}
-    remember();auto&draft=m_work.frames[key];draft.frameInput=input;QByteArray bytes;
-    if(!SignalCodec::parseBytes(input,f->length,bytes,error)){draft.frameError=error;changedFrame(key);return false;}
-    auto values=draft.values;if(!SignalCodec::decode(*f,bytes,values,error)){draft.frameError=error;changedFrame(key);return false;}
-    draft.frameError.clear();
-    if(!draft.errors.isEmpty()){error="信号仍有错误草稿；整帧 HEX 未应用";draft.frameError=error;changedFrame(key);return false;}
-    draft.values=values;draft.appliedValues=values;draft.applied.bytes=bytes;++draft.applied.revision;draft.inputs.clear();draft.warnings.clear();
-    for(int i=0;i<f->fields.size();++i)draft.warnings[i]=SignalCodec::rangeWarning(f->fields[i],values[i]);
-    if(running())emit payloadRequested({m_replaying?frameKey(m_bus,f->id,f->extended):key,draft.applied,m_status.run,m_connection});changedFrame(key);return true;
+    auto next=m_work.frames.value(key);QByteArray bytes;
+    if(!TransmitPayload::parse(input,next.applied.bytes.size(),bytes,error)||!TransmitPayload::decode(*f,bytes,next.values,error)){
+        next.frameInput=input;next.frameError=error;remember();m_work.frames[key]=std::move(next);changedFrame(key);return false;
+    }
+    // A complete raw frame replaces all signal drafts in the same transaction.
+    next.frameInput.clear();next.frameError.clear();next.inputs.clear();next.errors.clear();next.warnings.clear();
+    for(int i=0;i<f->fields.size();++i)next.warnings[i]=SignalCodec::rangeWarning(f->fields[i],next.values[i]);
+    publishPayload(key,std::move(next),bytes);error.clear();return true;
+}
+bool SignalTransmitViewModel::setFrameLength(const QString&key,int length,QString&error){
+    const auto*f=frame(key);
+    if(!canStructure()||!f||!f->issue.isEmpty()){error="停止发送后才能修改 DLC";return false;}
+    if(!TransmitPayload::validLength(m_bus,f->id,length)){error="DLC 须为 CAN 0–8 / LIN 1–8；LIN 诊断帧固定为 8";return false;}
+    auto next=m_work.frames.value(key);if(next.applied.bytes.size()==length){error.clear();return true;}
+    const auto bytes=next.applied.bytes.leftJustified(length,char(0),true);
+    if(!TransmitPayload::decode(*f,bytes,next.values,error))return false;
+    next.frameInput.clear();next.frameError.clear();next.inputs.clear();next.errors.clear();next.warnings.clear();
+    for(int i=0;i<f->fields.size();++i)next.warnings[i]=SignalCodec::rangeWarning(f->fields[i],next.values[i]);
+    publishPayload(key,std::move(next),bytes);error.clear();return true;
 }
 bool SignalTransmitViewModel::setFrameEnabled(const QString&key,bool enabled,QString&error){
     const auto*f=frame(key);if(!canData()||!f||(enabled&&!f->issue.isEmpty())){error="当前不能修改发送使能";return false;}

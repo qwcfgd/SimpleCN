@@ -3,6 +3,9 @@
 #include <QAbstractTableModel>
 #include <QStandardItemModel>
 namespace host {
+namespace TransmitTableRoles {
+enum { PayloadLengthRole=Qt::UserRole+100,DlcMinimumRole };
+}
 class SignalValueTableModel : public QAbstractTableModel {
     Q_OBJECT
 public:

@@ -43,6 +43,32 @@ class ProtocolTest : public QObject {
         i.segments.append({address,b});i.size=count;return i;
     }
 private slots:
+    void configuredResetWaitIsPreservedAndApplied(){
+        FlashProfile original;original.flow="boot";original.resetWaitMs=120;
+        for(const auto &step:downloadSteps())original.stepEnabled[step.id]=false;
+        original.stepEnabled["reset"]=true;original.stepEnabled["post1003"]=true;
+        FlashProfile profile;QString error;QVERIFY2(FlashProfile::fromJson(original.toJson(),profile,error),qPrintable(error));QCOMPARE(profile.resetWaitMs,120);
+        ManualTransport transport;UdsSession session(transport,{1000,1000,3000,0});FlashJob job(session,profile,std::make_unique<SimulationKey>());
+        QSignalSpy sent(&transport,&DiagnosticTransport::sent);QVERIFY2(job.start(image(8),{},error),qPrintable(error));
+        QTRY_COMPARE_WITH_TIMEOUT(transport.requests.size(),1,1000);QCOMPARE(transport.requests.first(),hex("1101"));QTRY_COMPARE(sent.size(),1);
+        QElapsedTimer elapsed;elapsed.start();transport.reply(hex("5101"));QTest::qWait(60);QCOMPARE(transport.requests.size(),1);
+        QTRY_COMPARE_WITH_TIMEOUT(transport.requests.size(),2,1000);QVERIFY(elapsed.elapsed()>=105);QCOMPARE(transport.requests.last(),hex("1003"));job.cancel();
+    }
+    void delayedPendingUsesClientP2_data(){
+        QTest::addColumn<int>("clientP2");QTest::addColumn<bool>("success");
+        QTest::newRow("50 ms")<<50<<false;QTest::newRow("project default 1000 ms")<<1000<<true;
+    }
+    void delayedPendingUsesClientP2(){
+        QFETCH(int,clientP2);QFETCH(bool,success);ManualTransport wire;
+        SessionOptions options{clientP2,5000,30000,0};UdsSession session(wire,options);
+        QSignalSpy sent(&wire,&DiagnosticTransport::sent),deadlines(&session,&UdsSession::deadlineObserved);bool done=false,ok=false;QString error;
+        QVERIFY(session.request(hex("3603"),hex("7603"),[&](bool result,const QByteArray &,const QString &why){done=true;ok=result;error=why;}));
+        QTRY_COMPARE(sent.count(),1);
+        QTimer::singleShot(90,&wire,[&]{wire.reply(hex("7f3678"));});
+        QTimer::singleShot(120,&wire,[&]{wire.reply(hex("7603"));});
+        QTRY_VERIFY_WITH_TIMEOUT(done,2000);QCOMPARE(ok,success);
+        if(!success){QVERIFY(error.contains("P2"));QCOMPARE(deadlines.size(),1);QCOMPARE(deadlines[0][0].toString(),QString("UDS_P2"));QCOMPARE(deadlines[0][1].toInt(),50);QVERIFY(deadlines[0][2].toLongLong()>=50);}else QCOMPARE(deadlines.size(),0);
+    }
     void configuredTesterPresentAndSuppressedWait(){
         ManualTransport transport;SessionOptions options{200,250,600,50};options.p3Ms=350;options.testerPresentRequest=hex("3e00");
         UdsSession session(transport,options);QSignalSpy activity(&session,&UdsSession::activityChanged);QSignalSpy confirmed(&transport,&DiagnosticTransport::sent);

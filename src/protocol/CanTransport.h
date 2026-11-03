@@ -3,6 +3,7 @@
 #include <QElapsedTimer>
 #include <QJsonObject>
 #include <QTimer>
+#include <QQueue>
 #include <functional>
 namespace boot {
 struct CanFrame {
@@ -15,6 +16,8 @@ struct CanOptions {
     bool extended=false,functionalRx=false,strictClassicCc=false;
     int blockSize=8,stMin=1,maxWaitFrames=3,nAsMs=1000,nBsMs=1000,nCrMs=1000,receiveCapacity=4095,padding=0xff;
     int nArMs=0; // Legacy profiles use N_As for flow-control confirmations.
+    int bitrate=500000;
+    bool boundedFastSend=false;
     bool valid(QString &) const;
     static bool fromJson(const QJsonObject &,CanOptions &,QString &);
     QJsonObject toJson() const;
@@ -37,21 +40,33 @@ public:
     static int separationUs(int stMin);
 signals:
     void trace(bool transmit,boot::CanFrame frame);
+    void deadlineObserved(QString kind,int limitMs,qint64 elapsedMs);
 private:
     enum TxState {Idle,FramePending,WaitingFc,SendingCf};
     enum Kind {None,Single,First,Consecutive,FlowControl,Overflow};
     void submit(QByteArray,Kind);
     void flowControl(const QByteArray &);
+    void applyEarlyFlowControls();
     void scheduleCf();
     void sendCf();
+    void sendFastCf();
+    void finishFastBlock();
+    void armFastDeadline();
     void sendFc(bool overflow=false);
     void fail(const QString &);
     void txComplete();
     CanOptions m_options;Write m_write;
     QTimer m_as,m_bs,m_cr,m_cf;
-    QByteArray m_tx,m_rx,m_earlyFc;
+    QByteArray m_tx,m_rx;
+    QQueue<QByteArray> m_earlyFc;
     QElapsedTimer m_lastCf,m_transmitElapsed,m_bsElapsed,m_crElapsed;
-    int m_transmitDeadlineMs=0;
+    struct FastConfirmation { quint64 token; qint64 queuedUs; };
+    QQueue<FastConfirmation> m_fastPending;
+    QElapsedTimer m_fastClock;
+    qint64 m_fastNextUs=0;
+    bool m_fastDispatching=false,m_replayingResponse=false;
+    QQueue<CanFrame> m_earlyResponses;
+    int m_transmitDeadlineMs=0,m_zeroPacingUs=0;
     int m_txOffset=0,m_txSequence=1,m_remainingBlock=0,m_peerBlock=0,m_peerStUs=0,m_waitFrames=0;
     int m_rxLength=0,m_rxSequence=1,m_rxBlock=0,m_pendingCount=0;
     quint64 m_serial=0,m_token=0,m_epoch=0;

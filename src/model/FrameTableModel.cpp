@@ -3,9 +3,12 @@
 #include <limits>
 #include "FrameTableModel.h"
 #include "SignalCodec.h"
+#include "FramePresentation.h"
 #include "infrastructure/TraceExporter.h"
 #include <QColor>
 #include <QDateTime>
+#include <QGuiApplication>
+#include <QPalette>
 #include <QRegularExpression>
 namespace host {
 namespace {
@@ -46,11 +49,17 @@ QVariant FrameTableModel::data(const QModelIndex &i,int role) const {
     }
     if(i.row()<0||i.row()>=m_rows.size())return {};
     const auto &r=m_rows[i.row()];
+    // Keep the shade on the record when filtering or eviction changes its proxy row.
+    if(role==Qt::BackgroundRole&&!m_viewFilter){
+        const auto shade=merged()?quintptr(qHash(key(r))):m_details[i.row()].token;
+        return QGuiApplication::palette().brush((shade&1)?QPalette::AlternateBase:QPalette::Base);
+    }
     if(role==Qt::UserRole+2)return key(r);
     if(role==RelativeTimeSecondsRole)return r.relativeSeconds;
     if(role==NibbleAgeRole&&merged()&&i.column()==7)return m_details[i.row()].ages;
     if(role==Qt::ForegroundRole)return QColor(r.error?"#C93838":(r.warning?"#9A6700":"#29425D"));
 
+    if(role==Qt::ToolTipRole&&i.column()==8)return Language::text(r.status)+(r.simulated?Language::text("\n模拟报文"):QString())+(r.detail.isEmpty()?QString():"\n"+Language::text(r.detail));
     if(role==Qt::ToolTipRole||role==Qt::DisplayRole){
         switch(i.column()){case 0:return r.timestamp;case 1:return r.relativeTime;case 2:return r.intervalSeconds;
         case 3:return r.channel;case 4:return r.direction;case 5:return r.identifier;case 6:return r.length;case 7:return r.data;case 8:return Language::text(r.status);}
@@ -64,6 +73,10 @@ QVariant FrameTableModel::headerData(int c,Qt::Orientation o,int role) const {
 }
 QString FrameTableModel::key(const FrameRecord &r) const {
     return r.channel+":"+signal::frameKey(r.bus,r.id,r.extended);
+}
+const FrameRecord *FrameTableModel::frameAt(const QModelIndex &i) const {
+    if(i.model()!=this||!i.isValid()||i.internalId()||i.row()<0||i.row()>=m_rows.size())return nullptr;
+    return &m_rows.at(i.row());
 }
 FrameTableModel::Detail FrameTableModel::detail(const FrameRecord &r,quintptr token) const {
     Detail d;d.token=token;if(!merged())return d;for(int n=0;n<r.payload.size()*2;++n)d.ages.append(0);
@@ -96,36 +109,59 @@ FrameTableModel::Detail FrameTableModel::updatedDetail(const FrameRecord &before
 void FrameTableModel::setDatabase(signal::Database db){if(m_database==db)return;m_database=std::move(db);m_frameLookup.clear();
     if(m_database)for(int n=0;n<m_database->frames.size();++n){const auto &f=m_database->frames[n];m_frameLookup[quint64(f.id)|(f.extended?(quint64(1)<<32):0)]=n;}if(!m_paused&&m_rolling)rebuild();}
 void FrameTableModel::setRolling(bool on){if(on==m_rolling)return;m_rolling=on;if(!m_paused)rebuild();}
+void FrameTableModel::setDisplayFilter(std::function<bool(const FrameRecord&)> filter){
+    m_viewFilter=std::move(filter);m_filteredHistory.clear();
+    const auto limit=m_paused?m_pausedHistoryLimit:historyCount();
+    if(m_viewFilter)for(qint64 n=0;n<limit;++n)if(m_viewFilter(m_history.at(n)))m_filteredHistory.append(n);
+    const auto count=m_viewFilter?qint64(m_filteredHistory.size()):limit;
+    m_windowStart=qMax(qint64(0),count-Capacity);m_windowSize=int(qMin(qint64(Capacity),count));
+    rebuild();emit historyChanged();
+}
 void FrameTableModel::setPaused(bool on){
     if(m_paused==on)return;m_paused=on;
-    if(!on){m_windowStart=qMax(qint64(0),historyCount()-Capacity);m_windowSize=int(qMin(qint64(Capacity),historyCount()));}
+    if(on)m_pausedHistoryLimit=historyCount();
+    if(!on){
+        if(m_viewFilter)for(qint64 n=m_pausedHistoryLimit;n<historyCount();++n)if(m_viewFilter(m_history.at(n)))m_filteredHistory.append(n);
+        const auto count=viewHistoryCount();m_windowStart=qMax(qint64(0),count-Capacity);m_windowSize=int(qMin(qint64(Capacity),count));
+    }
     if(!on||m_rolling)rebuild();emit historyChanged();
 }
 void FrameTableModel::setHistoryStart(qint64 first){
     if(!m_paused)return;
-    first=qBound(qint64(0),first,qMax(qint64(0),historyCount()-Capacity));
-    const int size=int(qMin(qint64(Capacity),historyCount()-first));
+    const auto count=viewHistoryCount();
+    first=qBound(qint64(0),first,qMax(qint64(0),count-Capacity));
+    const int size=int(qMin(qint64(Capacity),count-first));
     if(first==m_windowStart&&size==m_windowSize)return;
     m_windowStart=first;m_windowSize=size;
     rebuild();emit historyChanged();
 }
-void FrameTableModel::rebuild(){
+void FrameTableModel::rebuild(bool preserveUnchangedAges){
+    QHash<QString,QPair<qint64,QVariantList>> previous;
+    if(preserveUnchangedAges&&merged())for(int n=0;n<m_rows.size();++n)
+        previous.insert(key(m_rows[n]),qMakePair(m_details[n].historyOrdinal,m_details[n].ages));
     beginResetModel();m_rows.clear();m_details.clear();m_keys.clear();m_parentRows.clear();
     if(!merged()){
         m_rows.reserve(m_windowSize);m_details.reserve(m_windowSize);
-        for(qint64 at=m_windowStart;at<m_windowStart+m_windowSize;++at){m_rows.append(m_history.at(at));Detail d;d.token=m_nextToken++;m_details.append(d);}
+        for(qint64 at=m_windowStart;at<m_windowStart+m_windowSize;++at){m_rows.append(viewHistoryAt(at));Detail d;d.token=m_nextToken++;m_details.append(d);}
         endResetModel();return;
     }
-    for(qint64 at=m_windowStart;at<m_windowStart+m_windowSize;++at){const auto &r=m_history.at(at);const auto k=key(r);int n=m_keys.value(k,-1);
+    for(qint64 at=m_windowStart;at<m_windowStart+m_windowSize;++at){const auto &r=viewHistoryAt(at);const auto k=key(r);int n=m_keys.value(k,-1);
         if(n<0){n=m_rows.size();m_keys[k]=n;m_rows.append(r);m_details.append(detail(r,m_nextToken++));m_parentRows.insert(m_details.last().token,n);}
         else {auto d=updatedDetail(m_rows[n],r,m_details[n]);
             m_rows[n]=r;m_details[n]=d;}
-    }endResetModel();
+        m_details[n].historyOrdinal=at;
+    }
+    if(preserveUnchangedAges)for(int n=0;n<m_rows.size();++n){
+        const auto prior=previous.constFind(key(m_rows[n]));
+        if(prior!=previous.cend()&&prior.value().first==m_details[n].historyOrdinal)m_details[n].ages=prior.value().second;
+    }
+    endResetModel();
 }
 void FrameTableModel::append(const FrameBatch &input){
     if(input.isEmpty())return;FrameBatch batch=input;
     static const QRegularExpression timestampPattern(QStringLiteral("^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$"));
     for(auto &r:batch){
+        normalizeFramePresentation(r);
         bool ok=r.captureUs>=0;double rawUs=double(r.captureUs);
         if(!ok)rawUs=r.relativeTime.toDouble(&ok);if(!ok)rawUs=r.timestamp.toDouble(&ok);
         ok=ok&&std::isfinite(rawUs)&&rawUs>=0&&rawUs<double(std::numeric_limits<qint64>::max());
@@ -142,10 +178,14 @@ void FrameTableModel::append(const FrameBatch &input){
     }
     // History is session-owned and is released only by clear()/destruction.
     // Capacity limits the view, never the recorded/exportable collection.
-    m_history+=batch;
+    const qint64 historyBefore=historyCount();m_history+=batch;
     emit recorded(batch);
     if(m_paused){emit historyChanged();return;}
-    m_windowStart=qMax(qint64(0),historyCount()-Capacity);m_windowSize=int(qMin(qint64(Capacity),historyCount()));
+    if(m_viewFilter){FrameBatch accepted;accepted.reserve(batch.size());
+        for(int n=0;n<batch.size();++n)if(m_viewFilter(batch[n])){m_filteredHistory.append(historyBefore+n);accepted.append(batch[n]);}
+        batch=std::move(accepted);if(batch.isEmpty()){emit historyChanged();return;}
+    }
+    const auto count=viewHistoryCount();m_windowStart=qMax(qint64(0),count-Capacity);m_windowSize=int(qMin(qint64(Capacity),count));
     emit historyChanged();
     if(!m_rolling){
         if(batch.size()>Capacity)batch=batch.mid(batch.size()-Capacity);
@@ -154,14 +194,16 @@ void FrameTableModel::append(const FrameBatch &input){
         beginInsertRows({},m_rows.size(),m_rows.size()+batch.size()-1);
         for(const auto &r:batch){m_rows.append(r);m_details.append(detail(r,m_nextToken++));}endInsertRows();return;
     }
+    qint64 ordinal=viewHistoryCount()-batch.size();
     for(const auto &r:batch){const auto k=key(r);int n=m_keys.value(k,-1);
-        if(n<0){if(m_rows.size()>=Capacity){rebuild();return;}n=m_rows.size();beginInsertRows({},n,n);m_keys[k]=n;m_rows.append(r);m_details.append(detail(r,m_nextToken++));m_parentRows.insert(m_details.last().token,n);endInsertRows();}
+        if(n<0){if(m_rows.size()>=Capacity){rebuild(true);return;}n=m_rows.size();beginInsertRows({},n,n);m_keys[k]=n;m_rows.append(r);m_details.append(detail(r,m_nextToken++));m_details.last().historyOrdinal=ordinal;m_parentRows.insert(m_details.last().token,n);endInsertRows();}
         else {auto d=updatedDetail(m_rows[n],r,m_details[n]);
-            m_rows[n]=r;m_details[n]=d;emit dataChanged(index(n,0),index(n,8));
+            d.historyOrdinal=ordinal;m_rows[n]=r;m_details[n]=d;emit dataChanged(index(n,0),index(n,8));
             const auto p=index(n,0);if(rowCount(p))emit dataChanged(index(0,0,p),index(rowCount(p)-1,8,p));}
+        ++ordinal;
     }
 }
-void FrameTableModel::clear(){beginResetModel();m_rows.clear();m_history=FrameBatch();m_details.clear();m_keys.clear();m_parentRows.clear();m_windowStart=0;m_windowSize=0;m_relativeOriginUs=0;m_startedEpochMs=0;m_hasRelativeOrigin=false;m_previousUs=0;m_hasPrevious=false;endResetModel();emit cleared();emit historyChanged();}
+void FrameTableModel::clear(){beginResetModel();m_rows.clear();m_history=FrameBatch();m_filteredHistory.clear();m_pausedHistoryLimit=0;m_details.clear();m_keys.clear();m_parentRows.clear();m_windowStart=0;m_windowSize=0;m_relativeOriginUs=0;m_startedEpochMs=0;m_hasRelativeOrigin=false;m_previousUs=0;m_hasPrevious=false;endResetModel();emit cleared();emit historyChanged();}
 bool FrameTableModel::exportCsv(const QString &p,QString &e) const{return TraceExporter::write(p,m_history,e,"csv");}
 bool FrameTableModel::exportTrace(const QString &p,QString &e) const{return TraceExporter::write(p,m_history,e);}
 }

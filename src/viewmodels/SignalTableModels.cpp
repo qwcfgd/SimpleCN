@@ -1,6 +1,7 @@
 #include "localization/Language.h"
 #include "SignalTableModels.h"
 #include "model/SignalCodec.h"
+#include "model/TransmitPayload.h"
 #include <QBrush>
 namespace host {
 using namespace signal;
@@ -40,6 +41,10 @@ QVariant SignalValueTableModel::data(const QModelIndex&i,int role)const{
         return Language::text("%1\n%2 位，从 bit %3 起，%4\n发布：%5；接收：%6\n%7\n%8").arg(s.comment).arg(s.width).arg(s.start).arg(s.littleEndian?"Intel / little endian":"Motorola / big endian",s.publisher,s.receivers.join(", "),s.initialSource,d.inputs.value(i.row()));
     }
     if(role!=Qt::DisplayRole&&role!=Qt::EditRole)return {};
+    if(!isRx&&!TransmitPayload::containsSignal(*f,i.row(),d.applied.bytes.size())){
+        if(i.column()==2||i.column()==3)return QString("—");
+        if(i.column()==6)return Language::text("信号超出当前 DLC");
+    }
     const auto raw=values.value(i.row());const auto input=d.inputs.value(i.row());
     switch(i.column()){
     case 0:return s.name+(SignalCodec::isActive(*f,i.row(),values)?QString():Language::text("（非活动分支）"));
@@ -54,7 +59,7 @@ QVariant SignalValueTableModel::data(const QModelIndex&i,int role)const{
 Qt::ItemFlags SignalValueTableModel::flags(const QModelIndex&i)const{auto flags=QAbstractTableModel::flags(i);const auto*f=m_vm->frame(m_key);if(!f||!i.isValid())return flags;
     const auto &d=m_vm->working().frames.value(m_key);
     const bool isRx=(m_vm->database()->bus==Bus::Can&&m_vm->working().canDirection=="Rx")||(m_vm->database()->bus==Bus::Lin&&m_vm->working().role==LinRole::Monitor);
-    if(!isRx&&m_vm->canData()&&f->issue.isEmpty()&&(i.column()==2||(i.column()==3&&(f->fields[i.row()].conversion||!f->fields[i.row()].labels.isEmpty())&&!f->fields[i.row()].array)))flags|=Qt::ItemIsEditable;return flags;
+    if(!isRx&&m_vm->canData()&&f->issue.isEmpty()&&TransmitPayload::containsSignal(*f,i.row(),d.applied.bytes.size())&&(i.column()==2||(i.column()==3&&(f->fields[i.row()].conversion||!f->fields[i.row()].labels.isEmpty())&&!f->fields[i.row()].array)))flags|=Qt::ItemIsEditable;return flags;
 }
 bool SignalValueTableModel::setData(const QModelIndex&i,const QVariant&value,int role){
     if((role!=Qt::EditRole&&role!=EnumValueRole&&role!=EnumRawRole)||!(flags(i)&Qt::ItemIsEditable))return false;
@@ -76,11 +81,15 @@ CanTxTableModel::CanTxTableModel(SignalTransmitViewModel*vm,QObject*p):QAbstract
     });
 }
 QString CanTxTableModel::key(int row)const{return row>=0&&row<m_definitions.size()?m_definitions[row].key:QString();}
-QVariant CanTxTableModel::headerData(int c,Qt::Orientation o,int role)const{if(role!=Qt::DisplayRole)return {};if(o==Qt::Vertical)return c+1;return Language::text(QStringList{"使能","序号","名称","ID","发布节点","类型","字节","周期 ms","报文"}.value(c));}
+QVariant CanTxTableModel::headerData(int c,Qt::Orientation o,int role)const{if(role!=Qt::DisplayRole)return {};if(o==Qt::Vertical)return c+1;return Language::text(QStringList{"使能","序号","名称","ID","发布节点","类型","DLC","周期 ms","报文"}.value(c));}
 QVariant CanTxTableModel::data(const QModelIndex&i,int role)const{
     if(!i.isValid()||i.row()>=m_definitions.size())return {};const auto&f=m_definitions[i.row()];const auto&d=m_vm->working().frames[f.key];const auto&status=m_vm->status();
+    if(role==TransmitTableRoles::PayloadLengthRole&&i.column()==8)return d.applied.bytes.size();
+    if(role==TransmitTableRoles::DlcMinimumRole&&i.column()==6)return 0;
     if(role==Qt::CheckStateRole&&i.column()==0)return d.sendEnabled?Qt::Checked:Qt::Unchecked;
     if(role==Qt::ToolTipRole){
+        if(i.column()==6)return Language::text("停止发送后修改 DLC；缩短截尾，增大补零");
+        if(i.column()==8&&d.frameError.isEmpty())return Language::text("完整报文修改立即生效；不足 DLC 时按 Enter / Tab 或移开焦点补零提交");
         QStringList parts;
         if(!f.comment.trimmed().isEmpty())parts.append(f.comment.trimmed());
         if(!f.issue.trimmed().isEmpty())parts.append(Language::text(f.issue.trimmed()));
@@ -96,20 +105,21 @@ QVariant CanTxTableModel::data(const QModelIndex&i,int role)const{
     if(role==Qt::ForegroundRole&&!d.sendEnabled)return QBrush(QColor("#8C9BA8"));
     if(role!=Qt::DisplayRole&&role!=Qt::EditRole)return {};
     switch(i.column()){
-    case 1:return i.row()+1;case 2:return f.name;case 3:return "0x"+QString::number(f.id,16).toUpper();case 4:return f.transmitters.isEmpty()?f.publisher:f.transmitters.join(", ");case 5:return QString(f.extended?"29 bit":"11 bit")+(f.custom?Language::text(" · 自建"):QString(" · DBC"));case 6:return f.length;case 7:return d.cycleMs;
+    case 1:return i.row()+1;case 2:return f.name;case 3:return "0x"+QString::number(f.id,16).toUpper();case 4:return f.transmitters.isEmpty()?f.publisher:f.transmitters.join(", ");case 5:return QString(f.extended?"29 bit":"11 bit")+(f.custom?Language::text(" · 自建"):QString(" · DBC"));case 6:return d.applied.bytes.size();case 7:return d.cycleMs;
     case 8:return role==Qt::EditRole&&!d.frameError.isEmpty()?d.frameInput:QString::fromLatin1(d.applied.bytes.toHex(' ')).toUpper();
     }return {};
 }
 Qt::ItemFlags CanTxTableModel::flags(const QModelIndex&i)const{
     auto flags=QAbstractTableModel::flags(i);if(!i.isValid()||i.row()>=m_definitions.size())return flags;
     if(i.column()==0&&m_vm->canData()&&m_definitions[i.row()].issue.isEmpty())flags|=Qt::ItemIsUserCheckable;
-    if(((i.column()==3||i.column()==7)&&m_vm->canStructure())||(i.column()==8&&m_vm->canData()&&m_definitions[i.row()].issue.isEmpty()))flags|=Qt::ItemIsEditable;return flags;
+    if(((i.column()==3||i.column()==7)&&m_vm->canStructure())||(i.column()==6&&m_vm->canStructure()&&m_definitions[i.row()].issue.isEmpty())||(i.column()==8&&m_vm->canData()&&m_definitions[i.row()].issue.isEmpty()))flags|=Qt::ItemIsEditable;return flags;
 }
 bool CanTxTableModel::setData(const QModelIndex&i,const QVariant&v,int role){
     if(i.isValid()&&i.column()==0&&role==Qt::CheckStateRole){QString error;const bool ok=m_vm->setFrameEnabled(key(i.row()),v.toInt()==Qt::Checked,error);emit validation(error);return ok;}
     if(role!=Qt::EditRole||!(flags(i)&Qt::ItemIsEditable))return false;QString error;bool ok=false;
     if(i.column()==3){bool parsed=false;const auto id=v.toString().toULongLong(&parsed,16);if(parsed&&id<=0x1fffffff)ok=m_vm->changeId(key(i.row()),quint32(id),error,true);else error="ID 无效";}
     else if(i.column()==8)ok=m_vm->editPayload(key(i.row()),v.toString(),error);
+    else if(i.column()==6){bool parsed=false;const int length=v.toString().toInt(&parsed);if(parsed)ok=m_vm->setFrameLength(key(i.row()),length,error);else error="DLC 须为整数";}
     else if(i.column()==7){bool parsed=false;int period=v.toString().toInt(&parsed);if(parsed&&period>=0)ok=m_vm->setCanOptions(key(i.row()),true,period,error);else error="周期须为非负整数 ms；0 表示仅单次";}
     emit validation(error);return ok;
 }
@@ -148,11 +158,16 @@ LinScheduleTableModel::LinScheduleTableModel(SignalTransmitViewModel*vm,QObject*
 const Schedule*LinScheduleTableModel::schedule()const{for(const auto&s:m_vm->working().schedules)if(s.name==m_schedule)return &s;return nullptr;}
 int LinScheduleTableModel::rowCount(const QModelIndex&p)const{const auto*s=schedule();return p.isValid()||!s?0:s->entries.size();}
 QString LinScheduleTableModel::key(int row)const{const auto*s=schedule();return s&&row>=0&&row<s->entries.size()?s->entries[row].frame:QString();}
-QVariant LinScheduleTableModel::headerData(int c,Qt::Orientation o,int role)const{if(role!=Qt::DisplayRole)return {};if(o==Qt::Vertical)return c+1;return Language::text(QStringList{"使能","槽","帧-名称","ID","发布节点","字节","delay ms","报文","帧头 · 数据发送类型"}.value(c));}
-QVariant LinScheduleTableModel::data(const QModelIndex&i,int role)const{const auto*s=schedule();if(!i.isValid()||!s||i.row()>=s->entries.size()||(role!=Qt::DisplayRole&&role!=Qt::EditRole&&role!=Qt::ToolTipRole&&role!=Qt::BackgroundRole&&role!=Qt::ForegroundRole&&role!=Qt::CheckStateRole))return {};const auto&slot=s->entries[i.row()];const auto*f=m_vm->frame(slot.frame);
+QVariant LinScheduleTableModel::headerData(int c,Qt::Orientation o,int role)const{if(role!=Qt::DisplayRole)return {};if(o==Qt::Vertical)return c+1;return Language::text(QStringList{"使能","槽","帧-名称","ID","发布节点","DLC","delay ms","报文","帧头 · 数据发送类型"}.value(c));}
+QVariant LinScheduleTableModel::data(const QModelIndex&i,int role)const{const auto*s=schedule();if(!i.isValid()||!s||i.row()>=s->entries.size())return {};const auto&slot=s->entries[i.row()];const auto*f=m_vm->frame(slot.frame);
     const auto d=m_vm->working().frames.value(slot.frame);
+    if(role==TransmitTableRoles::PayloadLengthRole&&i.column()==7&&f)return d.applied.bytes.size();
+    if(role==TransmitTableRoles::DlcMinimumRole&&i.column()==5&&f)return f->id>=60?8:1;
+    if(role!=Qt::DisplayRole&&role!=Qt::EditRole&&role!=Qt::ToolTipRole&&role!=Qt::BackgroundRole&&role!=Qt::ForegroundRole&&role!=Qt::CheckStateRole)return {};
     if(role==Qt::CheckStateRole)return i.column()==0?QVariant(d.sendEnabled?Qt::Checked:Qt::Unchecked):QVariant();
     if(role==Qt::ToolTipRole){
+        if(i.column()==5)return Language::text("停止发送后修改 DLC；缩短截尾，增大补零");
+        if(i.column()==7&&d.frameError.isEmpty())return Language::text("完整报文修改立即生效；不足 DLC 时按 Enter / Tab 或移开焦点补零提交");
         QStringList parts;
         if(!slot.issue.trimmed().isEmpty())parts.append(Language::text(slot.issue.trimmed()));
         if(f&&!f->issue.trimmed().isEmpty())parts.append(Language::text(f->issue.trimmed()));
@@ -167,18 +182,21 @@ QVariant LinScheduleTableModel::data(const QModelIndex&i,int role)const{const au
         return QVariant();
     }
     if(role==Qt::ForegroundRole&&!d.sendEnabled)return QVariant(QBrush(QColor("#8C9E94")));
-    switch(i.column()){case 1:return i.row()+1;case 2:return f?f->name:slot.frame;case 3:return f?QString("0x%1").arg(f->id,2,16,QChar('0')).toUpper():QString();case 4:return f?f->publisher:QString();case 5:return f?QVariant(f->length):QVariant();case 6:return slot.delayMs;case 7:return role==Qt::EditRole&&!d.frameError.isEmpty()?d.frameInput:QString::fromLatin1(d.applied.bytes.toHex(' ')).toUpper();case 8:{const auto role=m_vm->working().role;const bool tx=role!=LinRole::Monitor&&f&&(f->custom||f->publisher==m_vm->working().node||(f->id==61&&role==LinRole::Slave));return QString(role==LinRole::Master?"Tx":"Rx")+" · "+(tx?"Tx":"Rx");}}return {};
+    switch(i.column()){case 1:return i.row()+1;case 2:return f?f->name:slot.frame;case 3:return f?QString("0x%1").arg(f->id,2,16,QChar('0')).toUpper():QString();case 4:return f?f->publisher:QString();case 5:return f?QVariant(int(d.applied.bytes.size())):QVariant();case 6:return slot.delayMs;case 7:return role==Qt::EditRole&&!d.frameError.isEmpty()?d.frameInput:QString::fromLatin1(d.applied.bytes.toHex(' ')).toUpper();case 8:{const auto role=m_vm->working().role;const bool tx=role!=LinRole::Monitor&&f&&(f->custom||f->publisher==m_vm->working().node||(f->id==61&&role==LinRole::Slave));return QString(role==LinRole::Master?"Tx":"Rx")+" · "+(tx?"Tx":"Rx");}}return {};
 }
 Qt::ItemFlags LinScheduleTableModel::flags(const QModelIndex&i)const{
     auto result=QAbstractTableModel::flags(i);const auto*f=m_vm->frame(key(i.row()));
     if(i.isValid()&&i.column()==0&&f&&f->issue.isEmpty()&&m_vm->canData())result|=Qt::ItemIsUserCheckable;
     if(i.isValid()&&(i.column()==3||i.column()==6)&&m_vm->canStructure())result|=Qt::ItemIsEditable;
+    if(i.isValid()&&i.column()==5&&f&&f->issue.isEmpty()&&m_vm->canStructure())result|=Qt::ItemIsEditable;
     if(i.isValid()&&i.column()==7&&f&&f->issue.isEmpty()&&m_vm->canData())result|=Qt::ItemIsEditable;return result;
 }
 bool LinScheduleTableModel::setData(const QModelIndex&i,const QVariant&v,int role){
     if(i.isValid()&&i.column()==0&&role==Qt::CheckStateRole){QString error;const bool ok=m_vm->setFrameEnabled(key(i.row()),v.toInt()==Qt::Checked,error);emit validation(error);return ok;}
     if(role!=Qt::EditRole||!(flags(i)&Qt::ItemIsEditable))return false;
-    QString error;bool ok=false;if(i.column()==3){bool parsed=false;const auto id=v.toString().toULongLong(&parsed,16);if(parsed&&id<=61)ok=m_vm->changeId(key(i.row()),quint32(id),error);else error="LIN ID 必须在 0–0x3D";}else if(i.column()==6)ok=m_vm->setLinDelay(i.row(),v.toString(),error);else ok=m_vm->editPayload(key(i.row()),v.toString(),error);emit validation(error);return ok;
+    QString error;bool ok=false;if(i.column()==3){bool parsed=false;const auto id=v.toString().toULongLong(&parsed,16);if(parsed&&id<=61)ok=m_vm->changeId(key(i.row()),quint32(id),error);else error="LIN ID 必须在 0–0x3D";}
+    else if(i.column()==5){bool parsed=false;const int length=v.toString().toInt(&parsed);if(parsed)ok=m_vm->setFrameLength(key(i.row()),length,error);else error="DLC 须为整数";}
+    else if(i.column()==6)ok=m_vm->setLinDelay(i.row(),v.toString(),error);else ok=m_vm->editPayload(key(i.row()),v.toString(),error);emit validation(error);return ok;
 }
 
 }

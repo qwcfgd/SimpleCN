@@ -2,6 +2,7 @@
 #include "communication/HardwareBackend.h"
 #include <memory>
 namespace host {
+enum class CanBusState { Unsupported, Ready, Warning, BusOff, Fatal };
 // Raw wire types are confined to infrastructure; application ViewModels are vendor independent.
 class CanHardware : public communication::HardwareBackend {
 public:
@@ -11,6 +12,12 @@ public:
     virtual unsigned long lastErrorCode()const=0;
     virtual QString lastErrorText()const=0;
     virtual bool enableEcho()=0;
+    virtual void *receiveEventHandle() const { return nullptr; }
+    virtual CanBusState classifyStatus(unsigned long) const {return CanBusState::Unsupported;}
+    virtual CanBusState statusFrame(const TPCANMsg&) const {return CanBusState::Unsupported;}
+    virtual CanBusState busState(){return CanBusState::Unsupported;}
+    virtual bool enableBusOffAutoReset(){return false;}
+    virtual bool resetBusController(){return false;}
 };
 class LinHardware : public communication::HardwareBackend {
 public:

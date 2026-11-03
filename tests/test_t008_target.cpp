@@ -22,10 +22,10 @@ FirmwareImage image(quint32 base,const QByteArray &data){FirmwareImage i;i.segme
 struct Fixture {
     FirmwareImage app,driver;
     Fixture(){
-        QByteArray descriptor(4096,char(0xff)),data(0x408,char(0x55)),native(136,0);
-        descriptor.replace(0,8,"T008APP2");put(descriptor,8,0x408);put(descriptor,12,1,2);
+        QByteArray descriptor(4096,char(0xff)),data(0x800,char(0x55)),native(136,0);
+        descriptor.replace(0,8,"T008APP2");put(descriptor,8,0x800);put(descriptor,12,1,2);
         descriptor.replace(14,16,QByteArray("S32K144TAUTOSAR").leftJustified(16,'\0'));descriptor.replace(30,16,QByteArray("Rev.A4.06.5").leftJustified(16,'\0'));
-        descriptor.replace(46,9,"T008A0001");descriptor.replace(55,16,QByteArray(16,'C'));descriptor.replace(71,16,QByteArray(16,'L'));
+        descriptor.replace(46,9,"T008A0001");descriptor.replace(55,16,"T008-CFG-TEST001");descriptor.replace(71,16,"T008-CAL-TEST001");
         put(data,0,0x20001400);put(data,4,0x21401);
         native.replace(0,8,"T008DRV1");put(native,8,128,2);put(native,10,1,2);put(native,12,1,2);put(native,16,136);put(native,20,0x20001400);put(native,24,136);put(native,28,256);
         for(int n=0;n<5;++n)put(native,32+4*n,128);
@@ -92,27 +92,80 @@ struct Peer {
 class T008TargetTest final:public QObject {
     Q_OBJECT
 private slots:
+    void selectedFileVersions(){
+        Fixture f;t008::Plan p;QString error;QStringList mismatches;
+        QVERIFY(t008::images(f.app,f.driver,p,error));
+        QMap<QString,QString> expected;QVERIFY(t008::compareFileVersions(p,expected,mismatches,error));QVERIFY(mismatches.isEmpty());
+        expected={{"driverAbi","1.1"},{"appVersion","T008A0001"},{"minimumBoot","001"}};
+        QVERIFY(t008::compareFileVersions(p,expected,mismatches,error));QVERIFY(mismatches.isEmpty());
+        expected["driverAbi"]="1.4";expected["appVersion"]="OTHER";expected["minimumBoot"]="002";
+        QVERIFY(t008::compareFileVersions(p,expected,mismatches,error));QCOMPARE(mismatches.size(),3);
+        QVERIFY(mismatches.join(" ").contains("1.1"));QVERIFY(mismatches.join(" ").contains("1.4"));
+        expected.clear();p.hasDriverAbi=false;p.hasAppVersion=false;p.hasMinimumBoot=false;
+        QVERIFY(t008::compareFileVersions(p,expected,mismatches,error));
+        for(const auto key:{"driverAbi","appVersion","minimumBoot"}){expected.clear();expected[key]="1";QVERIFY(t008::compareFileVersions(p,expected,mismatches,error));QCOMPARE(mismatches.size(),1);QVERIFY(mismatches.first().contains("无法解析"));}
+    }
+    void packageDataWithoutLocalTargetRejection(){
+        Fixture f;t008::Plan p;QString error;auto &d=f.driver.segments[0].data;
+        put(d,12,99,2);put(d,52,0);put(d,60,7);put(d,32,1);f.driver.segments[0].address=0x20003000;
+        auto &a=f.app.segments[0].data;put(a,8,1);put(a,4100,0);f.app.segments[0].address=0x30000;
+        QVERIFY2(t008::images(f.app,f.driver,p,error),qPrintable(error));QCOMPARE(p.driver.address,quint32(0x20003000));
+        QCOMPARE(p.application.size(),2);QCOMPARE(p.application[0].address,quint32(0x30000));QCOMPARE(p.application[1].address,quint32(0x31000));
+        QCOMPARE(p.application[0].data+p.application[1].data,a);
+    }
+    void compatibilityProfile(){
+        t008::Plan p;QString e;p.project="S32K144TAUTOSAR";p.hardware="Rev.A4.06.5";
+        p.configuration="T008-CFG-TEST001";p.calibration="T008-CAL-TEST001";p.driverMinor=1;p.driverCapabilities=15;
+        QVERIFY2(t008::compatibility(p,e),qPrintable(e));p.driverMinor=2;p.driverCapabilities=31;QVERIFY2(t008::compatibility(p,e),qPrintable(e));
+        const auto good=p;
+        p.project="OTHER";QVERIFY(t008::compatibility(p,e));p=good;
+        p.hardware="OTHER";QVERIFY(t008::compatibility(p,e));p=good;
+        p.configuration="OTHER";QVERIFY(t008::compatibility(p,e));p=good;
+        p.calibration="OTHER";QVERIFY(t008::compatibility(p,e));p=good;
+        p.driverMinor=3;QVERIFY(!t008::compatibility(p,e));p=good;
+        p.driverCapabilities=15;QVERIFY(!t008::compatibility(p,e));p=good;
+        p.driverMinor=1;QVERIFY(!t008::compatibility(p,e));
+    }
+    void driverAbiVersions(){
+        Fixture f;t008::Plan plan;QString error;auto &d=f.driver.segments[0].data;
+        QVERIFY2(t008::images(f.app,f.driver,plan,error),qPrintable(error));
+        put(d,12,2,2);put(d,52,31);put(d,88,130);
+        QVERIFY2(t008::images(f.app,f.driver,plan,error),qPrintable(error));
+        const QByteArray valid=d;
+        for(const auto &change:QList<QPair<int,quint32>>{{12,1},{12,3},{20,0x20001408},{28,255},{52,15},{52,30},{52,63},{56,2048},{60,16},{68,21000000},{88,0},{88,127},{88,128},{88,129},{88,136},{92,1},{16,135},{24,137}}){
+            d=valid;put(d,change.first,change.second,change.first==12?2:4);
+            QVERIFY2(t008::images(f.app,f.driver,plan,error),qPrintable(error));
+        }
+        d=valid;d[127]=1;QVERIFY(t008::images(f.app,f.driver,plan,error));
+        d=valid;put(d,12,1,2);put(d,52,15);QVERIFY(t008::images(f.app,f.driver,plan,error));
+        d=valid;put(d,12,4,2);put(d,52,64);put(d,60,1024);QVERIFY2(t008::images(f.app,f.driver,plan,error),qPrintable(error));
+        const auto sectionOnly=d;
+        for(const auto &change:QList<QPair<int,quint32>>{{12,3},{52,31},{52,65},{56,2048},{60,8},{68,1},{88,0},{88,129},{88,136},{92,1}}){
+            d=sectionOnly;put(d,change.first,change.second,change.first==12?2:4);QVERIFY(t008::images(f.app,f.driver,plan,error));
+        }
+    }
     void descriptorV2(){
         Fixture f;auto &b=f.app.segments[0].data;
-        b.replace(0,4096,QByteArray(4096,char(0xff)));b.replace(0,8,"T008APP2");put(b,8,0x408);put(b,12,1,2);
+        b.replace(0,4096,QByteArray(4096,char(0xff)));b.replace(0,8,"T008APP2");put(b,8,0x800);put(b,12,1,2);
         b.replace(14,16,QByteArray("S32K144TAUTOSAR").leftJustified(16,'\0'));b.replace(30,16,QByteArray("Rev.A4.06.5").leftJustified(16,'\0'));
-        b.replace(46,9,QByteArray("T008A0001"));b.replace(55,16,QByteArray(16,'C'));b.replace(71,16,QByteArray(16,'L'));
+        b.replace(46,9,QByteArray("T008A0001"));b.replace(55,16,"T008-CFG-TEST001");b.replace(71,16,"T008-CAL-TEST001");
         t008::Plan p;QString error;QVERIFY2(t008::images(f.app,f.driver,p,error),qPrintable(error));
         QCOMPARE(p.project,QByteArray("S32K144TAUTOSAR"));QCOMPARE(p.hardware,QByteArray("Rev.A4.06.5"));QCOMPARE(p.version,QByteArray("T008A0001"));QCOMPARE(p.minBoot,quint16(1));
-        QCOMPARE(p.configuration,QByteArray(16,'C'));QCOMPARE(p.calibration,QByteArray(16,'L'));
-        auto original=b;put(b,12,1000,2);QVERIFY(!t008::images(f.app,f.driver,p,error));b=original;
-        b[42]='X';QVERIFY(!t008::images(f.app,f.driver,p,error));b=original;
-        b[30]=char(0x80);QVERIFY(!t008::images(f.app,f.driver,p,error));b=original;
-        b[87]=0;QVERIFY(!t008::images(f.app,f.driver,p,error));b=original;b[88]=0;QVERIFY(!t008::images(f.app,f.driver,p,error));b=original;
-        b[0]='X';QVERIFY(!t008::images(f.app,f.driver,p,error));
-        Fixture old;old.app.segments[0].data.replace(0,8,"T008APP1");QVERIFY(!t008::images(old.app,old.driver,p,error));
+        QCOMPARE(p.configuration,QByteArray("T008-CFG-TEST001"));QCOMPARE(p.calibration,QByteArray("T008-CAL-TEST001"));
+        auto original=b;put(b,12,1000,2);QVERIFY(t008::images(f.app,f.driver,p,error));QCOMPARE(p.minBoot,quint16(1000));b=original;
+        put(b,8,0x7f8);QVERIFY(t008::images(f.app,f.driver,p,error));b=original;
+        b[42]='X';QVERIFY(t008::images(f.app,f.driver,p,error));b=original;
+        b[30]=char(0x80);QVERIFY(t008::images(f.app,f.driver,p,error));b=original;
+        b[87]=0;QVERIFY(t008::images(f.app,f.driver,p,error));b=original;b[88]=0;QVERIFY(t008::images(f.app,f.driver,p,error));b=original;
+        b[0]='X';QVERIFY(t008::images(f.app,f.driver,p,error));QVERIFY(!p.hasAppVersion&&!p.hasMinimumBoot);
+        Fixture old;old.app.segments[0].data.replace(0,8,"T008APP1");QVERIFY(t008::images(old.app,old.driver,p,error));QVERIFY(!p.hasAppVersion);
         Fixture old80;auto &legacy=old80.app.segments[0].data;legacy.replace(30,9,QByteArray("HW1").leftJustified(9,'\0'));
         legacy.replace(39,9,"APP000001");legacy.replace(48,16,QByteArray(16,'C'));legacy.replace(64,16,QByteArray(16,'L'));legacy.replace(80,8,QByteArray(8,char(0xff)));
-        QVERIFY(!t008::images(old80.app,old80.driver,p,error));
+        QVERIFY(t008::images(old80.app,old80.driver,p,error));
     }
     void imagesAcceptMergedAndSplit(){
         Fixture f;t008::Plan p;QString error;QVERIFY2(t008::images(f.app,f.driver,p,error),qPrintable(error));
-        QCOMPARE(p.application.size(),2);QCOMPARE(p.application[0].address,quint32(0x20000));QCOMPARE(p.application[0].data.size(),4096);QCOMPARE(p.application[1].data.size(),0x408);
+        QCOMPARE(p.application.size(),2);QCOMPARE(p.application[0].address,quint32(0x20000));QCOMPARE(p.application[0].data.size(),4096);QCOMPARE(p.application[1].data.size(),0x800);
         f.app.segments=p.application;QVERIFY(t008::images(f.app,f.driver,p,error));
     }
     void actualFirmwareFiles(){
@@ -122,6 +175,7 @@ private slots:
         QVERIFY2(FirmwareImage::load(appPath,0x20000,app,error),qPrintable(error));
         QVERIFY2(FirmwareImage::load(driverPath,0x20001400,driver,error),qPrintable(error));
         QVERIFY2(t008::images(app,driver,plan,error),qPrintable(error));
+        QVERIFY2(t008::compatibility(plan,error),qPrintable(error));
         QCOMPARE(plan.application.size(),2);QCOMPARE(plan.driver.address,quint32(0x20001400));
         QCOMPARE(plan.application[0].address,quint32(0x20000));QCOMPARE(plan.application[1].address,quint32(0x21000));
         const QString configurations=qEnvironmentVariable("T008_TEST_CONFIG_DIR");
@@ -135,6 +189,19 @@ private slots:
             QCOMPARE(QString(settings.applicationPath).replace('\\','/'),QString(appPath).replace('\\','/'));
         }
     }
+    void actualBinHexEquivalence(){
+        const auto appBin=qEnvironmentVariable("T008_TEST_REAL_APP"),appHex=qEnvironmentVariable("T008_TEST_APP_HEX");
+        const auto driverBin=qEnvironmentVariable("T008_TEST_DRIVER_BIN"),driverHex=qEnvironmentVariable("T008_TEST_DRIVER_HEX");
+        if(appBin.isEmpty()||appHex.isEmpty()||driverBin.isEmpty()||driverHex.isEmpty())QSKIP("Set actual BIN and HEX paths for both images");
+        FirmwareImage a,b,c,d;QString error;t008::Plan binPlan,hexPlan;
+        QVERIFY2(FirmwareImage::load(appBin,0x20000,a,error),qPrintable(error));QVERIFY2(FirmwareImage::load(appHex,0x20000,b,error),qPrintable(error));
+        QVERIFY2(FirmwareImage::load(driverBin,0x20001400,c,error),qPrintable(error));QVERIFY2(FirmwareImage::load(driverHex,0x20001400,d,error),qPrintable(error));
+        QVERIFY2(t008::images(a,c,binPlan,error),qPrintable(error));QVERIFY2(t008::images(b,d,hexPlan,error),qPrintable(error));
+        QVERIFY2(t008::compatibility(binPlan,error),qPrintable(error));QVERIFY2(t008::compatibility(hexPlan,error),qPrintable(error));
+        QCOMPARE(binPlan.application.size(),hexPlan.application.size());
+        for(int i=0;i<binPlan.application.size();++i){QCOMPARE(binPlan.application[i].address,hexPlan.application[i].address);QCOMPARE(binPlan.application[i].data,hexPlan.application[i].data);}
+        QCOMPARE(binPlan.driver.address,hexPlan.driver.address);QCOMPARE(binPlan.driver.data,hexPlan.driver.data);
+    }
     void addressDiagnostics(){
         Fixture f;QTemporaryDir dir;QVERIFY(dir.isValid());
         const auto appPath=dir.filePath("app.bin"),driverPath=dir.filePath("driver.bin");
@@ -146,15 +213,11 @@ private slots:
         FirmwareImage app,driver;QString error;t008::Plan plan;
         QVERIFY(FirmwareImage::load(appPath,settings.applicationAddress.toUInt(nullptr,16),app,error));
         QVERIFY(FirmwareImage::load(driverPath,settings.flashAddress.toUInt(nullptr,16),driver,error));
-        QVERIFY(!t008::images(app,driver,plan,error));
-        QCOMPARE(error,QString("T008 App unexpected base address: actual 0x00010000, expected 0x00020000"));
-        app=f.app;QVERIFY(!t008::images(app,driver,plan,error));
-        QCOMPARE(error,QString("T008 Driver unexpected base address: actual 0x00000000, expected 0x20001400"));
+        QVERIFY(t008::images(app,driver,plan,error));QCOMPARE(plan.application[0].address,quint32(0x10000));QCOMPARE(plan.driver.address,quint32(0));
+        app=f.app;QVERIFY(t008::images(app,driver,plan,error));QCOMPARE(plan.driver.address,quint32(0));
         app.segments={{0x20000,f.app.segments[0].data.left(4096)},{0x21008,f.app.segments[0].data.mid(4096)}};
-        QVERIFY(!t008::images(app,f.driver,plan,error));
-        QCOMPARE(error,QString("T008 App gap: actual 0x00021008, expected 0x00021000"));
-        app.segments[1].address=0x20ff8;QVERIFY(!t008::images(app,f.driver,plan,error));
-        QCOMPARE(error,QString("T008 App overlap: actual 0x00020FF8, expected 0x00021000"));
+        QVERIFY(t008::images(app,f.driver,plan,error));QCOMPARE(plan.application[1].address,quint32(0x21008));
+        app.segments[1].address=0x20ff8;QVERIFY(t008::images(app,f.driver,plan,error));QCOMPARE(plan.application[1].address,quint32(0x20ff8));
     }
     void rejectImages_data(){
         QTest::addColumn<QString>("defect");for(const auto d:{"joint","gap","overlap","length","layout","complement","reserved","entry","msp","driver-base","driver-abi","driver-minor0","driver-minor2","driver-entry","driver-bss","driver-reserved","extra"})QTest::newRow(d)<<QString(d);
@@ -178,18 +241,18 @@ private slots:
         if(defect=="driver-bss")put(d,64,8192);
         if(defect=="driver-reserved")d[100]=1;
         if(defect=="extra")f.app.segments.append({0x77000,QByteArray(8,0)});
-        t008::Plan p;QString error;QVERIFY(!t008::images(f.app,f.driver,p,error));QVERIFY(!error.isEmpty());
+        t008::Plan p;QString error;QVERIFY2(t008::images(f.app,f.driver,p,error),qPrintable(error));
     }
     void ecuImageLimits(){
         QString error;t008::Plan plan;
-        for(quint32 total:{0x56100u,0x56108u,0x57000u}){
+        for(quint32 total:{0x56000u,0x56100u,0x57000u,0x57400u}){
             Fixture f;auto &bytes=f.app.segments[0].data;bytes.append(QByteArray(total-bytes.size(),char(0xff)));
             put(bytes,8,total-4096);
-            QCOMPARE(t008::images(f.app,f.driver,plan,error),total==0x56100u);
+            QVERIFY(t008::images(f.app,f.driver,plan,error));QCOMPARE(plan.application[0].data.size()+plan.application[1].data.size(),int(total));
         }
         for(const auto field:QList<QPair<int,quint32>>{{28,0},{28,255},{28,257},{64,8}}){
             Fixture f;put(f.driver.segments[0].data,field.first,field.second);
-            QVERIFY(!t008::images(f.app,f.driver,plan,error));
+            QVERIFY(t008::images(f.app,f.driver,plan,error));
         }
     }
     void identityAndFingerprint(){
@@ -213,9 +276,11 @@ private slots:
             auto j=p.toJson();if(QString(key)=="simulationOnly")j[key]=true;else if(QString(key)=="verifyRoutine")j[key]=0xff00;else j[key]="";
             QVERIFY2(!FlashProfile::fromJson(j,restored,e),key);
         }
-        for(const auto map:{"stepEnabled","negativeResponseChecks","timeoutChecks"}){auto j=p.toJson();auto controls=j[map].toObject();controls["app36"]=false;j[map]=controls;QVERIFY(!FlashProfile::fromJson(j,restored,e));}
+        {auto j=p.toJson();auto controls=j["stepEnabled"].toObject();controls["app36"]=false;j["stepEnabled"]=controls;QVERIFY(!FlashProfile::fromJson(j,restored,e));}
+        {auto j=p.toJson();auto controls=j["negativeResponseChecks"].toObject();controls["app36"]=false;j["negativeResponseChecks"]=controls;QVERIFY(FlashProfile::fromJson(j,restored,e));QVERIFY(restored.checksNegativeResponse("app36"));}
+        {auto j=p.toJson();auto controls=j["timeoutChecks"].toObject();controls["app36"]=false;j["timeoutChecks"]=controls;QVERIFY(FlashProfile::fromJson(j,restored,e));QVERIFY(!restored.checksTimeout("app36"));}
         auto b=profile("boot");QVERIFY(!b.enabled("pre1001"));QVERIFY(b.enabled("pre1003"));QVERIFY(b.enabled("boot1002"));QVERIFY(!b.checksTimeout("post1001"));
-        FlashProfile generic;generic.flow="app";generic.stepEnabled["app36"]=false;QVERIFY(!generic.enabled("app36"));QVERIFY(!generic.checksNegativeResponse("app36"));
+        FlashProfile generic;generic.flow="app";generic.stepEnabled["app36"]=false;QVERIFY(!generic.enabled("app36"));QVERIFY(generic.checksNegativeResponse("app36"));
         auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=false;settings.securityLevel=0x11;settings.downloadProfile=p.toJson();
         QTemporaryDir dir;QVERIFY(dir.isValid());host::SettingsStore store(dir.filePath("channels.json"));QVERIFY2(store.save({settings},e),qPrintable(e));
         QVector<host::ChannelSettings> loaded;QVERIFY2(store.load(loaded,e),qPrintable(e));QCOMPARE(loaded.size(),1);QVERIFY(FlashProfile::fromJson(loaded[0].downloadProfile,restored,e));QCOMPARE(restored.target,QString(t008::Target));
@@ -227,8 +292,8 @@ private slots:
         }
         QVERIFY2(FlashProfile::fromJson(old,restored,error),qPrintable(error));
         for(const auto id:{"pre1003"}){
-            QVERIFY(restored.enabled(id));QVERIFY(restored.checksNegativeResponse(id));QVERIFY(restored.checksTimeout(id));
-            for(const auto map:{"stepEnabled","negativeResponseChecks","timeoutChecks"})QVERIFY(restored.toJson()[map].toObject()[id].toBool());
+            QVERIFY(restored.enabled(id));QVERIFY(!restored.checksNegativeResponse(id));QVERIFY(!restored.checksTimeout(id));
+            QVERIFY(restored.toJson()["stepEnabled"].toObject()[id].toBool());
         }
         for(const auto id:{"pre1001","pre2701","pre2702","pre220101","pre31010203","pre1003control","pre8502","pre2803"})QVERIFY(!restored.enabled(id));
         for(const auto map:{"stepEnabled","negativeResponseChecks","timeoutChecks"})for(const auto id:{"pre1001","pre1003"}){
@@ -237,11 +302,11 @@ private slots:
         }
         auto app=profile("app").toJson();auto flags=app["stepEnabled"].toObject();flags["pre1001"]=false;app["stepEnabled"]=flags;
         QVERIFY(!FlashProfile::fromJson(app,restored,error));
-        for(const auto map:{"stepEnabled","negativeResponseChecks","timeoutChecks"}){
+        for(const auto map:{"stepEnabled"}){
             auto bad=old;auto required=bad[map].toObject();required["boot1002"]=false;bad[map]=required;QVERIFY(!FlashProfile::fromJson(bad,restored,error));
         }
         auto legacy=old;legacy["feedbackChecks"]=legacy.take("negativeResponseChecks");
-        QVERIFY(FlashProfile::fromJson(legacy,restored,error));QVERIFY(!restored.negativeResponseChecks["pre1001"].toBool());QVERIFY(restored.negativeResponseChecks["pre1003"].toBool());
+        QVERIFY(FlashProfile::fromJson(legacy,restored,error));QVERIFY(!restored.negativeResponseChecks["pre1001"].toBool());QVERIFY(!restored.negativeResponseChecks["pre1003"].toBool());
         FlashProfile generic;generic.flow="boot";QVERIFY(!generic.enabled("pre1001"));QVERIFY(!generic.enabled("pre1003"));
         generic.stepEnabled["pre1001"]=false;QVERIFY(FlashProfile::fromJson(generic.toJson(),restored,error));QVERIFY(!restored.enabled("pre1001"));
     }
@@ -286,7 +351,109 @@ private slots:
     void invalidConfigurationSendsNothing(){
         Fixture f;MemoryTransport wire;UdsSession session(wire,{100,100,2000,0});QString error;
         for(int n:{2,18,20}){auto p=profile();p.fingerprintData=QByteArray(n,'A');FlashJob job(session,p,std::make_unique<TestKey>());QVERIFY(!job.start(f.app,f.driver,error));QVERIFY(wire.requests.isEmpty());}
-        auto p=profile();p.applicationEraseLength=0x56000;FlashJob job(session,p,std::make_unique<TestKey>());QVERIFY(!job.start(f.app,f.driver,error));QVERIFY(wire.requests.isEmpty());
+        QVERIFY(!t008::validateBlockLimit(1025,error));QVERIFY(t008::validateBlockLimit(1026,error));QVERIFY(wire.requests.isEmpty());
+        f.app.segments[0].data[55]='X';t008::Plan differentIdentity;
+        QVERIFY(t008::images(f.app,f.driver,differentIdentity,error));QVERIFY(t008::compatibility(differentIdentity,error));QVERIFY(wire.requests.isEmpty());
+        Fixture broken;broken.app.segments[0].data[0]='X';t008::Plan opaqueImage;
+        QVERIFY(t008::images(broken.app,broken.driver,opaqueImage,error));QVERIFY(wire.requests.isEmpty());
+    }
+    void bootNegativePolicy_data(){
+        QTest::addColumn<bool>("strict");QTest::addColumn<bool>("check");QTest::addColumn<bool>("pending");
+        for(bool strict:{false,true})for(bool check:{false,true})for(bool pending:{false,true})
+            QTest::newRow(qPrintable(QString("%1-%2-%3").arg(strict).arg(check).arg(pending)))<<strict<<check<<pending;
+    }
+    void bootNegativePolicy(){
+        QFETCH(bool,strict);QFETCH(bool,check);QFETCH(bool,pending);Fixture f;Peer peer;peer.inBoot=true;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
+        MemoryTransport wire;wire.respond=[&](const QByteArray &r){if(r==QByteArray::fromHex("1002")){
+            if(pending){QTimer::singleShot(5,&wire,[&wire]{emit wire.received(QByteArray::fromHex("7f1022"));});return QByteArray::fromHex("7f1078");}
+            return QByteArray::fromHex("7f1022");}return peer.reply(r);};
+        auto p=profile("boot");if(!strict){p.target="generic";p.stepEnabled["pre1003"]=true;}
+        p.negativeResponseChecks["boot1002"]=check;UdsSession session(wire,{100,100,2000,0});FlashJob job(session,p,std::make_unique<TestKey>());
+        QSignalSpy done(&job,&FlashJob::finished);QVERIFY2(job.start(f.app,f.driver,error),qPrintable(error));
+        if(check){QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,3000);QVERIFY(!done[0][0].toBool());QVERIFY(!wire.requests.contains(QByteArray::fromHex("2711")));}
+        else{QTRY_VERIFY_WITH_TIMEOUT(wire.requests.contains(QByteArray::fromHex("2711")),3000);}
+        job.cancel();
+    }
+    void post14NegativePolicy_data(){QTest::addColumn<bool>("check");QTest::newRow("unchecked")<<false;QTest::newRow("checked")<<true;}
+    void post14NegativePolicy(){
+        QFETCH(bool,check);Fixture f;Peer peer;peer.inBoot=true;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
+        peer.corruptRequest=QByteArray::fromHex("14ffffff");peer.replaceResponse=QByteArray::fromHex("7f1422");
+        MemoryTransport wire;wire.respond=[&](const QByteArray &r){return peer.reply(r);};auto p=profile("boot");p.negativeResponseChecks["post14"]=check;
+        UdsSession session(wire,{100,100,2000,0});FlashJob job(session,p,std::make_unique<TestKey>());QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(f.app,f.driver,error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,5000);QVERIFY(!done[0][0].toBool());
+        QVERIFY(wire.requests.contains(QByteArray::fromHex("14ffffff")));
+        QCOMPARE(wire.requests.contains(QByteArray::fromHex("288001")),!check);
+    }
+    void responseDependency_data(){
+        QTest::addColumn<bool>("strict");QTest::addColumn<QString>("mode");
+        for(bool strict:{false,true})for(const auto mode:{"seed-timeout","seed-nrc","seed-pending","key-timeout","download-timeout"})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(strict).arg(mode)))<<strict<<QString(mode);
+    }
+    void responseDependency(){
+        QFETCH(bool,strict);QFETCH(QString,mode);Fixture f;Peer peer;peer.inBoot=true;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
+        MemoryTransport wire;wire.respond=[&](const QByteArray &r){
+            if(r==QByteArray::fromHex("2711")){if(mode=="seed-timeout")return QByteArray();if(mode=="seed-nrc")return QByteArray::fromHex("7f2722");if(mode=="seed-pending")return QByteArray::fromHex("7f2778");}
+            if(r.startsWith(QByteArray::fromHex("2712"))&&mode=="key-timeout")return QByteArray();
+            if(r.startsWith(QByteArray::fromHex("34004420001400"))&&mode=="download-timeout")return QByteArray();
+            return peer.reply(r);
+        };
+        auto p=profile("boot");if(!strict){p.target="generic";p.stepEnabled["pre1003"]=true;}p.negativeResponseChecks["bootSeed"]=false;
+        UdsSession session(wire,{20,40,500,0});FlashJob job(session,p,std::make_unique<TestKey>());QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(f.app,f.driver,error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,5000);QVERIFY(!done[0][0].toBool());
+        if(mode.startsWith("seed")){QVERIFY(done[0][1].toString().contains(mode=="seed-nrc"?"NRC 22":"requires a valid security seed"));for(const auto &r:wire.requests)QVERIFY(!r.startsWith(QByteArray::fromHex("2712")));}
+        else if(mode=="download-timeout"){QVERIFY(done[0][1].toString().contains("TransferData requires RequestDownload parameters"));for(const auto &r:wire.requests)QVERIFY(r.isEmpty()||quint8(r[0])!=0x36);}
+        else{bool fingerprint=false;for(const auto &r:wire.requests)fingerprint|=r.startsWith(QByteArray::fromHex("2ef184"));QVERIFY(fingerprint);}
+    }
+    void seedReplyHandling_data(){
+        QTest::addColumn<bool>("strict");QTest::addColumn<bool>("malformed");
+        QTest::newRow("generic-zero")<<false<<false;QTest::newRow("strict-zero")<<true<<false;QTest::newRow("strict-short")<<true<<true;
+    }
+    void seedReplyHandling(){
+        QFETCH(bool,strict);QFETCH(bool,malformed);Fixture f;Peer peer;peer.inBoot=true;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
+        MemoryTransport wire;wire.respond=[&](const QByteArray &r){if(r==QByteArray::fromHex("2711"))return QByteArray::fromHex("6711")+QByteArray(malformed?1:16,0);return peer.reply(r);};
+        auto p=profile("boot");if(!strict){p.target="generic";p.stepEnabled["pre1003"]=true;}p.negativeResponseChecks["bootSeed"]=false;
+        UdsSession session(wire,{20,40,500,0});FlashJob job(session,p,std::make_unique<TestKey>());QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(f.app,f.driver,error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,5000);
+        QCOMPARE(done[0][0].toBool(),!malformed);bool keySent=false,fingerprint=false;
+        for(const auto &r:wire.requests){keySent|=r.startsWith(QByteArray::fromHex("2712"));fingerprint|=r.startsWith(QByteArray::fromHex("2ef184"));}
+        QVERIFY(!keySent);QCOMPARE(fingerprint,!malformed);
+    }
+    void uncheckedTimeoutIsolation_data(){
+        QTest::addColumn<bool>("strict");QTest::addColumn<bool>("pending");
+        for(bool strict:{false,true})for(bool pending:{false,true})QTest::newRow(qPrintable(QString("%1-%2").arg(strict).arg(pending)))<<strict<<pending;
+    }
+    void uncheckedTimeoutIsolation(){
+        QFETCH(bool,strict);QFETCH(bool,pending);Fixture f;Peer peer;peer.inBoot=true;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
+        MemoryTransport wire;wire.respond=[&](const QByteArray &r){if(r==QByteArray::fromHex("1002"))return pending?QByteArray::fromHex("7f1078"):QByteArray();
+            if(r==QByteArray::fromHex("2711"))return QByteArray::fromHex("7f2712");return peer.reply(r);};
+        auto p=profile("boot");if(!strict){p.target="generic";p.stepEnabled["pre1003"]=true;}p.timeoutChecks["boot1002"]=false;
+        UdsSession session(wire,{20,40,500,0});FlashJob job(session,p,std::make_unique<TestKey>());QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(f.app,f.driver,error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,3000);
+        QVERIFY(wire.requests.contains(QByteArray::fromHex("2711")));QVERIFY(!done[0][0].toBool());
+    }
+    void timedOutTransferBlocksAmbiguousNextTransfer(){
+        Fixture f;Peer peer;peer.inBoot=true;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));int transfers=0;
+        MemoryTransport wire;wire.respond=[&](const QByteArray &r){if(quint8(r[0])==0x36){++transfers;return QByteArray();}return peer.reply(r);};
+        auto p=profile("boot");p.timeoutChecks["driver36"]=false;UdsSession session(wire,{20,40,500,0});FlashJob job(session,p,std::make_unique<TestKey>());QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(f.app,f.driver,error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,5000);
+        QCOMPARE(transfers,1);QVERIFY(!done[0][0].toBool());QVERIFY(done[0][1].toString().contains("unresolved"));
+    }
+    void coreNegativeCannotBypass_data(){
+        QTest::addColumn<bool>("strict");QTest::addColumn<QString>("id");
+        for(bool strict:{false,true})for(const auto id:{"driver34","driver36","driver37","app34","app36","app37"})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(strict).arg(id)))<<strict<<QString(id);
+    }
+    void coreNegativeCannotBypass(){
+        QFETCH(bool,strict);QFETCH(QString,id);Fixture f;Peer peer;peer.inBoot=true;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
+        quint32 address=0;bool injected=false;MemoryTransport wire;wire.respond=[&](const QByteArray &r){
+            const int sid=quint8(r[0]);if(sid==0x34)address=readBe(r.mid(3,4));
+            const bool driver=address==0x20001400;const auto name=QString(driver?"driver":"app")+QString::number(sid,16);
+            if(name==id){injected=true;return QByteArray(1,char(0x7f))+char(sid)+char(0x22);}return peer.reply(r);
+        };
+        auto p=profile("boot");if(!strict){p.target="generic";p.stepEnabled["pre1003"]=true;}p.negativeResponseChecks[id]=false;
+        UdsSession session(wire,{20,40,500,0});FlashJob job(session,p,std::make_unique<TestKey>());QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(f.app,f.driver,error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,5000);
+        QVERIFY(injected);QVERIFY(!done[0][0].toBool());QVERIFY(done[0][1].toString().contains("NRC 22"));
     }
     void genericV2UsesTwoSegments(){
         Fixture f;Peer peer;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
@@ -296,6 +463,81 @@ private slots:
         QVERIFY2(done[0][0].toBool(),qPrintable(done[0][1].toString()));
         QCOMPARE(wire.requests.count(QByteArray::fromHex("3101ff00440002000000057000")),1);
         QCOMPARE(wire.requests.count(QByteArray::fromHex("3101ff00440002100000000408")),0);
+    }
+    void genericV2LimitsTransferBlock(){
+        Fixture f;Peer peer;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
+        MemoryTransport wire;wire.respond=[&](const QByteArray &r){return quint8(r[0])==0x34?QByteArray::fromHex("74201000"):peer.reply(r);};
+        auto p=profile("app");p.target="generic";p.consecutiveFrameByteLimit=4095;
+        UdsSession session(wire,{100,100,2000,0});FlashJob job(session,p,std::make_unique<TestKey>());
+        QSignalSpy done(&job,&FlashJob::finished);QVERIFY(job.start(f.app,f.driver,error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,5000);
+        QVERIFY2(done[0][0].toBool(),qPrintable(done[0][1].toString()));int largest=0;
+        for(const auto &r:wire.requests)if(!r.isEmpty()&&quint8(r[0])==0x36)largest=qMax(largest,r.size()-2);
+        QCOMPARE(largest,1024);
+    }
+    void t008AppPhraseBlocks_data(){
+        QTest::addColumn<int>("limit");QTest::addColumn<int>("expected");
+        for(const auto pair:QList<QPair<int,int>>{{9,0},{10,0},{1024,0},{1025,0},{1026,1024},{4095,1024}})
+            QTest::newRow(qPrintable(QString::number(pair.first)))<<pair.first<<pair.second;
+    }
+    void t008AppPhraseBlocks(){
+        QFETCH(int,limit);QFETCH(int,expected);Fixture f;Peer peer;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
+        MemoryTransport wire;wire.respond=[&](const QByteArray &r){return quint8(r[0])==0x34?QByteArray::fromHex("74201000"):peer.reply(r);};
+        auto p=profile("app");p.target="generic";p.consecutiveFrameByteLimit=limit;
+        UdsSession session(wire,{100,100,2000,0});FlashJob job(session,p,std::make_unique<TestKey>());QSignalSpy done(&job,&FlashJob::finished);
+        if(!expected){QVERIFY(job.start(f.app,f.driver,error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,15000);QVERIFY(!done[0][0].toBool());QVERIFY(done[0][1].toString().contains("1024 App bytes"));
+            bool appDownload=false;for(const auto &r:wire.requests){if(r.startsWith(QByteArray::fromHex("34004400020000")))appDownload=true;else if(appDownload)QVERIFY(r.isEmpty()||quint8(r[0])!=0x36);}QVERIFY(appDownload);return;}
+        QVERIFY2(job.start(f.app,f.driver,error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,15000);QVERIFY2(done[0][0].toBool(),qPrintable(done[0][1].toString()));
+        QByteArray driver,descriptor,app;quint32 address=0;int maxApp=0,maxDescriptor=0;
+        for(const auto &r:wire.requests){if(r.startsWith(QByteArray::fromHex("340044")))address=readBe(r.mid(3,4));
+            else if(!r.isEmpty()&&quint8(r[0])==0x36){const auto payload=r.mid(2);
+                if(address==0x20001400)driver+=payload;else if(address==0x20000){descriptor+=payload;maxDescriptor=qMax(maxDescriptor,payload.size());}
+                else if(address==0x21000){app+=payload;QCOMPARE(payload.size(),1024);maxApp=qMax(maxApp,payload.size());}}}
+        QCOMPARE(driver,f.driver.segments[0].data);QCOMPARE(descriptor,f.app.segments[0].data.left(4096));QCOMPARE(app,f.app.segments[0].data.mid(4096));
+        QCOMPARE(maxApp,expected);QCOMPARE(maxDescriptor,1024);
+    }
+    void flashGeometry_data(){
+        QTest::addColumn<int>("minor");QTest::addColumn<int>("limit");QTest::addColumn<int>("tail");
+        for(int minor:{1,2,4})for(int limit:{1026,4095})
+            QTest::newRow(qPrintable(QString("abi%1-limit%2").arg(minor).arg(limit)))<<minor<<limit<<1024;
+        for(int tail:{8,16,592})QTest::newRow(qPrintable(QString("invalid-tail%1").arg(tail)))<<4<<1026<<tail;
+        QTest::newRow("actual-section")<<4<<1026<<-1;
+    }
+    void flashGeometry(){
+        QFETCH(int,minor);QFETCH(int,limit);QFETCH(int,tail);Fixture f;QString error;
+        if(tail<0){const auto app=qEnvironmentVariable("T008_TEST_REAL_APP"),driver=qEnvironmentVariable("T008_TEST_DRIVER_BIN");
+            if(app.isEmpty()||driver.isEmpty())QSKIP("Set actual App and Driver BIN paths");
+            QVERIFY2(FirmwareImage::load(app,0x20000,f.app,error),qPrintable(error));QVERIFY2(FirmwareImage::load(driver,0x20001400,f.driver,error),qPrintable(error));
+        }else{
+            auto &data=f.app.segments[0].data;data.resize(4096+4096+tail);for(int i=4096+0x408;i<data.size();++i)data[i]=char((i*7)&255);
+            put(data,8,4096+tail);f.app.size=data.size();
+            if(minor==2){put(f.driver.segments[0].data,12,2,2);put(f.driver.segments[0].data,52,31);put(f.driver.segments[0].data,88,130);}
+            if(minor==4){put(f.driver.segments[0].data,12,4,2);put(f.driver.segments[0].data,52,64);put(f.driver.segments[0].data,60,1024);put(f.driver.segments[0].data,88,130);}
+        }
+        const auto &bytes=f.app.segments[0].data;Peer peer;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
+        quint32 address=0,offset=0;QByteArray receivedDriver,receivedDescriptor,receivedCode;int badBlocks=0;
+        MemoryTransport wire;wire.respond=[&](const QByteArray &r){
+            if(r.startsWith(QByteArray::fromHex("340044"))){address=readBe(r.mid(3,4));offset=0;return QByteArray::fromHex("74201000");}
+            if(!r.isEmpty()&&quint8(r[0])==0x36){const auto payload=r.mid(2);const quint32 at=address+offset;offset+=payload.size();
+                if(address==0x20001400)receivedDriver+=payload;
+                else{const bool valid=payload.size()==1024&&!(at%1024)&&((at&4095)+quint32(payload.size())<=4096);
+                    if(!valid){++badBlocks;return QByteArray::fromHex("7f3631");}
+                    if(address==0x20000)receivedDescriptor+=payload;else if(address==0x21000)receivedCode+=payload;}
+            }
+            return peer.reply(r);
+        };
+        auto p=profile("app");p.target="generic";p.consecutiveFrameByteLimit=limit;p.negativeResponseChecks["app36"]=true;
+        UdsSession session(wire,{100,100,2000,0});FlashJob job(session,p,std::make_unique<TestKey>());QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(f.app,f.driver,error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,20000);
+        if(tail>=0&&tail%1024){QVERIFY(!done[0][0].toBool());QCOMPARE(badBlocks,1);QCOMPARE(receivedDriver,f.driver.segments[0].data);QCOMPARE(receivedDescriptor,bytes.left(4096));QCOMPARE(receivedCode,bytes.mid(4096,4096));return;}
+        QVERIFY2(done[0][0].toBool(),qPrintable(done[0][1].toString()));QCOMPARE(badBlocks,0);
+        QCOMPARE(receivedDriver,f.driver.segments[0].data);QCOMPARE(receivedDescriptor,bytes.left(4096));QCOMPARE(receivedCode,bytes.mid(4096));
+    }
+    void t008RejectsSmallNegotiatedAppBlock(){
+        Fixture f;Peer peer;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
+        MemoryTransport wire;wire.respond=[&](const QByteArray &r){return quint8(r[0])==0x34?QByteArray::fromHex("74200009"):peer.reply(r);};
+        auto p=profile("app");p.target="generic";UdsSession session(wire,{100,100,2000,0});FlashJob job(session,p,std::make_unique<TestKey>());
+        QSignalSpy done(&job,&FlashJob::finished);QVERIFY(job.start(f.app,f.driver,error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,15000);
+        QVERIFY(!done[0][0].toBool());QVERIFY(done[0][1].toString().contains("1024 App bytes"));
     }
     void screenshotEntrySequence(){
         QFETCH(QString,flow);Fixture f;Peer peer;QString error;QVERIFY(t008::images(f.app,f.driver,peer.plan,error));
@@ -386,7 +628,7 @@ private slots:
         QTest::addColumn<QByteArray>("request");QTest::addColumn<QByteArray>("reply");QTest::addColumn<bool>("append");QTest::addColumn<bool>("silent");
         QTest::newRow("seed length")<<QByteArray::fromHex("2701")<<QByteArray::fromHex("670101")<<false<<false;
         QTest::newRow("seed NRC")<<QByteArray::fromHex("2701")<<QByteArray::fromHex("7f2733")<<false<<false;
-        QTest::newRow("download maximum")<<QByteArray::fromHex("34")<<QByteArray::fromHex("74200403")<<false<<false;
+        QTest::newRow("download maximum")<<QByteArray::fromHex("34")<<QByteArray::fromHex("74200401")<<false<<false;
         QTest::newRow("transfer wrong BSC")<<QByteArray::fromHex("36")<<QByteArray::fromHex("7600")<<false<<false;
         QTest::newRow("transfer extra byte")<<QByteArray::fromHex("36")<<QByteArray()<<true<<false;
         QTest::newRow("transfer exit extra byte")<<QByteArray::fromHex("37")<<QByteArray()<<true<<false;
@@ -409,7 +651,7 @@ private slots:
     }
     void suppressedTransportFailures_data(){
         QTest::addColumn<QByteArray>("request");QTest::addColumn<QString>("error");
-        for(const auto request:{"1083","8582","288301"})for(const auto error:{"CAN N_As transmit confirmation timeout","CAN N_Ar timeout","CAN N_Cr timeout","UDS transmit timeout","UDS absolute response deadline"})
+        for(const auto request:{"1083","8582","288301"})for(const auto error:{"CAN N_As transmit confirmation timeout","CAN N_Ar timeout","CAN N_Cr timeout","UDS transmit timeout","UDS absolute response deadline","UDS P2/P2* timeout"})
             QTest::newRow(qPrintable(QString(request)+" "+error))<<QByteArray::fromHex(request)<<QString(error);
     }
     void suppressedTransportFailures(){
@@ -418,7 +660,7 @@ private slots:
         wire.respond=[&](const QByteArray &r){return peer.reply(r);};wire.failRequest=request;wire.failMessage=error;
         UdsSession session(wire,{20,20,500,0});FlashJob job(session,profile(),std::make_unique<TestKey>());QSignalSpy finished(&job,&FlashJob::finished);
         QVERIFY(job.start(f.app,f.driver,e));QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,5000);
-        QVERIFY(!finished[0][0].toBool());QVERIFY(finished[0][1].toString().contains(error));QCOMPARE(wire.requests.last(),request);
+        QVERIFY(!finished[0][0].toBool());QVERIFY(finished[0][1].toString().contains("Transport failure: "+error));QCOMPARE(wire.requests.last(),request);
         const int count=wire.requests.size();QTest::qWait(50);QCOMPARE(wire.requests.size(),count);QVERIFY(!job.running());
     }
     void keyLengthAndCancel(){
@@ -472,15 +714,26 @@ private slots:
         QFile a(app),d(driver);QVERIFY(a.open(QIODevice::WriteOnly));QCOMPARE(a.write(f.app.segments[0].data),qint64(f.app.segments[0].data.size()));a.close();
         QVERIFY(d.open(QIODevice::WriteOnly));QCOMPARE(d.write(f.driver.segments[0].data),qint64(f.driver.segments[0].data.size()));d.close();
         auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;settings.applicationPath=app;settings.flashPath=driver;
-        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;
+        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;settings.checkAppVersion=true;settings.expectedAppVersion="DIFFERENT";
         host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);auto *model=vm.findChild<host::ChannelModel*>();QVERIFY(model);
         QSignalSpy frames(model,&host::ChannelModel::framesReceived),review(&vm,&host::ChannelViewModel::packageConfirmationRequested);
         QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());
         bool seen=false;QTimer closer;closer.setInterval(10);connect(&closer,&QTimer::timeout,&page,[&]{
             auto *box=page.findChild<QMessageBox*>("packageConfirmation");if(!box)return;
-            const auto text=box->text();seen=text.contains("S32K144TAUTOSAR")&&text.contains("Rev.A4.06.5")&&text.contains("T008A0001")&&text.contains("Minimum Boot: 1")&&text.contains("43 43")&&text.contains("4C 4C");box->done(QMessageBox::No);
+            const auto text=box->text();seen=text.contains("T008A0001")&&text.contains("DIFFERENT");box->done(QMessageBox::No);
         });closer.start();vm.start();QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),host::TaskState::Cancelled,5000);closer.stop();
         QVERIFY(seen);QCOMPARE(review.size(),1);QCOMPARE(frames.size(),0);
+    }
+    void uiV2SmallLimitFailsBeforeAppTransfer(){
+        Fixture f;QTemporaryDir dir;QVERIFY(dir.isValid());const auto app=dir.filePath("app.bin"),driver=dir.filePath("driver.bin");
+        QFile a(app),d(driver);QVERIFY(a.open(QIODevice::WriteOnly));QCOMPARE(a.write(f.app.segments[0].data),qint64(f.app.segments[0].data.size()));a.close();
+        QVERIFY(d.open(QIODevice::WriteOnly));QCOMPARE(d.write(f.driver.segments[0].data),qint64(f.driver.segments[0].data.size()));d.close();
+        auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;settings.applicationPath=app;settings.flashPath=driver;
+        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;settings.downloadProfile["consecutiveFrameByteLimit"]=9;
+        host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);auto *model=vm.findChild<host::ChannelModel*>();QVERIFY(model);
+        QSignalSpy frames(model,&host::ChannelModel::framesReceived),review(&vm,&host::ChannelViewModel::packageConfirmationRequested);
+        QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());vm.start();
+        QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),host::TaskState::Failed,15000);QCOMPARE(review.size(),0);QVERIFY(frames.size()>0);QVERIFY(vm.logs().join('\n').contains("1024 App bytes"));
     }
     void actualGoldenUiReview(){
         const auto app=qEnvironmentVariable("T008_TEST_GOLDEN_APP"),driver=qEnvironmentVariable("T008_TEST_DRIVER_BIN");
@@ -493,13 +746,12 @@ private slots:
         const auto expectedBinding=qEnvironmentVariable("T008_TEST_HEADER_BINDING","210A66E669E6AC5539AC4131829BDD66").toLatin1();
         QCOMPARE(QCryptographicHash::hash(plan.application[0].data.left(88),QCryptographicHash::Sha256).left(16).toHex().toUpper(),expectedBinding);
         auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;settings.applicationPath=app;settings.flashPath=driver;
-        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;
+        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;settings.applicationNote="INTERNAL-STATUS-DO-NOT-SHOW";settings.checkAppVersion=true;settings.expectedAppVersion="DIFFERENT";
         host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);auto *model=vm.findChild<host::ChannelModel*>();QVERIFY(model);
         QSignalSpy frames(model,&host::ChannelModel::framesReceived);QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());
         bool seen=false;QTimer closer;closer.setInterval(10);connect(&closer,&QTimer::timeout,&page,[&]{
             auto *box=page.findChild<QMessageBox*>("packageConfirmation");if(!box)return;const auto text=box->text();
-            seen=text.contains("S32K144TAUTOSAR")&&text.contains("Rev.A4.06.5")&&text.contains("T008A0001")&&text.contains("Minimum Boot: 1")&&
-                 text.contains(QString::fromLatin1(plan.configuration.toHex(' ')).toUpper())&&text.contains(QString::fromLatin1(plan.calibration.toHex(' ')).toUpper());
+            seen=text.contains("T008A0001")&&text.contains("DIFFERENT")&&!text.contains("INTERNAL-STATUS-DO-NOT-SHOW");
             box->done(QMessageBox::No);
         });closer.start();vm.start();QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),host::TaskState::Cancelled,5000);closer.stop();QVERIFY(seen);QCOMPARE(frames.size(),0);
     }
@@ -511,15 +763,15 @@ private slots:
         QVERIFY(d.open(QIODevice::WriteOnly));QCOMPARE(d.write(f.driver.segments[0].data),qint64(f.driver.segments[0].data.size()));d.close();
         FirmwareImage original;QString error;QVERIFY(FirmwareImage::load(app,0x20000,original,error));const auto digest=QString::fromLatin1(original.sha256.toHex());
         auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;settings.applicationPath=app;settings.flashPath=driver;
-        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;
+        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;settings.downloadProfile["consecutiveFrameByteLimit"]=1026;settings.checkAppVersion=true;settings.expectedAppVersion="DIFFERENT";
         host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);auto *model=vm.findChild<host::ChannelModel*>();QVERIFY(model);
-        QByteArray current,descriptorBytes,codeBytes;int pduLength=0;quint32 address=0;
+        QByteArray current,driverBytes,descriptorBytes,codeBytes;int pduLength=0,maxAppBlock=0;quint32 address=0;
         auto acceptPdu=[&](const QByteArray &pdu){
             if(pdu.size()==11&&quint8(pdu[0])==0x34)address=readBe(pdu.mid(3,4));
-            else if(pdu.size()>=3&&quint8(pdu[0])==0x36){if(address==0x20000)descriptorBytes+=pdu.mid(2);else if(address==0x21000)codeBytes+=pdu.mid(2);}
+            else if(pdu.size()>=3&&quint8(pdu[0])==0x36){if(address==0x20001400)driverBytes+=pdu.mid(2);else if(address==0x20000)descriptorBytes+=pdu.mid(2);else if(address==0x21000){codeBytes+=pdu.mid(2);maxAppBlock=qMax(maxAppBlock,pdu.size()-2);}}
         };
         connect(model,&host::ChannelModel::framesReceived,&page,[&](const host::FrameBatch &frames){
-            for(const auto &frame:frames){if(!frame.simulated||frame.direction!="SIM TX"||frame.payload.isEmpty())continue;
+            for(const auto &frame:frames){if(!frame.simulated||frame.direction!="Tx"||frame.payload.isEmpty())continue;
                 const auto b=frame.payload;const int pci=quint8(b[0])>>4;
                 if(pci==0){const int n=quint8(b[0])&15;if(n&&b.size()>=n+1)acceptPdu(b.mid(1,n));}
                 else if(pci==1&&b.size()==8){pduLength=((quint8(b[0])&15)<<8)|quint8(b[1]);current=b.mid(2);}
@@ -529,13 +781,15 @@ private slots:
         QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());
         bool replaced=false;QTimer closer;closer.setInterval(10);connect(&closer,&QTimer::timeout,&page,[&]{
             auto *box=page.findChild<QMessageBox*>("packageConfirmation");if(!box)return;
-            QFile changed(app);if(changed.open(QIODevice::WriteOnly|QIODevice::Truncate)){replaced=changed.write(QByteArray(32,'X'))==32;changed.close();}
+            QFile changed(app),changedDriver(driver);if(changed.open(QIODevice::WriteOnly|QIODevice::Truncate)&&changedDriver.open(QIODevice::WriteOnly|QIODevice::Truncate)){
+                replaced=changed.write(QByteArray(32,'X'))==32&&changedDriver.write(QByteArray(32,'X'))==32;changed.close();changedDriver.close();}
             box->done(QMessageBox::Yes);
         });closer.start();vm.start();QTRY_VERIFY_WITH_TIMEOUT(replaced,5000);closer.stop();
         QTRY_VERIFY_WITH_TIMEOUT(vm.logs().join('\n').contains(digest,Qt::CaseInsensitive),5000);
         const int timeout=realApp.isEmpty()?40000:600000;
         QTRY_COMPARE_WITH_TIMEOUT(descriptorBytes.size(),4096,timeout);QTRY_COMPARE_WITH_TIMEOUT(codeBytes.size(),f.app.segments[0].data.size()-4096,timeout);
-        QCOMPARE(descriptorBytes,f.app.segments[0].data.left(4096));QCOMPARE(codeBytes,f.app.segments[0].data.mid(4096));vm.cancel();
+        // The T008 simulation advertises 1026 bytes including SID and BSC.
+        QCOMPARE(driverBytes,f.driver.segments[0].data);QCOMPARE(descriptorBytes,f.app.segments[0].data.left(4096));QCOMPARE(codeBytes,f.app.segments[0].data.mid(4096));QCOMPARE(maxAppBlock,1024);vm.cancel();
     }
 };
 #ifdef T008_HEADLESS

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(QtController VERSION 1.46 LANGUAGES CXX)
+project(QtController VERSION 1.47 LANGUAGES CXX)
 if(MINGW)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
 endif()
@@ -20,6 +20,7 @@ set(HOST_RUNTIME_OUTPUT_DIR "C:/Documents/0_Qt/build/Qt-GeneralController-qt${QT
 include(cmake/SignalDependencies.cmake)
 add_library(signal_database STATIC
     src/domain/SignalTypes.h src/model/SignalCodec.h src/model/SignalCodec.cpp
+    src/model/TransmitPayload.h src/model/TransmitPayload.cpp
     src/model/DatabaseImporter.h src/model/DatabaseImporter.cpp
     src/model/DbcImporter.cpp src/model/LdfImporter.cpp
     src/infrastructure/SignalConfigurationStore.cpp src/infrastructure/SignalConfigurationStore.h)
@@ -74,11 +75,16 @@ add_library(bootloader_ui STATIC
     src/infrastructure/SignalTransmitter.h src/infrastructure/SignalTransmitter.cpp
     src/model/ChannelModel.h src/model/ChannelModel.cpp
     src/model/FrameTableModel.h src/model/FrameTableModel.cpp
+    src/model/FrameFilterProxy.h src/model/FrameFilterProxy.cpp
+    src/model/FramePresentation.h src/model/FramePresentation.cpp
+    src/views/FrameHeaderView.h src/views/FrameHeaderView.cpp
+    src/views/FrameColumnMenu.h src/views/FrameColumnMenu.cpp
     src/model/UdsServiceTableModel.h
     src/viewmodels/ChannelViewModel.h src/viewmodels/ChannelViewModel.cpp
     src/viewmodels/SignalTransmitViewModel.h src/viewmodels/SignalTransmitViewModel.cpp
     src/viewmodels/SignalTableModels.h src/viewmodels/SignalTableModels.cpp
     src/views/SignalValueDelegate.h src/views/SignalValueDelegate.cpp
+    src/views/TransmitFrameDelegate.h src/views/TransmitFrameDelegate.cpp
     src/viewmodels/ChannelConfigurationViewModel.h src/viewmodels/ChannelConfigurationViewModel.cpp
     src/viewmodels/DiagnosticDraftViewModel.h src/viewmodels/DiagnosticDraftViewModel.cpp
     src/views/ChannelHardwareEditor.h src/views/ChannelHardwareEditor.cpp

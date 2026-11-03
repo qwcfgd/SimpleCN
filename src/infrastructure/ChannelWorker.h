@@ -8,6 +8,7 @@
 #include "model/CddDatabase.h"
 #include <QPointer>
 #include <QSet>
+#include <functional>
 #include "communication/SoftwareChannel.h"
 #include "SignalTransmitter.h"
 #include "SafeTraceRecorder.h"
@@ -17,7 +18,9 @@ namespace host {
 class ChannelWorker : public QObject {
     Q_OBJECT
 public:
-    explicit ChannelWorker(ChannelSettings settings):m_settings(std::move(settings)){}
+    using CanFactory=std::function<std::unique_ptr<CanHardware>()>;
+    explicit ChannelWorker(ChannelSettings settings,CanFactory canFactory={}):m_settings(std::move(settings)),m_canFactory(std::move(canFactory)){}
+    ~ChannelWorker() override { stopReceiveNotifier(); }
 public slots:
     void initialize();
     void updateSettings(host::ChannelSettings);
@@ -54,11 +57,14 @@ signals:
     void connectionGenerationChanged(quint64);
     void packageConfirmationRequested(quint64,QString);
 private:
-    bool traceRecord(const QString &,quint32,int,const QByteArray &,bool valid=true);
+    bool traceRecord(const QString &,quint32,int,const QByteArray &,bool valid=true,const TraceTiming &timing=TraceTiming{});
+    void traceDeadline(const QString &,int,qint64);
     void traceFailure();
     void createSession();
+    void stopReceiveNotifier();
     bool apply(const ChannelSettings &);
     void receive();
+    bool handleCanState(CanBusState,const QString&);
     void beginPreviewRound();
     void failPreview(const QString &);
     void beginDownload(bool confirmed=false);
@@ -71,6 +77,7 @@ private:
     void projectSignalEvents(const host::signal::BusFrameEvents &);
     void publishFrames(host::FrameBatch);
     ChannelSettings m_settings;
+    CanFactory m_canFactory;
     SafeTraceRecorder m_safeTrace;
     QSet<quint32> m_traceDiagnosticIds;
     bool m_traceEnabled=false,m_traceFailed=false;
@@ -83,7 +90,8 @@ private:
     std::unique_ptr<boot::CanTransport> m_canTransport;
     std::unique_ptr<boot::UdsSession> m_uds;
     std::unique_ptr<boot::FlashJob> m_job;
-    QTimer *m_receive=nullptr,*m_scan=nullptr,*m_repeat=nullptr;
+    QTimer *m_receive=nullptr,*m_receivePump=nullptr,*m_scan=nullptr,*m_repeat=nullptr;
+    QObject *m_canNotifier=nullptr;
     qint64 m_traceOffsetUs=0,m_lastCaptureUs=0;
     bool m_running=false,m_scanning=false,m_waiting=false;
     boot::FirmwareImage m_stagedApp,m_stagedDriver;quint64 m_confirmationId=0;bool m_confirmationPending=false;
@@ -93,11 +101,13 @@ private:
     bool m_manualMode=false,m_manualBusy=false;
     diag::Request m_manualRequest;
     QMap<int,QByteArray> m_diagnosticDids;
-    struct CanEcho {QPointer<boot::CanTransport> owner;quint64 token;boot::CanFrame frame;};
+    struct CanEcho {QPointer<boot::CanTransport> owner;quint64 token;boot::CanFrame frame;qint64 sendCallUs=-1;quint64 generation=0;};
     QQueue<CanEcho> m_canEchoes;
     std::unique_ptr<SignalTransmitter> m_signal;
     OperationCoordinator m_operations;
     quint64 m_lastSignalRun=0;
     bool m_receiveDrained=true;
+    bool m_canBlocked=false,m_canHealthInitialized=false,m_canUnresolved=false;
+    bool m_udsWriteAttempted=false,m_recoveryCloseSucceeded=false;
 };
 }

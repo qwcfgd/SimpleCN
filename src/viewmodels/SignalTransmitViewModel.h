@@ -36,6 +36,7 @@ public:
     void importAsync(const QString&);
     bool editSignal(const QString &key,int field,const QString&,bool physical,QString&error,int range=-1);
     bool editPayload(const QString&,const QString&,QString&error);
+    bool setFrameLength(const QString&,int length,QString&error);
     bool setFrameEnabled(const QString&,bool,QString&error);
     bool setCanOptions(const QString&,bool enabled,int period,QString&error);
     bool putCustom(const QString &oldKey,const QString &name,quint32 id,int length,int cycle,QString&error,bool allowSameId=false);
@@ -83,7 +84,7 @@ signals:
 private:
     bool install(signal::Database,QString&error);
     void remember();void changedFrame(const QString&);
-    bool commit(const QString&,QString&error);
+    void publishPayload(const QString&,signal::TxDraft,const QByteArray&);
     void restoreSnapshot(const signal::WorkingSet&);
     void applyConfiguration(signal::Database,const signal::WorkingSet&);
     signal::Bus m_bus;

@@ -20,6 +20,10 @@
 #include <QTimer>
 #include <QEvent>
 #include <QScrollBar>
+#include <QAbstractSpinBox>
+#include <QSlider>
+#include <QAbstractScrollArea>
+#include <QWheelEvent>
 #include <QTextCursor>
 namespace host {
 UiLanguageController::UiLanguageController():QObject(qApp){
@@ -107,6 +111,21 @@ void UiLanguageController::refresh(){
     }
 }
 bool UiLanguageController::eventFilter(QObject *object,QEvent *event){
+    if(event->type()==QEvent::Wheel&&(qobject_cast<QAbstractSpinBox*>(object)||qobject_cast<QComboBox*>(object)||qobject_cast<QSlider*>(object)||object->inherits("host::SignalPlotCanvas"))){
+        auto *widget=qobject_cast<QWidget*>(object);auto *wheel=static_cast<QWheelEvent*>(event);
+        for(auto *parent=widget?widget->parentWidget():nullptr;parent;parent=parent->parentWidget()){
+            auto *area=qobject_cast<QAbstractScrollArea*>(parent);if(!area)continue;
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+            const auto global=wheel->globalPosition();
+#else
+            const auto global=wheel->globalPosF();
+#endif
+            const QPointF local=area->viewport()->mapFromGlobal(global.toPoint());
+            QWheelEvent forwarded(local,global,wheel->pixelDelta(),wheel->angleDelta(),wheel->buttons(),wheel->modifiers(),wheel->phase(),wheel->inverted());
+            QCoreApplication::sendEvent(area->viewport(),&forwarded);break;
+        }
+        return true;
+    }
     if(!m_updating&&(event->type()==QEvent::Show||event->type()==QEvent::Polish||event->type()==QEvent::Paint||event->type()==QEvent::ToolTip||event->type()==QEvent::LayoutRequest)){
         if(auto *widget=qobject_cast<QWidget*>(object)){translateWidget(widget);if(event->type()==QEvent::Paint&&widget->parentWidget())translateWidget(widget->parentWidget());}
     }

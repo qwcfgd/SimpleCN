@@ -17,6 +17,12 @@
 #include <QJsonDocument>
 #include <QFile>
 #include <QDir>
+#include <QTableWidget>
+#include <QDialogButtonBox>
+#include <QToolButton>
+#include <QMenu>
+#include <QFileDialog>
+#include <QInputDialog>
 #include <cmath>
 #include "model/FrameTableModel.h"
 #include "model/DatabaseImporter.h"
@@ -29,6 +35,7 @@
 #include "views/SignalPlotDialog.h"
 #include "views/SignalPlotCanvas.h"
 #include "views/ChannelPage.h"
+#include "model/FrameFilterProxy.h"
 using namespace host;
 using namespace host::signal;
 class TracePlotTest : public QObject {
@@ -40,8 +47,75 @@ class TracePlotTest : public QObject {
         r.bus=Bus::Can;r.channel="CAN1";r.id=id;r.typed=true;r.payload=QByteArray(8,0);r.payload[0]=char(first);r.payload[1]=char(second);r.length=8;
         r.identifier="0x"+QString::number(id,16).toUpper();r.data=r.payload.toHex(' ').toUpper();r.direction="RX";return r;
     }
+    void idFilter(FrameFilterProxy&proxy,bool enabled,bool pass,const QVector<FrameIdRange>&ranges){
+        FrameColumnFilter f;f.all=!pass;
+        if(enabled){for(const auto&r:ranges){FrameCondition c;c.op=pass?FrameFilterOp::Between:FrameFilterOp::NotBetween;c.value=QString::number(r.first,16);c.upper=QString::number(r.last,16);f.conditions.append(c);}if(pass&&ranges.isEmpty())f.valuesEnabled=true;}
+        QVERIFY(proxy.setColumnFilter(5,f));
+    }
 private slots:
     void initTestCase(){QApplication::setStyle("Fusion");QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf");QApplication::setFont(QFont("Microsoft YaHei",9));QDir().mkpath(artifacts());}
+    void idRangeParsing(){
+        FrameIdRange range;
+        for(const auto &rule:QVector<QPair<QString,int>>{{"0x120 - 12F",16},{"100100000-0b100101111",2},{"0o440-457",8},{"288 - 303",10}}){
+            QVERIFY(parseFrameIdRange(rule.first,rule.second,0x1fffffff,range));QCOMPARE(range.first,quint32(0x120));QCOMPARE(range.last,quint32(0x12f));
+        }
+        QVERIFY(parseFrameIdRange("1FFFFFFF",16,0x1fffffff,range));QCOMPARE(range.last,quint32(0x1fffffff));
+        QVERIFY(parseFrameIdRange("3F",16,0x3f,range));
+        for(const auto &text:QStringList{""," ","-1","+1","1-","1-2-3","2-1","1G","20000000","FFFFFFFFFFFFFFFFF","1 2"})QVERIFY2(!parseFrameIdRange(text,16,0x1fffffff,range),qPrintable(text));
+        QVERIFY(!parseFrameIdRange("40",16,0x3f,range));QVERIFY(!parseFrameIdRange("102",2,0x3f,range));QVERIFY(!parseFrameIdRange("8",8,0x3f,range));
+        QVERIFY(!parseFrameIdRange("0x10",10,0x3f,range));QVERIFY(!parseFrameIdRange("1",3,0x3f,range));
+    }
+    void idFilterCompleteHistoryAndSignalChildren(){
+        FrameTableModel model;FrameFilterProxy proxy;proxy.setSourceModel(&model);
+        FrameBatch batch;for(int n=0;n<FrameTableModel::Capacity+8;++n)batch.append(frame(n*1000,2,10,0x120+n%4));
+        model.append(batch);idFilter(proxy,true,true,{{0x121,0x122}});QCOMPARE(proxy.rowCount(),5000);
+        QCOMPARE(proxy.filteredHistory().size(),5004);QCOMPARE(model.historyCount(),qint64(10008));
+        for(const auto &format:QStringList{"asc","blf"}){QString error;const auto path=artifacts()+"/filtered-cache."+format;
+            QVERIFY2(TraceExporter::write(path,proxy.filteredHistory(),error),qPrintable(error));const auto read=TraceReader::read(path);QVERIFY2(read.error.isEmpty(),qPrintable(read.error));
+            // Replay readers normalize their first event to zero; exported timestamps retain the capture origin.
+            QCOMPARE(read.frames.size(),5004);QCOMPARE(read.frames.first().timeUs,qint64(0));QCOMPARE(read.frames.last().timeUs,qint64(10005000));
+            if(format=="asc"){QFile file(path);QVERIFY(file.open(QIODevice::ReadOnly));QVERIFY(file.readAll().contains("0.001000 1 121 Rx"));}}
+        model.setPaused(true);model.append({frame(10008000,2,10,0x121)});QCOMPARE(proxy.rowCount(),5000);QCOMPARE(proxy.filteredHistory().size(),5005);
+        idFilter(proxy,true,false,{{0x121,0x122}});QCOMPARE(proxy.filteredHistory().size(),5004);
+        idFilter(proxy,true,true,{});QCOMPARE(proxy.rowCount(),0);QVERIFY(proxy.filteredHistory().isEmpty());
+        idFilter(proxy,true,false,{});QCOMPARE(proxy.rowCount(),10000);QCOMPARE(proxy.filteredHistory().size(),10009);
+        idFilter(proxy,false,true,{{0x121,0x122}});QCOMPARE(proxy.rowCount(),10000);
+        model.setPaused(false);model.clear();QAbstractItemModelTester tester(&proxy,QAbstractItemModelTester::FailureReportingMode::QtTest);model.setDatabase(DatabaseImporter::load(fixture(),Bus::Can).database);model.setRolling(true);
+        model.append({frame(),frame(1000),frame(2000,2,10,0x124)});idFilter(proxy,true,true,{{0x123,0x123}});
+        QCOMPARE(proxy.rowCount(),1);QCOMPARE(proxy.rowCount(proxy.index(0,0)),5);QCOMPARE(proxy.filteredHistory().size(),2);
+        FrameColumnFilter text;FrameCondition condition;condition.value="Small";text.conditions.append(condition);proxy.setColumnFilter(7,text);QCOMPARE(proxy.rowCount(),0);QVERIFY(proxy.filteredHistory().isEmpty());
+        condition.value="02 0A";text.conditions={condition};proxy.setColumnFilter(7,text);QCOMPARE(proxy.rowCount(),1);QCOMPARE(proxy.filteredHistory().size(),2);
+        auto parent=proxy.index(0,0);QCOMPARE(proxy.selectedFrames({parent,proxy.index(1,5,parent)}).size(),1);
+        idFilter(proxy,true,false,{{0x123,0x123}});QCOMPARE(proxy.rowCount(),1);QCOMPARE(proxy.filteredHistory().size(),1);
+        proxy.setColumnFilter(7,{});QCOMPARE(proxy.rowCount(),1);QCOMPARE(proxy.filteredHistory().size(),1);
+        idFilter(proxy,false,true,{});QCOMPARE(proxy.rowCount(),2);
+        const auto selected=proxy.selectedFrames({proxy.index(1,7),proxy.index(0,0),proxy.index(1,0)});QCOMPARE(selected.size(),2);QCOMPARE(selected[0].captureUs,qint64(1000));
+    }
+    void shiftSelectionAndExportScopes(){
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs,true);
+        auto settings=ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;ChannelViewModel vm(settings);ChannelPage page(&vm);page.resize(1460,980);page.show();QCoreApplication::processEvents();
+        auto *tree=page.findChild<QTreeView*>("frameTable");auto *proxy=static_cast<FrameFilterProxy*>(tree->model());
+        FrameBatch batch;for(int n=0;n<8;++n)batch.append(frame(n*1000,2,10,0x120+n));vm.frames()->append(batch);QCoreApplication::processEvents();
+        auto click=[&](int row,Qt::KeyboardModifiers modifiers){const auto index=proxy->index(row,5);tree->scrollTo(index);QCoreApplication::processEvents();QTest::mouseClick(tree->viewport(),Qt::LeftButton,modifiers,tree->visualRect(index).center());};
+        click(1,Qt::NoModifier);click(4,Qt::ShiftModifier);QCOMPARE(tree->selectionModel()->selectedRows().size(),4);
+        const auto selectedPath=artifacts()+"/selected-rows.csv";QFile::remove(selectedPath);
+        QTimer driver;driver.setInterval(20);connect(&driver,&QTimer::timeout,&page,[&]{
+            if(auto *menu=page.findChild<QMenu*>("frameContextMenu")){if(menu->isVisible()){QCOMPARE(tree->selectionModel()->selectedRows().size(),4);QTest::mouseClick(menu,Qt::LeftButton,Qt::NoModifier,menu->actionGeometry(menu->actions()[0]).center());return;}}
+            if(auto *file=page.findChild<QFileDialog*>()){file->selectNameFilter("CSV (*.csv)");file->findChild<QLineEdit*>("fileNameEdit")->setText(selectedPath);QMetaObject::invokeMethod(file,"accept");}
+        });driver.start();
+        const auto point=tree->visualRect(proxy->index(2,5)).center();QMetaObject::invokeMethod(tree,"customContextMenuRequested",Q_ARG(QPoint,point));driver.stop();
+        QFile selected(selectedPath);QVERIFY2(selected.open(QIODevice::ReadOnly),qPrintable(vm.logs().join('\n')));const auto bytes=selected.readAll();QCOMPARE(bytes.count('\n'),5);QVERIFY(bytes.contains("0x121"));QVERIFY(bytes.contains("0x124"));QVERIFY(!bytes.contains("0x120"));
+        idFilter(*proxy,true,true,{{0x122,0x123}});
+        for(int scope=0;scope<2;++scope){
+            const auto path=artifacts()+QString("/scope-%1.csv").arg(scope);QFile::remove(path);
+            QTimer exportDriver;exportDriver.setInterval(20);connect(&exportDriver,&QTimer::timeout,&page,[&]{
+                if(auto *input=page.findChild<QInputDialog*>()){if(input->isVisible()){input->findChild<QComboBox*>()->setCurrentIndex(scope);input->accept();return;}}
+                if(auto *file=page.findChild<QFileDialog*>()){file->selectNameFilter("CSV (*.csv)");file->findChild<QLineEdit*>("fileNameEdit")->setText(path);QMetaObject::invokeMethod(file,"accept");}
+            });exportDriver.start();page.findChild<QPushButton*>("exportFrames")->click();exportDriver.stop();
+            QFile file(path);QVERIFY2(file.open(QIODevice::ReadOnly),qPrintable(vm.logs().join('\n')));QCOMPARE(file.readAll().count('\n'),scope?3:9);
+        }
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs,false);
+    }
     void rollingHistoryAndNibbles(){
         FrameTableModel model;QAbstractItemModelTester tester(&model,QAbstractItemModelTester::FailureReportingMode::QtTest);
         model.setRolling(true);model.append({frame()});
@@ -151,7 +225,7 @@ private slots:
         const int position=tree->verticalScrollBar()->value();const auto shown=tree->model()->index(0,1).data();
         vm.frames()->append({frame(20000000)});QCOMPARE(tree->model()->index(0,1).data(),shown);QCOMPARE(tree->verticalScrollBar()->value(),position);
         scroll->setValue(0);QCOMPARE(tree->model()->index(0,1).data().toString(),QString("0"));QCOMPARE(tree->verticalScrollBar()->value(),0);
-        auto *filter=page.findChild<QLineEdit*>("frameFilter");filter->setText("no match");QCOMPARE(tree->model()->rowCount(),0);QCOMPARE(vm.frames()->historyCount(),qint64(20001));filter->clear();
+        auto *filter=static_cast<FrameFilterProxy*>(tree->model());FrameColumnFilter condition;FrameCondition c;c.value="no match";condition.conditions.append(c);filter->setColumnFilter(7,condition);QCOMPARE(tree->model()->rowCount(),0);QCOMPARE(vm.frames()->historyCount(),qint64(20001));filter->setColumnFilter(7,{});
         Language::instance().setCode("en");QCoreApplication::processEvents();QCOMPARE(pause->text(),QString("Pause updates"));
         QVERIFY(!pause->toolTip().contains(QString("暂停")));QVERIFY(scroll->toolTip().startsWith("Records "));QCOMPARE(scroll->accessibleName(),QString("Browse recorded frames"));
         QCOMPARE(tree->model()->headerData(1,Qt::Horizontal).toString(),QString("Relative time/s"));

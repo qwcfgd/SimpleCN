@@ -12,9 +12,10 @@ public:
         auto s=QStyledItemDelegate::sizeHint(o,i);s.setHeight(qMax(27,s.height()));return s;
     }
     void paint(QPainter *p,const QStyleOptionViewItem &option,const QModelIndex &i) const override {
+        QStyleOptionViewItem stable(option);stable.state&=~QStyle::State_MouseOver;
         const auto ages=i.data(FrameTableModel::NibbleAgeRole).toList();
-        if(ages.isEmpty()){QStyledItemDelegate::paint(p,option,i);return;}
-        QStyleOptionViewItem o(option);initStyleOption(&o,i);const auto text=o.text;o.text.clear();
+        if(ages.isEmpty()){QStyledItemDelegate::paint(p,stable,i);return;}
+        QStyleOptionViewItem o(stable);initStyleOption(&o,i);const auto text=o.text;o.text.clear();
         auto style=o.widget?o.widget->style():QApplication::style();style->drawControl(QStyle::CE_ItemViewItem,&o,p,o.widget);
         p->save();p->setClipRect(o.rect);p->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
         const QFontMetrics fm(p->font());

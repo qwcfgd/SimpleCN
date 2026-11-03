@@ -44,6 +44,156 @@ class CanProtocolTest : public QObject {
     }
 private slots:
     void initTestCase(){qRegisterMetaType<CanFrame>();}
+    void downloadWindowNeverExceedsFour(){
+        CanOptions options;options.boundedFastSend=true;ManualCan link(options);link.acknowledge=false;QString error;
+        QVERIFY(link.transport.send(QByteArray(128,'a'),error));QVERIFY(until([&]{return link.writes.size()==1;}));
+        link.transport.confirmTransmitted(link.tokens[0]);link.transport.receiveFrame(incoming(options,hx("300000")));
+        QVERIFY(until([&]{return link.writes.size()==5;}));QTest::qWait(15);QCOMPARE(link.writes.size(),5);
+        link.transport.confirmTransmitted(link.tokens[1]);QVERIFY(until([&]{return link.writes.size()==6;}));link.transport.cancel();
+    }
+    void earlyPendingAndFinalResponseRemainOrdered(){
+        CanOptions options;options.boundedFastSend=true;ManualCan link(options);link.acknowledge=false;UdsSession session(link.transport,{200,500,2000,0});
+        bool finished=false,success=false;QSignalSpy notices(&session,&UdsSession::notice);
+        QVERIFY(session.request(hx("3601")+QByteArray(18,'a'),hx("7601"),[&](bool ok,const QByteArray &,const QString &){finished=true;success=ok;}));
+        QVERIFY(until([&]{return link.writes.size()==1;}));link.transport.confirmTransmitted(link.tokens[0]);link.transport.receiveFrame(incoming(options,hx("300000")));
+        QVERIFY(until([&]{return link.writes.size()==3;}));link.transport.receiveFrame(incoming(options,hx("037f3678")));link.transport.receiveFrame(incoming(options,hx("027601")));
+        QVERIFY(!finished);link.transport.confirmTransmitted(link.tokens[1]);link.transport.confirmTransmitted(link.tokens[2]);
+        QVERIFY(finished);QVERIFY(success);QCOMPARE(notices.size(),1);
+    }
+    void windowHonorsEveryPeerBlockSize(){
+        for(int bs:{0,1,2,3,4,5}){
+            CanOptions options;options.boundedFastSend=true;ManualCan link(options);link.acknowledge=false;QString error;
+            QSignalSpy sent(&link.transport,&DiagnosticTransport::sent);QVERIFY(link.transport.send(QByteArray(50,'b'),error));
+            QVERIFY(until([&]{return link.writes.size()==1;}));link.transport.confirmTransmitted(link.tokens[0]);
+            int acknowledged=1,remaining=7;
+            while(remaining>0){
+                const int block=bs?qMin(bs,remaining):remaining;const int stop=acknowledged+block;
+                link.transport.receiveFrame(incoming(options,QByteArray::fromHex("30")+char(bs)+char(0)));
+                while(acknowledged<stop){
+                    QVERIFY(until([&]{return link.writes.size()>acknowledged;}));
+                    QVERIFY(link.writes.size()-acknowledged<=4);link.transport.confirmTransmitted(link.tokens[acknowledged++]);
+                }
+                remaining-=block;if(remaining){QTest::qWait(5);QCOMPARE(link.writes.size(),stop);}
+            }
+            QCOMPARE(sent.size(),1);
+        }
+    }
+    void positivePeerSeparationKeepsOneUnconfirmed(){
+        for(int st:{1,5,0xf1,0xf9}){
+            CanOptions options;options.boundedFastSend=true;ManualCan link(options);link.acknowledge=false;QString error;
+            QVERIFY(link.transport.send(QByteArray(50,'s'),error));QVERIFY(until([&]{return link.writes.size()==1;}));link.transport.confirmTransmitted(link.tokens[0]);
+            link.transport.receiveFrame(incoming(options,QByteArray::fromHex("3000")+char(st)));QVERIFY(until([&]{return link.writes.size()==2;}));
+            QTest::qWait(15);QCOMPARE(link.writes.size(),2);link.transport.cancel();
+        }
+    }
+    void zeroStminKeepsOneFrameUnconfirmed(){
+        CanOptions options;options.bitrate=500000;ManualCan link(options);link.acknowledge=false;QString error;
+        QVERIFY(link.transport.send(QByteArray(50,'q'),error));QVERIFY(until([&]{return link.writes.size()==1;}));
+        link.transport.confirmTransmitted(link.tokens[0]);link.transport.receiveFrame(incoming(options,hx("300000")));
+        QVERIFY(until([&]{return link.writes.size()==2;}));QTest::qWait(10);QCOMPARE(link.writes.size(),2);
+        link.transport.confirmTransmitted(link.tokens[1]);QVERIFY(until([&]{return link.writes.size()==3;}));
+        link.transport.cancel();
+    }
+    void boundedCfPipelineWaitsForConfirmations(){
+        CanOptions options;options.boundedFastSend=true;options.bitrate=500000;
+        ManualCan link(options);link.acknowledge=false;QString error;
+        QSignalSpy sent(&link.transport,&DiagnosticTransport::sent),failed(&link.transport,&DiagnosticTransport::failed);
+        QVERIFY(link.transport.send(QByteArray(128,'a'),error));
+        QVERIFY(until([&]{return link.writes.size()==1;}));
+        link.transport.confirmTransmitted(link.tokens[0]);
+        link.transport.receiveFrame(incoming(options,hx("300000")));
+        QVERIFY(until([&]{return link.writes.size()>=3;}));
+        QTest::qWait(15);QCOMPARE(link.writes.size(),5);QCOMPARE(sent.size(),0);
+        int acknowledged=1;QElapsedTimer deadline;deadline.start();
+        while(sent.isEmpty()&&failed.isEmpty()&&deadline.elapsed()<2000){
+            const int count=link.tokens.size();
+            while(acknowledged<count)link.transport.confirmTransmitted(link.tokens[acknowledged++]);
+            QTest::qWait(1);
+        }
+        QCOMPARE(failed.size(),0);QCOMPARE(sent.size(),1);
+        QByteArray assembled=link.writes[0].data.mid(2,6);
+        for(int i=1;i<link.writes.size();++i)assembled+=link.writes[i].data.mid(1);
+        QCOMPARE(assembled.left(128),QByteArray(128,'a'));
+    }
+    void boundedCfHonorsBlockAndCancellation(){
+        CanOptions options;options.boundedFastSend=true;ManualCan link(options);link.acknowledge=false;QString error;
+        QSignalSpy sent(&link.transport,&DiagnosticTransport::sent),failed(&link.transport,&DiagnosticTransport::failed);
+        QVERIFY(link.transport.send(QByteArray(50,'b'),error));QVERIFY(until([&]{return link.writes.size()==1;}));
+        link.transport.confirmTransmitted(link.tokens[0]);link.transport.receiveFrame(incoming(options,hx("300200")));
+        QVERIFY(until([&]{return link.writes.size()==3;}));QTest::qWait(15);QCOMPARE(link.writes.size(),3);
+        link.transport.receiveFrame(incoming(options,hx("300200"))); // FC before the adapter's last echo
+        link.transport.confirmTransmitted(link.tokens[1]);link.transport.confirmTransmitted(link.tokens[2]);
+        QVERIFY(until([&]{return link.writes.size()==5;}));QCOMPARE(failed.size(),0);
+        const auto stale=link.tokens[3];link.transport.cancel();link.transport.confirmTransmitted(stale);
+        QTest::qWait(10);QCOMPARE(link.writes.size(),5);QCOMPARE(sent.size(),0);
+    }
+    void boundedCfChecksEveryTransmitDeadline(){
+        CanOptions options;options.boundedFastSend=true;options.nAsMs=30;ManualCan link(options);link.acknowledge=false;QString error;
+        QSignalSpy failed(&link.transport,&DiagnosticTransport::failed);
+        QVERIFY(link.transport.send(QByteArray(100,'c'),error));QVERIFY(until([&]{return link.writes.size()==1;}));
+        link.transport.confirmTransmitted(link.tokens[0]);link.transport.receiveFrame(incoming(options,hx("300000")));
+        QVERIFY(until([&]{return failed.size()==1;},500));QVERIFY(failed[0][0].toString().contains("N_As"));
+        const int count=link.writes.size();QTest::qWait(15);QCOMPARE(link.writes.size(),count);
+    }
+    void boundedCfHandlesWaitAndOverflowAtBlockBoundary(){
+        for(bool overflow:{false,true}){
+            CanOptions options;options.boundedFastSend=true;ManualCan link(options);link.acknowledge=false;QString error;
+            QSignalSpy failed(&link.transport,&DiagnosticTransport::failed);
+            QVERIFY(link.transport.send(QByteArray(50,'w'),error));QVERIFY(until([&]{return link.writes.size()==1;}));
+            link.transport.confirmTransmitted(link.tokens[0]);link.transport.receiveFrame(incoming(options,hx("300200")));
+            QVERIFY(until([&]{return link.writes.size()==3;}));
+            link.transport.receiveFrame(incoming(options,hx("310000")));
+            link.transport.receiveFrame(incoming(options,overflow?hx("320000"):hx("300200")));
+            link.transport.confirmTransmitted(link.tokens[1]);link.transport.confirmTransmitted(link.tokens[2]);
+            if(overflow){QCOMPARE(failed.size(),1);QVERIFY(failed[0][0].toString().contains("overflow"));QCOMPARE(link.writes.size(),3);}
+            else {QVERIFY(until([&]{return link.writes.size()==5;}));QCOMPARE(failed.size(),0);link.transport.cancel();}
+        }
+    }
+    void boundedCfHonorsNewSeparationAfterBlock(){
+        CanOptions options;options.boundedFastSend=true;ManualCan link(options);link.acknowledge=false;QString error;
+        QVERIFY(link.transport.send(QByteArray(60,'s'),error));QVERIFY(until([&]{return link.writes.size()==1;}));
+        link.transport.confirmTransmitted(link.tokens[0]);link.transport.receiveFrame(incoming(options,hx("300200")));
+        QVERIFY(until([&]{return link.writes.size()==3;}));link.transport.receiveFrame(incoming(options,hx("300205")));
+        QElapsedTimer clock;qint64 sentUs=-1;
+        connect(&link.transport,&CanTransport::trace,&link.transport,[&](bool tx,const CanFrame&f){if(tx&&!f.data.isEmpty()&&quint8(f.data[0])==0x23&&clock.isValid())sentUs=clock.nsecsElapsed()/1000;});
+        link.transport.confirmTransmitted(link.tokens[1]);clock.start();link.transport.confirmTransmitted(link.tokens[2]);
+        QVERIFY(until([&]{return sentUs>=0;}));QVERIFY(sentUs>=5000);link.transport.cancel();
+    }
+    void boundedCfRespectsPeerSeparation(){
+        for(int value:{1,5,0xf1,0xf9}){
+            CanOptions options;options.boundedFastSend=true;ManualCan link(options);link.acknowledge=false;QString error;
+            QVERIFY(link.transport.send(QByteArray(30,'d'),error));QVERIFY(until([&]{return link.writes.size()==1;}));
+            QElapsedTimer clock;clock.start();link.transport.confirmTransmitted(link.tokens[0]);link.transport.receiveFrame(incoming(options,QByteArray::fromHex("3000")+char(value)));
+            QVERIFY(until([&]{return link.writes.size()>=2;}));
+            QVERIFY2(clock.nsecsElapsed()/1000>=CanTransport::separationUs(value),"Peer STmin was not respected");
+        }
+    }
+    void boundedCfBuffersWaitAndEarlyResponse(){
+        CanOptions options;options.boundedFastSend=true;ManualCan link(options);link.acknowledge=false;QString error;
+        QSignalSpy got(&link.transport,&DiagnosticTransport::received),failed(&link.transport,&DiagnosticTransport::failed);
+        QVERIFY(link.transport.send(QByteArray(20,'e'),error));QVERIFY(until([&]{return link.writes.size()==1;}));
+        link.transport.receiveFrame(incoming(options,hx("310000")));
+        link.transport.receiveFrame(incoming(options,hx("300000")));
+        link.transport.confirmTransmitted(link.tokens[0]);QVERIFY(until([&]{return link.writes.size()==3;}));
+        link.transport.receiveFrame(incoming(options,hx("027601")));QCOMPARE(got.size(),0);
+        link.transport.confirmTransmitted(link.tokens[1]);link.transport.confirmTransmitted(link.tokens[2]);
+        QCOMPARE(failed.size(),0);QCOMPARE(got.size(),1);QCOMPARE(got[0][0].toByteArray(),hx("7601"));
+    }
+    void boundedCfRejectsWriteFailureAndOutOfOrderEcho(){
+        CanOptions options;options.boundedFastSend=true;ManualCan link(options);link.acknowledge=false;QString error;
+        QSignalSpy failed(&link.transport,&DiagnosticTransport::failed);
+        QVERIFY(link.transport.send(QByteArray(100,'f'),error));QVERIFY(until([&]{return link.writes.size()==1;}));
+        link.transport.confirmTransmitted(link.tokens[0]);link.transport.receiveFrame(incoming(options,hx("300000")));
+        QVERIFY(until([&]{return link.writes.size()>=3;}));link.transport.confirmTransmitted(link.tokens[2]);
+        QCOMPARE(failed.size(),1);QVERIFY(failed[0][0].toString().contains("out of order"));
+        CanTransport *ptr=nullptr;int count=0;
+        CanTransport bad(options,[&](const CanFrame &,quint64 token,QString &e){
+            if(++count==1){ptr->confirmTransmitted(token);return true;}e="adapter failure";return false;
+        });ptr=&bad;
+        QSignalSpy badFailed(&bad,&DiagnosticTransport::failed);QVERIFY(bad.send(QByteArray(20,'x'),error));
+        QVERIFY(until([&]{return count==1;}));bad.receiveFrame(incoming(options,hx("300000")));
+        QVERIFY(until([&]{return badFailed.size()==1;}));QCOMPARE(badFailed[0][0].toString(),QString("adapter failure"));
+    }
     void fingerprintIsoTpRoundTrip(){
         CanOptions a;a.stMin=0;auto b=a;qSwap(b.txId,b.rxId);
         Pair link(a,b);QSignalSpy received(&link.b,&DiagnosticTransport::received);
@@ -127,19 +277,32 @@ private slots:
         for(int i=0;i<3;++i)link.transport.receiveFrame(incoming(o,hx("310000")));
         QCOMPARE(failure.size(),1);QVERIFY(failure[0][0].toString().contains("WAIT"));
     }
+    void delayedEchoUsesConfiguredNAs_data(){
+        QTest::addColumn<int>("deadline");QTest::addColumn<bool>("success");
+        QTest::newRow("70 ms")<<70<<false;QTest::newRow("default 1000 ms")<<1000<<true;
+    }
+    void delayedEchoUsesConfiguredNAs(){
+        QFETCH(int,deadline);QFETCH(bool,success);CanOptions o;o.nAsMs=deadline;ManualCan link(o);link.acknowledge=false;
+        QSignalSpy sent(&link.transport,&DiagnosticTransport::sent),failed(&link.transport,&DiagnosticTransport::failed);QString error;
+        QVERIFY(link.transport.send(hx("1002"),error));QVERIFY(until([&]{return !link.tokens.isEmpty();}));
+        const auto token=link.tokens.first();QTimer::singleShot(80,&link.transport,[&link,token]{link.transport.confirmTransmitted(token);});
+        QVERIFY(until([&]{return sent.size()+failed.size()>0;},1500));
+        QCOMPARE(sent.size(),success?1:0);QCOMPARE(failed.size(),success?0:1);
+    }
     void transportTimeouts_data(){
         QTest::addColumn<QString>("mode");
         for(const char *s:{"N_As","N_Bs","N_Cr","N_Ar"})QTest::newRow(s)<<QString(s);
     }
     void transportTimeouts(){
         QFETCH(QString,mode);CanOptions o;o.nAsMs=o.nBsMs=o.nCrMs=25;ManualCan link(o);QString e;
-        QSignalSpy failure(&link.transport,&DiagnosticTransport::failed);
+        QSignalSpy failure(&link.transport,&DiagnosticTransport::failed),deadlines(&link.transport,&CanTransport::deadlineObserved);
         if(mode=="N_As"){link.acknowledge=false;QVERIFY(link.transport.send(hx("1002"),e));}
         if(mode=="N_Bs")QVERIFY(link.transport.send(QByteArray(12,0),e));
         if(mode=="N_Cr"||mode=="N_Ar"){
             link.acknowledge=mode!="N_Ar";link.transport.listen();link.transport.receiveFrame(incoming(o,hx("100e010203040506")));
         }
         QVERIFY(until([&]{return failure.size()==1;},300));QVERIFY(failure[0][0].toString().contains(mode));
+        QCOMPARE(deadlines.size(),1);QCOMPARE(deadlines[0][0].toString(),QString("CAN_")+mode.toUpper());QCOMPARE(deadlines[0][1].toInt(),25);QVERIFY(deadlines[0][2].toLongLong()>=25);
         const int n=link.writes.size();QTest::qWait(30);QCOMPARE(link.writes.size(),n);
     }
     void receiveFaults_data(){

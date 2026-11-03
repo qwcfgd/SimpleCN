@@ -1,6 +1,11 @@
 #include "domain/TraceClock.h"
 #include "ChannelWorker.h"
+#include "model/FramePresentation.h"
 #include <QThread>
+#ifdef Q_OS_WIN
+#include <QWinEventNotifier>
+#endif
+#include <cstring>
 #include "protocol/PluginKey.h"
 namespace host {
 using namespace communication;
@@ -35,21 +40,34 @@ void ChannelWorker::initialize() {
     m_signal->drainReceived=[this]{receive();return m_receiveDrained;};
     connect(m_signal.get(),&SignalTransmitter::statusChanged,this,[this](signal::RunStatus status){
         if(!signal::active(status.state)&&!status.cleanupPending)m_operations.release(OperationCoordinator::Task::Signal);
+        if(m_receive&&m_settings.bus==Bus::Can&&!m_settings.simulation){
+            if(signal::active(status.state))m_receive->setInterval(m_canNotifier?20:1);else if(!m_running)m_receive->setInterval(20);
+        }
         emit signalStatus(status);
     });
     connect(m_signal.get(),&SignalTransmitter::events,this,[this](signal::BusFrameEvents events){projectSignalEvents(events);emit busEvents(events);});
     connect(m_signal.get(),&SignalTransmitter::notice,this,&ChannelWorker::logMessage);
-    m_receive=new QTimer(this);m_receive->setInterval(20);connect(m_receive,&QTimer::timeout,this,&ChannelWorker::receive);
+    connect(m_signal.get(),&SignalTransmitter::canRecoveryNeeded,this,[this](int state,quint64 connection){
+        if(m_can&&m_session&&m_session->state()==ConnectionState::Connected&&connection==m_session->generation())handleCanState(static_cast<CanBusState>(state),m_can->lastErrorText());
+    },Qt::QueuedConnection);
+    m_receive=new QTimer(this);m_receive->setInterval(20);m_receive->setTimerType(Qt::PreciseTimer);connect(m_receive,&QTimer::timeout,this,&ChannelWorker::receive);
+    m_receivePump=new QTimer(this);m_receivePump->setSingleShot(true);m_receivePump->setTimerType(Qt::PreciseTimer);
+    connect(m_receivePump,&QTimer::timeout,this,&ChannelWorker::receive);
     m_scan=new QTimer(this);connect(m_scan,&QTimer::timeout,this,&ChannelWorker::scanTick);
     m_repeat=new QTimer(this);m_repeat->setSingleShot(true);m_repeat->setTimerType(Qt::PreciseTimer);
     connect(m_repeat,&QTimer::timeout,this,&ChannelWorker::beginPreviewRound);
     createSession();m_receive->start();emit ready();
 }
-bool ChannelWorker::traceRecord(const QString &direction,quint32 id,int dlc,const QByteArray &data,bool valid){
+bool ChannelWorker::traceRecord(const QString &direction,quint32 id,int dlc,const QByteArray &data,bool valid,const TraceTiming &timing){
     if(!m_traceEnabled)return true;
     if(m_traceFailed)return false;
-    if(m_safeTrace.append(direction,id,dlc,data,QDateTime::currentMSecsSinceEpoch(),captureTimeUs(),valid && m_traceDiagnosticIds.contains(id)))return true;
+    if(m_safeTrace.append(direction,id,dlc,data,QDateTime::currentMSecsSinceEpoch(),captureTimeUs(),valid && m_traceDiagnosticIds.contains(id),timing))return true;
     traceFailure();return false;
+}
+void ChannelWorker::traceDeadline(const QString &kind,int limit,qint64 elapsed){
+    TraceTiming timing;timing.timeoutKind=kind;timing.timeoutLimitMs=limit;timing.timeoutElapsedMs=elapsed;
+    if(kind=="CAN_N_AS"||kind=="CAN_N_AR")for(int i=m_canEchoes.size()-1;i>=0;--i)if(m_canEchoes[i].owner==m_canTransport.get()){timing.sendCallUs=m_canEchoes[i].sendCallUs;break;}
+    traceRecord("TIMEOUT",0,0,{},false,timing);
 }
 void ChannelWorker::traceFailure(){
     if(m_traceFailed)return;
@@ -57,18 +75,24 @@ void ChannelWorker::traceFailure(){
     emit logMessage("Trace write failed: evidence incomplete; transmission disabled.");
     QMetaObject::invokeMethod(this,[this]{
         if(m_canTransport)m_canTransport->linkFailed("Trace write failed: evidence incomplete");
+        if(m_signal)m_signal->linkFailed("Trace write failed: evidence incomplete");
         if(m_running)failPreview("Trace write failed: evidence incomplete");
     },Qt::QueuedConnection);
 }
 void ChannelWorker::createSession() {
+    m_canBlocked=m_canHealthInitialized=false;
+    stopReceiveNotifier();
     m_session.reset();m_can.reset();m_lin.reset();m_canEchoes.clear();
     SoftwareChannelConfiguration config;QString error;
     if(!m_settings.toConfiguration(config,error)){emit logMessage(error);return;}
     std::unique_ptr<HardwareBackend> backend;
     if(m_settings.simulation){backend.reset(new PreviewBackend(m_settings.bus));}
     else if(m_settings.bus==Bus::Lin){m_lin=createLinHardware();backend=sessionBackend(*m_lin);}
-    else {m_can=createCanHardware();backend=sessionBackend(*m_can);}
+    else {m_can=m_canFactory?m_canFactory():createCanHardware();backend=sessionBackend(*m_can);}
     m_session.reset(new SoftwareChannel(config,std::move(backend)));
+    connect(m_session.get(),&SoftwareChannel::enumerationMeasured,this,[this](qint64 elapsedUs){
+        if(m_traceEnabled&&m_can){TraceTiming timing;timing.hardwareOperation="CAN_ENUMERATE";timing.hardwareDurationUs=elapsedUs;traceRecord("PROFILE",0,0,{},false,timing);}
+    });
     connect(m_session.get(),&SoftwareChannel::hardwareChanged,this,&ChannelWorker::hardwareChanged);
     connect(m_session.get(),&SoftwareChannel::stateChanged,this,[this](ConnectionState s,const QString &detail){
         if(s==ConnectionState::Connected) {
@@ -76,22 +100,71 @@ void ChannelWorker::createSession() {
             const auto c=m_session->configuration();
             m_settings.hardwareKey=c.hardwareKey;m_settings.handle=c.preferredHandle;
             emit bindingChanged(c.hardwareKey,c.preferredHandle);
+#ifdef Q_OS_WIN
+            if(m_can && m_can->receiveEventHandle()){
+                auto *notifier=new QWinEventNotifier(static_cast<HANDLE>(m_can->receiveEventHandle()),this);
+                notifier->setEnabled(true);
+                if(notifier->isEnabled()){
+                    m_canNotifier=notifier;const auto generation=m_session->generation();
+                    connect(notifier,&QWinEventNotifier::activated,this,[this,generation]{
+                        if(m_session&&m_session->state()==ConnectionState::Connected&&m_session->generation()==generation)receive();
+                    });
+                    if(m_receivePump&&!m_receivePump->isActive())m_receivePump->start(0);
+                }else delete notifier;
+            }
+            if(m_can&&!m_canNotifier&&c.hardwareKey.startsWith("can:"))emit logMessage("PCAN receive event unavailable; using polling.");
+#endif
         }
         emit stateChanged(s,detail);
         emit logMessage(connectionText(s)+(detail.isEmpty()?QString():" · "+detail));
     });
-    connect(m_session.get(),&SoftwareChannel::healthChanged,this,&ChannelWorker::healthChanged);
+    connect(m_session.get(),&SoftwareChannel::healthChanged,this,[this](Health health,const QString &detail){
+        if(m_can){
+            const auto observed=m_can->classifyStatus(m_can->lastErrorCode());const auto live=m_can->busState();
+            if(live!=CanBusState::Unsupported){
+                const auto state=(observed==CanBusState::BusOff||observed==CanBusState::Warning||observed==CanBusState::Fatal)?observed:live;
+                handleCanState(state,detail);return;
+            }
+        }
+        emit healthChanged(health,detail);
+    });
     connect(m_session.get(),&SoftwareChannel::connectionClosing,this,[this](){
-        if(m_signal)m_signal->stop();
+        stopReceiveNotifier();
+        if(m_signal){m_signal->stop();m_signal->hardwareClosed();}
+        m_canBlocked=m_canHealthInitialized=false;
         cancelTask();clearProtocol();m_diagnosticDids.clear();if(m_scanning)stopScan("扫描已停止：连接正在关闭");
     });
     m_session->startMonitoring();
+}
+void ChannelWorker::stopReceiveNotifier(){
+    if(m_receivePump)m_receivePump->stop();
+    delete m_canNotifier;m_canNotifier=nullptr;
+}
+bool ChannelWorker::handleCanState(CanBusState state,const QString &detail){
+    if(state==CanBusState::Unsupported)return false;
+    if(state==CanBusState::Ready){
+        const bool hadFault=m_canBlocked;m_canBlocked=false;
+        if(hadFault||!m_canHealthInitialized){emit healthChanged(Health::Ready,hadFault?"CAN recovered":"CAN ready");m_canHealthInitialized=true;}
+        return false;
+    }
+    const bool firstWarning=!m_canBlocked;
+    m_canBlocked=true;
+    if(firstWarning){
+        if(!m_canEchoes.isEmpty()||(m_uds&&m_uds->hasActiveRequest()&&m_udsWriteAttempted)){m_canUnresolved=true;m_recoveryCloseSucceeded=false;}
+        const QString reason=detail.isEmpty()?QStringLiteral("CAN bus or adapter error; transmission stopped"):detail;
+        if(m_canTransport)m_canTransport->linkFailed(reason);
+        if(m_running)failPreview(reason);
+        if(m_signal)m_signal->linkFailed(reason);
+        emit healthChanged(Health::BusWarning,reason);m_canHealthInitialized=true;emit logMessage(reason);
+    }
+    return true;
 }
 bool ChannelWorker::apply(const ChannelSettings &settings) {
     SoftwareChannelConfiguration c;QString error;
     if(!settings.toConfiguration(c,error)){emit logMessage(error);return false;}
     if(m_session && m_session->state()==ConnectionState::Connected){emit logMessage("请先断开后修改硬件及协议配置。");return false;}
     const bool recreate=!m_session || m_settings.simulation!=settings.simulation;
+    if(recreate&&m_canUnresolved){emit logMessage("Earlier request may have executed; reconnect the original channel before changing its mode.");return false;}
     m_settings=settings;
     if(recreate){
         createSession();
@@ -108,17 +181,26 @@ bool ChannelWorker::apply(const ChannelSettings &settings) {
 void ChannelWorker::updateSettings(ChannelSettings s){apply(s);emit commandFinished();}
 void ChannelWorker::connectChannel(ChannelSettings s) {
     if(m_traceEnabled&&(m_traceFailed||s.bus!=Bus::Can||s.simulation)){emit logMessage("Trace mode requires a healthy log and physical CAN channel.");emit commandFinished();return;}
-    if(apply(s) && m_session) m_session->connectChannel();
+    if(apply(s) && m_session && m_session->connectChannel() && m_canUnresolved && m_recoveryCloseSucceeded){
+        m_canEchoes.clear();m_canUnresolved=false;m_recoveryCloseSucceeded=false;m_udsWriteAttempted=false;
+        emit logMessage("Previous local transaction was discarded after manual reconnect; the ECU may already have executed its request.");
+    }
     emit commandFinished();
 }
 void ChannelWorker::disconnectChannel(){
     const bool connected=m_session&&m_session->state()==ConnectionState::Connected;
-    if(m_session&&m_session->disconnectChannel()&&connected&&m_signal)m_signal->hardwareClosed();
+    const bool closed=m_session&&m_session->disconnectChannel();
+    if(connected&&m_canUnresolved){
+        m_recoveryCloseSucceeded=closed;
+        emit logMessage(closed?"Previous request may already have executed; reconnect manually to discard its local association.":"Previous request may already have executed; adapter close failed and its local association remains unresolved.");
+    }
+    if(closed&&connected&&m_signal)m_signal->hardwareClosed();
     emit commandFinished();
 }
 void ChannelWorker::refresh(){if(m_session)m_session->poll();emit commandFinished();}
 void ChannelWorker::startPreview(ChannelSettings s) {
     SoftwareChannelConfiguration config;QString error;
+    if(s.bus==Bus::Can&&(m_canBlocked||m_canUnresolved||!m_canEchoes.isEmpty()||(m_signal&&m_signal->hasUnconfirmedCanFrame()))){emit logMessage("CAN fault or an earlier transaction is unresolved; inspect the ECU before starting another download");emit commandFinished();return;}
     if(m_traceEnabled&&(m_traceFailed||s.bus!=Bus::Can||s.simulation)){emit logMessage("Trace mode unavailable: evidence incomplete or not physical CAN.");emit commandFinished();return;}
     if(!s.toConfiguration(config,error)){emit logMessage(error);emit commandFinished();return;}
     if(!m_operations.permits(OperationCoordinator::Task::Download) || m_running || m_scanning || m_manualBusy || (m_manualMode && m_uds && m_uds->busy()) || s.simulation!=m_settings.simulation || !m_session ||
@@ -129,6 +211,7 @@ void ChannelWorker::startPreview(ChannelSettings s) {
     if(!diagnosticMaster(error)){emit logMessage(error);emit commandFinished();return;}
     m_operations.acquire(OperationCoordinator::Task::Download);
     m_settings=s;m_progress=0;m_round=0;m_totalRounds=s.repeatDownloadEnabled?s.repeatDownloadCount:1;m_running=true;
+    if(s.bus==Bus::Can&&!s.simulation)m_receive->setInterval(m_canNotifier?20:1);
     emit logMessage(s.simulation?QString("开始模拟下载，共 %1 次；不访问物理总线。").arg(m_totalRounds):QString("开始真实 %1 下载，共 %2 次。").arg(s.bus==Bus::Can?"CAN":"LIN").arg(m_totalRounds));
     beginPreviewRound();emit commandFinished();
 }
@@ -147,7 +230,7 @@ void ChannelWorker::failPreview(const QString &reason) {
     ++m_confirmationId;m_confirmationPending=false;m_stagedApp={};m_stagedDriver={};
     m_operations.release(OperationCoordinator::Task::Download);
     if(m_job)m_job->cancel();
-    m_repeat->stop();m_running=m_waiting=false;
+    m_repeat->stop();m_running=m_waiting=false;m_receive->setInterval(20);
     emit taskChanged(TaskState::Failed,m_progress,"下载停止 · "+reason);emit logMessage("重复下载已停止："+reason);
 }
 void ChannelWorker::completeRound(const QString &result) {
@@ -159,7 +242,7 @@ void ChannelWorker::completeRound(const QString &result) {
         emit taskChanged(TaskState::Running,100,QString("第 %1/%2 次完成 · 等待 %3 s").arg(m_round).arg(m_totalRounds).arg(m_settings.repeatDownloadIntervalMs/1000.0,0,'f',1));
         m_repeat->start(m_settings.repeatDownloadIntervalMs);
     }else{
-        m_running=false;
+        m_running=false;m_receive->setInterval(20);
         m_operations.release(OperationCoordinator::Task::Download);
         emit taskChanged(TaskState::Completed,100,QString("%1 · 共 %2 次").arg(result).arg(m_totalRounds));
         emit logMessage(result);
@@ -179,16 +262,20 @@ void ChannelWorker::beginDownload(bool confirmed){
        (m_settings.flashRequired&&!boot::FirmwareImage::load(m_settings.flashPath,m_settings.flashAddress.toUInt(nullptr,16),driver,error))){failPreview(error);return;}
     boot::FlashProfile profile;
     if(!boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error)){failPreview(error);return;}
-    if(!confirmed&&boot::t008::looksLikeImage(application)){
+    if(!confirmed&&(profile.isT008()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))&&
+       ((profile.enabled("driver36")&&!profile.enabled("driver34"))||(profile.enabled("app36")&&!profile.enabled("app34")))){failPreview("TransferData requires RequestDownload");return;}
+    if(!confirmed&&(m_settings.checkDriverAbi||m_settings.checkAppVersion||m_settings.checkMinimumBoot)){
         boot::t008::Plan plan;
         if(!boot::t008::images(application,driver,plan,error)){failPreview(error);return;}
-        if((profile.enabled("driver36")&&!profile.enabled("driver34"))||(profile.enabled("app36")&&!profile.enabled("app34"))){failPreview("TransferData requires RequestDownload");return;}
-        m_stagedApp=application;m_stagedDriver=driver;m_confirmationPending=true;const auto id=++m_confirmationId;
-        const auto details=QString("Project: %1\nHardware version: %2\nApp version: %3\nMinimum Boot: %4\nConfiguration: %5\nCalibration: %6")
-            .arg(QString::fromLatin1(plan.project),QString::fromLatin1(plan.hardware),QString::fromLatin1(plan.version))
-            .arg(plan.minBoot).arg(QString::fromLatin1(plan.configuration.toHex(' ')).toUpper(),QString::fromLatin1(plan.calibration.toHex(' ')).toUpper());
-        const auto fingerprintInfo=m_settings.fingerprintHex.isEmpty()?QString("\nF184: %1 / TEST-PLACEHOLDER (test placeholder)").arg(QDate::currentDate().toString(Qt::ISODate)):QString("\nF184 configured: %1").arg(m_settings.fingerprintHex);
-        emit packageConfirmationRequested(id,details+fingerprintInfo+(m_settings.applicationNote.isEmpty()?QString():QString("\nApp: ")+m_settings.applicationNote));return;
+        QMap<QString,QString> expected;
+        if(m_settings.checkDriverAbi)expected["driverAbi"]=m_settings.expectedDriverAbi;
+        if(m_settings.checkAppVersion)expected["appVersion"]=m_settings.expectedAppVersion;
+        if(m_settings.checkMinimumBoot)expected["minimumBoot"]=m_settings.expectedMinimumBoot;
+        QStringList mismatches;if(!boot::t008::compareFileVersions(plan,expected,mismatches,error)){failPreview(error);return;}
+        if(!mismatches.isEmpty()){
+            m_stagedApp=application;m_stagedDriver=driver;m_confirmationPending=true;const auto id=++m_confirmationId;
+            emit packageConfirmationRequested(id,QString("版本不一致或无法解析，请确认是否继续：\n")+mismatches.join("\n"));return;
+        }
     }
     if(profile.isT008()&&(m_settings.simulation||m_settings.bus!=Bus::Can||m_settings.bitrate!=500000||!m_settings.flashRequired||m_settings.repeatDownloadEnabled||m_settings.autoReconnect)){
         failPreview("T008 requires physical CAN at 500000 bit/s, native driver, one attempt and auto reconnect disabled");return;
@@ -208,6 +295,10 @@ void ChannelWorker::beginDownload(bool confirmed){
     if(!m_settings.simulation)emit logMessage(profile.keyLibrary.trimmed().isEmpty()
         ?"未配置 27 DLL：收到的 seed 原样作为 key 发送":"安全访问使用已配置的 27 DLL");
     if(!createProtocol(profile,error,false)){failPreview(error);return;}
+    if(m_settings.simulation&&(profile.isT008()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))){
+        if(m_canEcu)m_canEcu->uds.maxBlockLength=1026;
+        if(m_ecu)m_ecu->maxBlockLength=1026;
+    }
     emit logMessage(QString("镜像快照 %1 B · SHA256 %2 · 配置 %3").arg(application.size).arg(QString::fromLatin1(application.sha256.toHex())).arg(profile.name));
     m_job.reset(new boot::FlashJob(*m_uds,profile,std::move(key)));
     connect(m_job.get(),&boot::FlashJob::notice,this,&ChannelWorker::logMessage);
@@ -275,6 +366,9 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
         }
         options.extended=m_settings.extendedId;
         if(!boot::CanOptions::fromJson(m_settings.canNetwork,options,error))return false;
+        options.bitrate=m_settings.bitrate;
+        // Download CFs may use a bounded window only after peer CTS with STmin=0.
+        options.boundedFastSend=!manual;
         if(profile.isT008()){
             if(m_settings.simulation||options.extended||options.txId!=0x715||options.rxId!=0x795||options.functionalTxId!=0x7df){error="T008 requires physical 11-bit CAN IDs 715/795/7DF";return false;}
             options.strictClassicCc=true;options.padding=0xcc;options.functionalRx=false;
@@ -287,24 +381,46 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
             }
             if(!manual)emit logMessage("真实 CAN 下载：硬件回显与 ISO-TP 传输层已激活");
         }else m_canEcu.reset(new boot::SimulatedCanEcu(options,profile));
-        m_canTransport.reset(new boot::CanTransport(options,[this](const boot::CanFrame &frame,quint64 token,QString &error){
+        m_canTransport.reset(new boot::CanTransport(options,[this,manual](const boot::CanFrame &frame,quint64 token,QString &error){
             if(m_traceEnabled&&m_traceFailed){error="Trace failed: evidence incomplete";return false;}
+            if(m_canBlocked){error="CAN bus fault: diagnostic request was not queued";return false;}
             if(m_canEcu)return m_canEcu->writeFromHost(frame,token,error);
-            if(!m_can||m_canEchoes.size()>=128){error="CAN 发送确认队列不可用，请重新连接";return false;}
+            const bool downloadCf=!manual&&!frame.data.isEmpty()&&(quint8(frame.data[0])>>4)==2;
+            const auto generation=m_session?m_session->generation():0;
+            bool sameOwner=true;for(const auto &pending:m_canEchoes)if(pending.owner!=m_canTransport.get()||pending.generation!=generation)sameOwner=false;
+            if(!m_can||(!m_canEchoes.isEmpty()&&(!downloadCf||!sameOwner||m_canEchoes.size()>=4))){error="CAN transmit confirmation window unavailable";return false;}
             TPCANMsg message={};message.ID=frame.id;message.MSGTYPE=frame.extended?PCAN_MESSAGE_EXTENDED:PCAN_MESSAGE_STANDARD;
             message.LEN=BYTE(frame.data.size());for(int i=0;i<frame.data.size();++i)message.DATA[i]=BYTE(frame.data[i]);
+            const qint64 sendStart=m_traceEnabled?captureTimeUs():-1;
+            m_udsWriteAttempted=true;
             const bool sent=m_traceEnabled?m_safeTrace.sendIfHealthy([&]{return m_can->sendRaw(message);}):m_can->sendRaw(message);
-            if(!sent){error=m_traceFailed?"Trace failed: evidence incomplete":m_can->lastErrorText();return false;}
-            m_canEchoes.enqueue({m_canTransport.get(),token,frame});
-            QMetaObject::invokeMethod(this,&ChannelWorker::receive,Qt::QueuedConnection);
+            const qint64 sendCallUs=m_traceEnabled?captureTimeUs()-sendStart:-1;
+            if(!sent){
+                m_canUnresolved=true;m_recoveryCloseSucceeded=false;
+                error=m_traceFailed?"Trace failed: evidence incomplete":m_can->lastErrorText();
+                const auto writeStatus=m_can->lastErrorCode();
+                if(m_traceEnabled){TraceTiming timing;timing.hardwareOperation=QString("CAN_WRITE_STATUS_0x%1").arg(writeStatus,0,16);timing.hardwareDurationUs=sendCallUs;if(!traceRecord("PROFILE",0,0,{},false,timing)){error="Trace failed: evidence incomplete";return false;}}
+                const auto state=m_can->classifyStatus(writeStatus);const auto generation=m_session?m_session->generation():0;
+                if(state!=CanBusState::Ready&&state!=CanBusState::Unsupported)QTimer::singleShot(0,this,[this,state,generation,error]{
+                    if(m_session&&m_session->state()==ConnectionState::Connected&&m_session->generation()==generation)handleCanState(state,error);
+                });
+                return false;
+            }
+            m_canEchoes.enqueue({m_canTransport.get(),token,frame,sendCallUs,generation});
+            if(!m_receivePump->isActive())m_receivePump->start(0);
             return true;
         }));
+        connect(m_canTransport.get(),&boot::DiagnosticTransport::failed,this,[this](const QString &){
+            if(!m_canEchoes.isEmpty()||(m_uds&&m_uds->hasActiveRequest()&&m_udsWriteAttempted)){m_canUnresolved=true;m_recoveryCloseSucceeded=false;}
+        });
+        connect(m_canTransport.get(),&boot::CanTransport::deadlineObserved,this,&ChannelWorker::traceDeadline);
         if(m_canEcu){m_canEcu->attach(*m_canTransport);
             connect(m_canEcu.get(),&boot::SimulatedCanEcu::failed,m_canTransport.get(),&boot::CanTransport::linkFailed);
         }
         connect(m_canTransport.get(),&boot::CanTransport::trace,this,[this](bool tx,const boot::CanFrame &frame){
             if(!m_settings.simulation&&!tx)return;
-            if(tx&&!traceRecord("TX request",frame.id,frame.data.size(),frame.data))return;
+            TraceTiming traceTiming;traceTiming.frameFormat=frame.extended?"EXT":"STD";
+            if(tx&&!traceRecord("TX request",frame.id,frame.data.size(),frame.data,true,traceTiming))return;
             FrameRecord f;stampFrame(f);f.channel=m_settings.softwareId;
             f.direction=(m_settings.simulation?QString("SIM "):QString())+(tx?"TX":"RX");f.identifier=QString("0x%1").arg(frame.id,frame.extended?8:3,16,QChar('0')).toUpper();
             f.data=QString::fromLatin1(frame.data.toHex(' ')).toUpper();f.length=frame.data.size();
@@ -318,6 +434,8 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
     timing.p2MarginMs=m_settings.p2ServerMs>0?qMax(0,m_settings.p2Ms-m_settings.p2ServerMs):0;
     timing.p2StarMarginMs=m_settings.p2StarServerMs>0?qMax(0,m_settings.p2StarMs-m_settings.p2StarServerMs):0;
     m_uds.reset(new boot::UdsSession(*network,timing));
+    connect(m_uds.get(),&boot::UdsSession::trace,this,[this](bool tx,const QByteArray &){if(tx)m_udsWriteAttempted=false;});
+    connect(m_uds.get(),&boot::UdsSession::deadlineObserved,this,&ChannelWorker::traceDeadline);
     if(manual)connect(m_uds.get(),&boot::UdsSession::activityChanged,this,[this](bool active){
         if(active)m_operations.acquire(OperationCoordinator::Task::Diagnostic);else m_operations.release(OperationCoordinator::Task::Diagnostic);
         emit diagnosticActivity(active);
@@ -351,8 +469,9 @@ bool ChannelWorker::diagnosticMaster(QString &error){
     }return true;
 }
 void ChannelWorker::startSignals(signal::TxPlan plan){
+    if(m_signal)m_signal->setCanEchoTimeout(m_settings.canNetwork.value("nAsMs").toInt(1000));
     auto reject=[&](const QString&why){signal::RunStatus s;s.run=plan.run;s.state=signal::RunState::Faulted;s.detail=why;emit signalStatus(s);emit logMessage(why);};
-    if(m_traceEnabled){reject("Signal transmission is disabled in trace mode.");return;}
+    if(m_traceEnabled&&(m_traceFailed||plan.bus!=signal::Bus::Can||m_settings.simulation||plan.replay)){reject("Trace mode permits only physical CAN signal transmission with a healthy log; replay remains disabled.");return;}
     // Queued commands from a stopped run must never restart it, even if the
     // connection generation has not changed. Do not disturb a newer run's UI.
     if(!plan.run||plan.run<=m_lastSignalRun){emit logMessage("忽略已失效的信号启动命令");return;}
@@ -362,15 +481,26 @@ void ChannelWorker::startSignals(signal::TxPlan plan){
        !m_operations.permits(OperationCoordinator::Task::Signal)||(m_signal&&m_signal->running())){
         reject("信号任务被拒绝：通道未连接、代次已变化或任务冲突");return;
     }
-    clearProtocol();m_canEchoes.clear(); // Also destroys idle TesterPresent timers.
+    if(m_canBlocked||!m_canEchoes.isEmpty()){reject("CAN fault or an earlier diagnostic frame is unresolved; no frame submitted");return;}
+    clearProtocol(); // Also destroys idle TesterPresent timers; outstanding frames must be confirmed first.
     if(!m_operations.acquire(OperationCoordinator::Task::Signal)){reject("通道正在执行其他任务");return;}
     if(plan.replay)plan.replayStampOffsetUs=m_traceOffsetUs;
+    m_signal->guardedCanSend={};
+    if(m_traceEnabled)m_signal->guardedCanSend=[this](const signal::TxItem &item,QString &error){
+        if(m_traceFailed||!m_can){error="Trace failed: evidence incomplete";return false;}
+        TPCANMsg message={};message.ID=item.id;message.MSGTYPE=item.extended?PCAN_MESSAGE_EXTENDED:PCAN_MESSAGE_STANDARD;message.LEN=BYTE(item.payload.size());
+        std::memcpy(message.DATA,item.payload.constData(),size_t(item.payload.size()));
+        const bool sent=m_safeTrace.sendSignal(item.id,item.payload,item.extended,QDateTime::currentMSecsSinceEpoch(),captureTimeUs(),[this,&message]{return m_can->sendRaw(message);});
+        if(!sent){if(!m_safeTrace.healthy()){traceFailure();error="Trace failed: evidence incomplete";}else error=m_can->lastErrorText();return false;}
+        return true;
+    };
     m_signal->start(plan,m_settings.bitrate,m_settings.simulation,m_can.get(),m_lin.get());
 }
 void ChannelWorker::stopSignals(quint64 run){if(m_signal)m_signal->stop(run);}
 void ChannelWorker::updateSignalPayload(signal::PayloadUpdate update){if(m_session&&update.connection==m_session->generation()&&m_signal)m_signal->update(update);}
 void ChannelWorker::switchSignalSchedule(quint64 run,QString name){if(m_signal)m_signal->switchSchedule(run,name);}
 void ChannelWorker::publishFrames(FrameBatch batch){
+    for(auto&r:batch)normalizeFramePresentation(r);
     for(auto &r:batch){if(!r.replay)r.captureUs+=m_traceOffsetUs;r.captureUs=qMax(m_lastCaptureUs,r.captureUs);m_lastCaptureUs=r.captureUs;if(r.replay)m_traceOffsetUs=qMax(m_traceOffsetUs,r.captureUs-captureTimeUs());if(!r.typed){r.id=r.identifier.toUInt(nullptr,16);r.payload=QByteArray::fromHex(r.data.toLatin1());r.typed=true;}}
     emit observedFrames(batch);
     for(int i=batch.size()-1;i>=0;--i)if(batch[i].monitorHidden)batch.removeAt(i);
@@ -390,6 +520,7 @@ void ChannelWorker::projectSignalEvents(const signal::BusFrameEvents &events){
 }
 void ChannelWorker::sendDiagnostic(ChannelSettings settings,diag::Request request){
     auto reject=[this](const QString &error){emit diagnosticFinished(false,{},error);};
+    if(settings.bus==Bus::Can&&(m_canBlocked||m_canUnresolved||!m_canEchoes.isEmpty()||(m_signal&&m_signal->hasUnconfirmedCanFrame()))){reject("CAN fault or an earlier transaction is unresolved; diagnostic not submitted");return;}
     QString error;
     if(m_traceEnabled&&(m_traceFailed||settings.bus!=Bus::Can||settings.simulation)){reject("Trace mode unavailable: evidence incomplete or not physical CAN.");return;}
     if(!m_operations.permits(OperationCoordinator::Task::Diagnostic)||m_running||m_scanning||m_manualBusy||!m_session||m_session->state()!=ConnectionState::Connected){reject("通道未连接或正在执行操作");return;}
@@ -413,6 +544,7 @@ void ChannelWorker::sendDiagnostic(ChannelSettings settings,diag::Request reques
 }
 
 void ChannelWorker::cancelTask() {
+    if(m_settings.bus==Bus::Can&&(!m_canEchoes.isEmpty()||(m_uds&&m_uds->hasActiveRequest()&&m_udsWriteAttempted))){m_canUnresolved=true;m_recoveryCloseSucceeded=false;}
     if(m_signal)m_signal->stop();
     if(m_manualMode&&!m_manualBusy&&m_uds)m_uds->cancel();
     if(m_manualBusy){if(m_uds)m_uds->cancel();m_manualBusy=false;emit diagnosticFinished(false,{},"诊断请求已取消或连接关闭");}
@@ -420,7 +552,7 @@ void ChannelWorker::cancelTask() {
     if(!m_running)return;
     ++m_confirmationId;m_confirmationPending=false;m_stagedApp={};m_stagedDriver={};
     if(m_job)m_job->cancel();
-    m_repeat->stop();m_running=m_waiting=false;
+    m_repeat->stop();m_running=m_waiting=false;m_receive->setInterval(20);
     m_operations.release(OperationCoordinator::Task::Download);
     emit taskChanged(TaskState::Cancelled,m_progress,"下载已取消");
     emit logMessage("用户取消或连接关闭，下载任务已停止。");
@@ -470,28 +602,71 @@ void ChannelWorker::receive() {
         m_receiveDrained=n<64;if(m_receiveDrained)break;
       }while(budget.nsecsElapsed()<2000000);
     } else if(m_can) {
-      do {
-        TPCANMsg messages[64]={};TPCANTimestamp stamps[64]={};const auto n=m_can->recvRaw(64,messages,stamps);
-        const auto status=m_can->lastErrorCode();
-        if(m_canTransport&&status!=PCAN_ERROR_OK&&status!=PCAN_ERROR_QRCVEMPTY)m_canTransport->linkFailed(m_can->lastErrorText());
-        if(m_signal&&status!=PCAN_ERROR_OK&&status!=PCAN_ERROR_QRCVEMPTY)m_signal->linkFailed(m_can->lastErrorText());
+      {
+        TPCANMsg messages[64]={};TPCANTimestamp stamps[64]={};QElapsedTimer readTimer;if(m_traceEnabled)readTimer.start();const auto n=m_can->recvRaw(64,messages,stamps);
+        const qint64 readDurationUs=m_traceEnabled?readTimer.nsecsElapsed()/1000:-1;
+        const qint64 readEndUs=m_traceEnabled?captureTimeUs():-1;
+        // Avoid synchronous trace writes for routine empty polls while retaining
+        // slow empty reads that can explain gaps before the next received frame.
+        if(m_traceEnabled&&n==0&&readDurationUs>=10000){TraceTiming timing;timing.hardwareOperation="CAN_READ_EMPTY_SLOW";timing.hardwareDurationUs=readDurationUs;if(!traceRecord("PROFILE",0,0,{},false,timing))return;}
+        const auto status=m_can->lastErrorCode();const auto statusText=m_can->lastErrorText();
+        const auto observed=m_can->classifyStatus(status);
+        QElapsedTimer statusTimer;if(m_traceEnabled)statusTimer.start();
+        const auto polled=m_can->busState();
+        const auto liveStatus=m_can->lastErrorCode();
+        const qint64 statusDurationUs=m_traceEnabled?statusTimer.nsecsElapsed()/1000:-1;
+        const bool supported=polled!=CanBusState::Unsupported;
+        bool batchFault=false;
+        if(supported){
+            const auto state=(observed==CanBusState::BusOff||observed==CanBusState::Fatal||observed==CanBusState::Warning)?observed:polled;
+            if(state!=CanBusState::Ready&&!m_canBlocked&&m_traceEnabled){
+                TraceTiming readTiming;readTiming.hardwareOperation=QString("CAN_READ_STATUS_0x%1").arg(status,0,16);readTiming.hardwareDurationUs=readDurationUs;
+                TraceTiming liveTiming;liveTiming.hardwareOperation=QString("CAN_GET_STATUS_0x%1").arg(liveStatus,0,16);liveTiming.hardwareDurationUs=statusDurationUs;
+                if(!traceRecord("PROFILE",0,0,{},false,readTiming)||!traceRecord("PROFILE",0,0,{},false,liveTiming))return;
+            }
+            batchFault=handleCanState(state,statusText);
+        }else{
+            batchFault=status!=PCAN_ERROR_OK&&status!=PCAN_ERROR_QRCVEMPTY;
+            if(m_canTransport&&batchFault)m_canTransport->linkFailed(statusText);
+            if(m_signal&&batchFault)m_signal->linkFailed(statusText);
+        }
+        // A status frame can follow data in the same hardware batch. Stop the
+        // transaction before delivering any part of a faulted batch.
+        for(DWORD i=0;i<n;++i){
+            const auto reported=m_can->statusFrame(messages[i]);
+            if(reported!=CanBusState::Unsupported&&reported!=CanBusState::Ready){
+                if(!m_canBlocked&&m_traceEnabled){
+                    const auto &m=messages[i];const quint32 raw=(quint32(m.DATA[0])<<24)|(quint32(m.DATA[1])<<16)|(quint32(m.DATA[2])<<8)|quint32(m.DATA[3]);
+                    TraceTiming timing;timing.hardwareOperation=QString("CAN_STATUS_FRAME_0x%1").arg(raw,0,16);timing.hardwareDurationUs=readDurationUs;
+                    if(!traceRecord("PROFILE",0,0,{},false,timing))return;
+                }
+                batchFault=handleCanState(reported,"PCAN status frame")||batchFault;
+            }
+        }
         for(DWORD i=0;i<n;++i) {
             const auto &m=messages[i];
             boot::CanFrame frame{m.ID,bool(m.MSGTYPE&PCAN_MESSAGE_EXTENDED),bool(m.MSGTYPE&PCAN_MESSAGE_RTR),bool(m.MSGTYPE&(PCAN_MESSAGE_ERRFRAME|PCAN_MESSAGE_STATUS)),bool(m.MSGTYPE&PCAN_MESSAGE_FD),QByteArray(reinterpret_cast<const char*>(m.DATA),qMin(int(m.LEN),8))};
             const bool echo=m.MSGTYPE&PCAN_MESSAGE_ECHO;
             signal::BusFrameEvent event;event.bus=signal::Bus::Can;event.id=m.ID;event.extended=frame.extended;event.bytes=frame.data;
-            event.valid=!frame.error&&!frame.rtr&&!frame.fd&&m.LEN<=8;event.source=echo?signal::EventSource::HardwareEcho:signal::EventSource::Received;
+            event.rtr=frame.rtr;event.length=m.LEN;event.valid=!frame.error&&!frame.fd&&m.LEN<=8;event.source=echo?signal::EventSource::HardwareEcho:signal::EventSource::Received;
             event.hardwareUs=(quint64(stamps[i].millis_overflow)<<32)*1000+quint64(stamps[i].millis)*1000+stamps[i].micros;
             event.arrivalUs=captureTimeUs();event.detail=event.valid?"CAN 总线帧":"CAN 状态/错误/非经典数据帧";events.append(event);
-            if(!traceRecord(echo?"TX echo":"RX",m.ID,m.LEN,frame.data,event.valid))return;
-            if(frame.error&&m_signal)m_signal->linkFailed(event.detail);
+            int echoIndex=-1;
+            if(echo)for(int k=0;k<m_canEchoes.size();++k){const auto &pending=m_canEchoes[k];
+                if(pending.frame.id==frame.id&&pending.frame.extended==frame.extended&&pending.frame.data==frame.data){echoIndex=k;break;}
+            }
+            if(echoIndex>=0&&(echoIndex>0||!m_session||m_canEchoes[echoIndex].generation!=m_session->generation())){
+                m_canUnresolved=true;m_recoveryCloseSucceeded=false;batchFault=true;echoIndex=-1;
+                if(m_canTransport)m_canTransport->linkFailed("CAN transmit echoes arrived out of order");
+            }
+            TraceTiming timing;timing.driverTimestampUs=qint64(event.hardwareUs);timing.hostReadEndUs=readEndUs;timing.hardwareOperation="CAN_READ_BATCH";timing.hardwareDurationUs=readDurationUs;
+            timing.frameFormat=frame.extended?"EXT":"STD";if(frame.rtr)timing.frameFormat+="|RTR";if(frame.error)timing.frameFormat+="|ERR";if(frame.fd)timing.frameFormat+="|FD";
+            if(echoIndex>=0)timing.sendCallUs=m_canEchoes[echoIndex].sendCallUs;
+            if(!traceRecord(echo?"TX echo":"RX",m.ID,m.LEN,frame.data,event.valid,timing))return;
+            if(frame.error&&!supported&&m_signal)m_signal->linkFailed(event.detail);
             if(echo){
-                for(int k=0;k<m_canEchoes.size();++k){const auto pending=m_canEchoes[k];
-                    if(pending.frame.id==frame.id&&pending.frame.extended==frame.extended&&pending.frame.data==frame.data){
-                        m_canEchoes.removeAt(k);if(pending.owner)pending.owner->confirmTransmitted(pending.token);break;
-                    }
-                }
-            }else if(m_canTransport){
+                if(echoIndex>=0){const auto pending=m_canEchoes[echoIndex];m_canEchoes.removeAt(echoIndex);if(!batchFault&&pending.owner)pending.owner->confirmTransmitted(pending.token);}
+            }else if(!batchFault&&m_canTransport){
                 if(frame.error)m_canTransport->linkFailed("CAN 总线错误或状态帧");
                 else m_canTransport->receiveFrame(frame);
             }
@@ -500,15 +675,18 @@ void ChannelWorker::receive() {
             r.echo=echo;r.hardwareUs=event.hardwareUs;r.error=frame.error||frame.fd||m.LEN>8;r.errorFlags=m.MSGTYPE;
             r.channel=m_settings.softwareId;r.direction=echo?"TX ECHO":"RX";r.identifier=QString("0x%1").arg(m.ID,0,16).toUpper();
             r.length=m.LEN;r.data=QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(m.DATA),qMin(int(m.LEN),8)).toHex(' ')).toUpper();
-            r.status=frame.fd?"当前经典 CAN 接口无法完整采集 CAN FD":(m.MSGTYPE&PCAN_MESSAGE_STATUS)?"硬件状态":"CAN";r.warning=m.MSGTYPE&PCAN_MESSAGE_STATUS;batch.append(r);
+            r.status=frame.fd?"当前经典 CAN 接口无法完整采集 CAN FD":(m.MSGTYPE&PCAN_MESSAGE_STATUS)?"硬件状态":"CAN";r.hardwareStatus=bool(m.MSGTYPE&PCAN_MESSAGE_STATUS);r.warning=m.MSGTYPE&PCAN_MESSAGE_STATUS;batch.append(r);
         }
-        if(n<64)break;
-      }while(budget.nsecsElapsed()<2000000);
+        // Yield after at most 64 CAN frames; a full batch schedules an
+        // immediate continuation below even if no further event arrives.
+        m_receiveDrained=n<64;
+      }
     }
     if(!batch.isEmpty())publishFrames(batch);
-    if(!events.isEmpty()){if(m_signal)m_signal->observe(events);emit busEvents(events);}
-    if(!m_canEchoes.isEmpty()||!m_receiveDrained){
-        QMetaObject::invokeMethod(this,&ChannelWorker::receive,Qt::QueuedConnection);
+    if(!events.isEmpty()){if(m_signal&&!m_canBlocked)m_signal->observe(events);emit busEvents(events);}
+    if(!m_receiveDrained){if(!m_receivePump->isActive())m_receivePump->start(0);}
+    else if(!m_canNotifier&&!m_canEchoes.isEmpty()&&m_canTransport&&m_canTransport->busy()){
+        if(!m_receivePump->isActive())m_receivePump->start(1);
     }
 }
 void ChannelWorker::startHeaderScan() {
@@ -540,6 +718,7 @@ void ChannelWorker::scanTick() {
 }
 void ChannelWorker::stopScan(const QString &text){m_scan->stop();m_scanning=false;m_operations.release(OperationCoordinator::Task::Scan);emit scanChanged(false,text);emit logMessage(text);}
 void ChannelWorker::shutdown() {
+    stopReceiveNotifier();
     if(m_signal){m_signal->stop();m_signal.reset();}
     clearProtocol();
     if(m_receive)m_receive->stop();

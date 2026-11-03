@@ -27,4 +27,10 @@ inline bool suppressesPositiveResponse(const QString &id){
     return id=="pre1003control"||id=="pre8502"||id=="pre2803"||
         id=="post2800"||id=="post8501"||id=="post1001";
 }
+inline bool requiresNegativeResponseCheck(const QString &id){
+    return id=="pre2701"||id=="bootSeed"||id=="driver34"||id=="driver36"||id=="driver37"||id=="app34"||id=="app36"||id=="app37";
+}
+inline bool fixedUncheckedTimeout(const QString &id){
+    return id=="pre2701"||id=="pre2702"||id=="bootSeed"||id=="bootKey"||id=="driver34"||id=="app34";
+}
 }

@@ -129,6 +129,21 @@ private slots:
     void sourceUtf8AndMalformedDbc(){QVERIFY(!DatabaseImporter::dbc("BO_ invalid").database);QByteArray bad=bytes("dbc");bad.append(char(0xff));QVERIFY(!DatabaseImporter::dbc(bad).database);
         const auto source=bytes("dbc");const auto digest=QCryptographicHash::hash(source,QCryptographicHash::Sha256);auto db=dbc();QVERIFY(db);QCOMPARE(db->sha256,QString::fromLatin1(digest.toHex()));QCOMPARE(bytes("dbc"),source);
     }
+    void schedulerPauseRetainsIntentAndDropsExpiredCycles(){
+        CanTxScheduler s;s.start({{"a",1,false,QByteArray(1,'a'),1,1,{},false,true}},0);
+        int sent=0;QByteArray payload;auto send=[&](const TxItem&i,QString&){++sent;payload=i.payload;return true;};
+        QCOMPARE(s.pump(0,send),1);s.setPaused(true,1000);s.update("a",{QByteArray(1,'b'),2});
+        QCOMPARE(s.pump(1000000,send),0);QVERIFY(s.running());s.setPaused(false,1000000);
+        QCOMPARE(s.pump(1000000,send),1);QCOMPARE(s.pump(1000000,send),0);QCOMPARE(sent,2);QCOMPARE(payload,QByteArray(1,'b'));
+        s.stop();s.setPaused(false,2000000);QCOMPARE(s.pump(2000000,send),0);
+    }
+    void schedulerTransientFailureRemainsScheduled(){
+        CanTxScheduler s;s.start({{"a",1,false,QByteArray(1,0),1,1,{},false,true}},0);int attempts=0;bool paused=false;
+        auto send=[&](const TxItem&,QString&e){if(++attempts==1){paused=true;s.setPaused(true,0);e="bus passive";return false;}return true;};
+        auto retry=[&]{return paused;};QCOMPARE(s.pump(0,send,1,retry),1);QVERIFY(s.statistics().failures.isEmpty());
+        QCOMPARE(s.pump(1000000,send,1,retry),0);paused=false;s.setPaused(false,1000000);
+        QCOMPARE(s.pump(1000000,send,1,retry),1);QCOMPARE(attempts,2);QVERIFY(s.running());
+    }
     void deadlinesDropMissesAndRespectBudget(){CanTxScheduler scheduler;QVector<TxItem>items;for(int i=0;i<1000;++i)items.append({QString::number(i),quint32(i),false,QByteArray(1,0),1,1,{},{}});
         scheduler.start(items,0);int sends=0;auto send=[&](const TxItem&,QString&){++sends;return true;};QCOMPARE(scheduler.pump(0,send,100),100);QCOMPARE(sends,100);
         QCOMPARE(scheduler.pump(10000,send,1000),1000);QCOMPARE(sends,1100);QCOMPARE(scheduler.statistics().missed.value("0"),quint64(9));QCOMPARE(scheduler.statistics().missed.value("999"),quint64(10));
