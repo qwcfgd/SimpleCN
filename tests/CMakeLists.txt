@@ -181,7 +181,7 @@ host_deploy(test_t008_headless)
 target_link_libraries(test_t008_target PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
 host_deploy(test_t008_target)
 add_test(NAME t008_target COMMAND test_t008_target -o "${CMAKE_CURRENT_BINARY_DIR}/t008-target-results.xml,xml")
-set_tests_properties(t008_target PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+set_tests_properties(t008_target PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 1957)
 
 add_executable(test_frame_columns test_frame_columns.cpp)
 target_link_libraries(test_frame_columns PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)

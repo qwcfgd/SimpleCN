@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QFileInfo>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <limits>
 #include "domain/ChannelDefaults.h"
 #include "domain/SignalTypes.h"
@@ -10,7 +11,8 @@ namespace host {
 struct ChannelSettings : ChannelPageInitialValues {
     ChannelSettings();
     QJsonObject signalConfiguration;
-    QString bootAddress="00000000",bootEraseLength="00020000";
+    QJsonArray downloadFiles;
+    QString bootAddress="00005000",bootEraseLength="0000F000";
     bool checkDriverAbi=false,checkAppVersion=false,checkMinimumBoot=false;
     QString expectedDriverAbi="1.4",expectedAppVersion="T008A0001",expectedMinimumBoot="001";
     QString cddPath,cddEcu,cddVariant;
@@ -45,6 +47,9 @@ struct FrameRecord {
 };
 using FrameBatch=QVector<FrameRecord>;
 enum class TaskState {Idle,Running,Completed,Cancelled,Failed};
+// Resolve legacy duplicate file roles to the most recently listed file without
+// changing the stored channel configuration.
+bool effectiveDownloadFiles(const QJsonArray &files,QJsonArray &result);
 QString hardwareDeviceKey(const communication::HardwareChannel &);
 QString connectionText(communication::ConnectionState);
 QString imageDescription(const QString &path);

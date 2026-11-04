@@ -86,7 +86,7 @@ bool ChannelViewModel::setSettings(const ChannelSettings &s) {
     if(busy() || s.bus!=m_settings.bus)return false;
     auto old=m_settings.toJson(),next=s.toJson();
     old.remove("signalConfiguration");next.remove("signalConfiguration");
-    for(const auto &key:{"flashPath","applicationPath","flashAddress","applicationAddress","flashRequired","repeatDownloadEnabled","repeatDownloadCount","repeatDownloadIntervalMs","downloadProfile","cddPath","cddEcu","cddVariant","udsRepeatCount","udsRepeatDelayMs","udsRepeatEnabled"}){old.remove(key);next.remove(key);}
+    for(const auto &key:{"flashPath","applicationPath","downloadFiles","flashAddress","applicationAddress","flashRequired","repeatDownloadEnabled","repeatDownloadCount","repeatDownloadIntervalMs","downloadProfile","cddPath","cddEcu","cddVariant","udsRepeatCount","udsRepeatDelayMs","udsRepeatEnabled"}){old.remove(key);next.remove(key);}
     const bool configurationChanged=old!=next;
     if(connected())for(const auto &key:{"softwareId","hardwareKey","handle","bitrate","simulation","autoReconnect"})if(old.value(key)!=next.value(key))return false;
     SoftwareChannelConfiguration config;QString error;
@@ -147,8 +147,19 @@ QString ChannelViewModel::downloadInputHint() const {
     if(!m_settings.simulation){
         if(m_health!=Health::Ready&&m_health!=Health::Sleeping)return "硬件通道状态异常";
     }
-    if(!imageReady(m_settings.applicationPath))return "请选择有效的 Application 镜像";
-    if(m_settings.flashRequired && !imageReady(m_settings.flashPath))return "此配置需要有效的 Flash Driver 镜像";
+    if(!m_settings.downloadFiles.isEmpty()){
+        QJsonArray files;if(!effectiveDownloadFiles(m_settings.downloadFiles,files))return "下载文件列表无效";
+        bool driver=false,program=false;
+        for(const auto &value:files){const auto row=value.toObject();const auto role=row.value("role").toString();
+            if(!imageReady(row.value("path").toString()))return "请选择有效的下载文件";
+            driver|=role=="driver";program|=role=="boot"||role=="app";
+        }
+        if(!program)return "请选择 Boot 或 Application 镜像";
+        if(!driver)return "此配置需要有效的 Flash Driver 镜像";
+    }else{
+        if(!imageReady(m_settings.applicationPath))return "请选择有效的 Application 镜像";
+        if(!imageReady(m_settings.flashPath))return "此配置需要有效的 Flash Driver 镜像";
+    }
     return {};
 }
 QString ChannelViewModel::startHint() const {

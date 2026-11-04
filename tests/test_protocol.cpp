@@ -223,7 +223,7 @@ private slots:
         QVERIFY(job.start(image(8),{},error));QTRY_COMPARE(transport.requests.size(),1);
         QTRY_COMPARE(sent.size(),1);
         transport.reply(hex("5002"));QTRY_COMPARE(finished.count(),1);
-        QVERIFY(!finished[0][0].toBool());QVERIFY(finished[0][1].toString().contains("seed step disabled"));
+        QVERIFY(!finished[0][0].toBool());QVERIFY(finished[0][1].toString().contains("bootKey requires a valid security seed from bootSeed"));
         QCOMPARE(transport.requests,QList<QByteArray>{hex("1002")});
     }
     void seedAsKeyAppAndBoot_data(){

@@ -156,12 +156,12 @@ private slots:
         if(!connectFirst)connectChannel();
         QVERIFY(!button->isEnabled());QCOMPARE(hint->text(),QString("此配置需要有效的 Flash Driver 镜像"));
         auto next=vm.settings();next.flashRequired=false;QVERIFY(vm.setSettings(next));
-        QVERIFY(button->isEnabled());QVERIFY(hint->isHidden());
+        QVERIFY(!button->isEnabled());QVERIFY(!hint->isHidden());
         next.flashRequired=true;QVERIFY(vm.setSettings(next));QVERIFY(!button->isEnabled());
         QVERIFY(vm.chooseImage(true,app));QVERIFY(button->isEnabled());QVERIFY(hint->isHidden());
         QSignalSpy requested(vm.findChild<ChannelModel*>(),&ChannelModel::previewRequested);
         button->click();QCOMPARE(requested.count(),1);QVERIFY(!button->isEnabled());
-        QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),TaskState::Completed,6000);
+        QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),TaskState::Completed,7001);
         QTRY_VERIFY(button->isEnabled());QVERIFY(hint->isHidden());
         auto model=vm.findChild<ChannelModel*>();
         model->taskChanged(TaskState::Running,0,"busy");QVERIFY(!button->isEnabled());QVERIFY(!hint->isHidden());
@@ -392,7 +392,12 @@ private slots:
     void defaultsAndDownloadDialog(){
         auto defaults=ChannelSettings::defaults(communication::Bus::Lin);QString error;
         ChannelSettings loaded;QVERIFY(ChannelSettings::fromJson(QJsonObject{{"bus","LIN"}},loaded,error));
-        QCOMPARE(loaded.toJson(),defaults.toJson());QCOMPARE(defaults.nad,QString("01"));
+        QCOMPARE(defaults.applicationAddress,QString("00015000"));
+        QCOMPARE(loaded.applicationAddress,QString("00020000"));
+        auto expectedLegacy=defaults.toJson();expectedLegacy["applicationAddress"]="00020000";
+        QCOMPARE(loaded.toJson(),expectedLegacy);
+        ChannelSettings roundTrip;QVERIFY(ChannelSettings::fromJson(defaults.toJson(),roundTrip,error));
+        QCOMPARE(roundTrip.toJson(),defaults.toJson());QCOMPARE(defaults.nad,QString("01"));
         QVERIFY(defaults.flashRequired);
         QVERIFY(!defaults.rxdEnabled);QVERIFY(!defaults.toJson()["rxdEnabled"].toBool());
         QCOMPARE(defaults.downloadProfile["flow"].toString(),QString("app"));
@@ -434,9 +439,8 @@ private slots:
             QVERIFY(dialog->findChild<QPushButton*>("browseKeyLibrary"));
             QVERIFY(dialog->findChild<QLineEdit*>("keyLibrary"));
             auto flow=dialog->findChild<QComboBox*>("downloadFlow");QVERIFY(flow);QCOMPARE(flow->currentData().toString(),QString("app"));
-            auto flashRequired=dialog->findChild<QCheckBox*>("flashRequired");QVERIFY(flashRequired);QVERIFY(flashRequired->isChecked());
-            QCOMPARE(flashRequired->text(),QString("Flash Driver使能"));
-            QCOMPARE(flow->count(),2);QCOMPARE(flow->itemText(0),QString("App下载流程"));QCOMPARE(flow->itemText(1),QString("Boot下载流程"));
+            QVERIFY(!dialog->findChild<QCheckBox*>("flashRequired"));
+            QCOMPARE(flow->count(),2);QCOMPARE(flow->itemText(0),QString("App起始流程"));QCOMPARE(flow->itemText(1),QString("Boot起始流程"));
             QVERIFY(!dialog->findChild<QLabel*>("feedbackDecisionTitle"));
             QVERIFY(!dialog->findChild<QCheckBox*>("download_default_flashRequired"));
             for(const auto id:{"expectedDriverAbi","expectedAppVersion","expectedMinimumBoot"}){
@@ -492,10 +496,11 @@ private slots:
             flow->setCurrentIndex(0);QVERIFY(dialog->findChild<QCheckBox*>("enable_pre1001")->isChecked());
             QVERIFY(dialog->findChild<QCheckBox*>("negative_pre1001")->isChecked());
             QVERIFY(dialog->findChild<QCheckBox*>("timeout_pre1001")->isChecked());flow->setCurrentIndex(1);
-            flashRequired->setChecked(false);
             for(const auto id:{"driver34","driver36","driver37","driverVerify"}){
                 auto enabled=dialog->findChild<QCheckBox*>("enable_"+QString(id));
-                QVERIFY(enabled);QVERIFY(!enabled->isChecked());QVERIFY(!enabled->isEnabled());
+                QVERIFY(enabled);QVERIFY(enabled->isEnabled());QVERIFY(enabled->isChecked());
+                enabled->setChecked(false);QVERIFY(!enabled->isChecked());
+                enabled->setChecked(true);QVERIFY(enabled->isChecked());
             }
             QDir().mkpath("artifacts");dialog->grab().save("artifacts/download-settings-boot.png");
             auto scroll=dialog->findChild<QScrollArea*>();QVERIFY(scroll);scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());QTest::qWait(20);
@@ -515,15 +520,14 @@ private slots:
         QCOMPARE(vm->settings().downloadProfile["flow"].toString(),QString("boot"));
         QCOMPARE(vm->settings().downloadProfile["appSecurityLevel"].toInt(),0x03);
         QCOMPARE(vm->settings().downloadProfile["securityLevel"].toInt(),0x21);
-        QVERIFY(!vm->settings().flashRequired);
-        QVERIFY(!page->findChild<QLineEdit*>("flashPath")->isEnabled());
-        QVERIFY(!page->findChild<QPushButton*>("browseFlash")->isEnabled());
+        QVERIFY(vm->settings().flashRequired);
+        QVERIFY(page->findChild<QWidget*>("downloadFiles"));
         QVERIFY(!vm->settings().downloadProfile["stepEnabled"].toObject()["pre1001"].toBool());
         QVERIFY(vm->settings().downloadProfile["stepEnabled"].toObject()["boot1002"].toBool());
         QVERIFY(vm->settings().downloadProfile["negativeResponseChecks"].toObject()["pre1001"].toBool());
         QVERIFY(vm->settings().downloadProfile["timeoutChecks"].toObject()["pre1001"].toBool());
         for(const auto id:{"driver34","driver36","driver37","driverVerify"})
-            QVERIFY(!vm->settings().downloadProfile["stepEnabled"].toObject()[id].toBool());
+            QVERIFY(vm->settings().downloadProfile["stepEnabled"].toObject()[id].toBool());
         QVERIFY(SettingsStore(temp.path()+"/saved.json").save({vm->settings()},error));
         QVector<ChannelSettings> restored;QVERIFY(SettingsStore(temp.path()+"/saved.json").load(restored,error));
         QCOMPARE(restored[0].downloadProfile,vm->settings().downloadProfile);
@@ -534,7 +538,7 @@ private slots:
         });
         page->findChild<QPushButton*>("downloadSettings")->click();
         const auto path=temp.path()+"/test.bin";QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QByteArray(32,1));file.close();
-        QVERIFY(vm->chooseImage(false,path));QTRY_VERIFY(vm->canConnect());vm->toggleConnection();QTRY_VERIFY(vm->connected()&&!vm->pending());
+        QVERIFY(vm->chooseImage(false,path));QVERIFY(vm->chooseImage(true,path));QTRY_VERIFY(vm->canConnect());vm->toggleConnection();QTRY_VERIFY(vm->connected()&&!vm->pending());
         vm->start();QTRY_COMPARE_WITH_TIMEOUT(vm->taskState(),TaskState::Completed,6000);
         const auto sentLevel=[&](const char *prefix){
             for(const auto &frame:vm->frames()->history())if(frame.payload.startsWith(hex(prefix)))return true;

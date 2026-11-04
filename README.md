@@ -6,14 +6,14 @@
 
 简体中文 · [English](README.en.md) · [GitHub：SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.45-2563eb)
+![Version](https://img.shields.io/badge/version-1.48-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 从数据库信号编辑，到报文监视、日志回放和图像观测，在同一工作台完成。由 OpenAI Codex 协助开发。
 
-[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.45 更新](docs/Release-1.45.md) · [许可说明](docs/Licensing.md)
+[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.48 更新](docs/Release-1.48.md) · [许可说明](docs/Licensing.md)
 
 </div>
 

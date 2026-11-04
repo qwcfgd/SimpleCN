@@ -97,21 +97,31 @@ FlashJob::FlashJob(UdsSession &session,FlashProfile profile,std::unique_ptr<KeyP
     m_deadline.setSingleShot(true);connect(&m_deadline,&QTimer::timeout,this,[this]{fail(QString("T008 total job deadline exceeded (%1ms)").arg(t008::JobDeadlineMs));});
 }
 bool FlashJob::start(const FirmwareImage &app,const FirmwareImage &driver,QString &error){
+    return start(app,driver,FirmwareImage{},error);
+}
+bool FlashJob::start(const FirmwareImage &app,const FirmwareImage &driver,const FirmwareImage &bootBundle,QString &error){
     FlashProfile valid;
-    if(m_running||m_session.busy()||!FlashProfile::fromJson(m_profile.toJson(),valid,error)||!m_key||app.segments.isEmpty()){if(error.isEmpty())error="Job busy or missing application/key provider";return false;}
-    m_segments=driver.segments;m_driverCount=m_segments.size();m_segments+=app.segments;m_total=0;
-    m_isV2=t008::looksLikeImage(app)||t008::looksLikeDriver(driver);
+    if(m_running||m_session.busy()||!FlashProfile::fromJson(m_profile.toJson(),valid,error)||!m_key||(app.segments.isEmpty()&&bootBundle.segments.isEmpty())){if(error.isEmpty())error="Job busy or missing image/key provider";return false;}
+    if(!bootBundle.segments.isEmpty()&&(bootBundle.segments.size()!=1||bootBundle.segments.first().data.size()!=0x1e000)){
+        error="Boot bundle must contain both complete 60 KiB slot images";return false;
+    }
+    m_segments=driver.segments;m_driverCount=m_segments.size();m_bootIndex=-1;m_appIndex=-1;m_total=0;m_bootSlotB.clear();
+    if(!bootBundle.segments.isEmpty()){
+        m_bootIndex=m_segments.size();const auto &bundle=bootBundle.segments.first().data;
+        m_segments.append({0x5000,bundle.left(0xf000)});m_bootSlotB=bundle.mid(0xf000,0xf000);
+    }
+    m_isV2=!bootBundle.segments.isEmpty()||t008::looksLikeImage(app)||t008::looksLikeDriver(driver);
     if(!m_profile.fingerprintData.isEmpty()){
         const auto &fp=m_profile.fingerprintData;
         if(fp.size()!=19){error="F184 requires exactly 19 bytes";return false;}
         QString fpError;const QDate date(2000+quint8(fp[0]),quint8(fp[1]),quint8(fp[2]));
         if(t008::fingerprint(date,fp.mid(3),fpError).isEmpty()){error=fpError;return false;}
     }
-    if(m_profile.isT008()||m_isV2){
+    if(!app.segments.isEmpty()&&(m_profile.isT008()||m_isV2)){
         if(!t008::images(app,driver,m_targetPlan,error))return false;
         if((m_profile.enabled("driver36")&&!m_profile.enabled("driver34"))||(m_profile.enabled("app36")&&!m_profile.enabled("app34"))){error="TransferData requires RequestDownload";return false;}
-        m_segments=driver.segments;m_driverCount=m_segments.size();m_segments+=m_targetPlan.application;
-    }
+        m_appIndex=m_segments.size();m_segments+=m_targetPlan.application;
+    }else if(!app.segments.isEmpty()){m_appIndex=m_segments.size();m_segments+=app.segments;}
     for(int i=0;i<m_segments.size();++i){
         const auto &s=m_segments[i];const quint64 end=quint64(s.address)+quint64(s.data.size());
         if(s.data.isEmpty()||end>0x100000000ULL){error="Invalid image segment";return false;}
@@ -131,7 +141,8 @@ void FlashJob::ask(const QByteArray &request,const QByteArray &expected,std::fun
         QString why;if(m_profile.isT008()&&!t008::response(request,pdu,false,why)){fail(why);return;}next(pdu);
     }))fail("UDS request rejected by session");
 }
-void FlashJob::step(const QString &id,const QByteArray &request,const QByteArray &expected,std::function<void(const QByteArray &)> next,bool requiredData){
+void FlashJob::step(const QString &id,const QByteArray &request,const QByteArray &expected,std::function<void(const QByteArray &)> next,bool requiredData,
+                    std::function<bool(const QByteArray &)> specialNegative,QByteArray recoverableNegative){
     if(!m_running||!withinDeadline())return;report(id);const auto epoch=m_epoch;
     const auto text=stepText(id);
     if(!m_profile.enabled(id)){
@@ -146,7 +157,7 @@ void FlashJob::step(const QString &id,const QByteArray &request,const QByteArray
     const bool checkTimeout=m_profile.checksTimeout(id);
     const bool suppressed=suppressesPositiveResponse(id);
     const qint64 started=QDateTime::currentMSecsSinceEpoch();emit stepEvent(text+"发送");
-    if(!m_session.request(request,expected,[this,epoch,id,text,started,suppressed,checkNegative,checkTimeout,requiredData,next,request](bool ok,const QByteArray &pdu,const QString &error){
+    if(!m_session.request(request,expected,[this,epoch,id,text,started,suppressed,checkNegative,checkTimeout,requiredData,next,request,specialNegative](bool ok,const QByteArray &pdu,const QString &error){
         if(!m_running||epoch!=m_epoch||!withinDeadline())return;
         const bool negative=pdu.size()==3&&quint8(pdu[0])==0x7f&&quint8(pdu[2])!=0x78;
         const bool timeout=error.contains("timeout",Qt::CaseInsensitive)||error.contains("deadline",Qt::CaseInsensitive);
@@ -159,6 +170,7 @@ void FlashJob::step(const QString &id,const QByteArray &request,const QByteArray
         else if(ok)emit stepEvent(text+(suppressed&&pdu.isEmpty()?"正响应抑制完成":"正响应"));
         else emit stepEvent(text+"响应异常");
         if(!ok){
+            if(negative&&specialNegative&&specialNegative(pdu))return;
             if(!checkNegative&&negative){++m_ignored;emit notice(id+" · 已忽略负响应");next({});return;}
             if(!checkTimeout&&responseTimeout){
                 ++m_ignored;m_unresolvedSids.insert(quint8(request[0]));emit notice(id+" · 已忽略响应超时");next({});return;
@@ -168,7 +180,7 @@ void FlashJob::step(const QString &id,const QByteArray &request,const QByteArray
         }
         QString why;if(m_profile.isT008()&&!t008::response(request,pdu,suppressed,why)){fail(id+": "+why);return;}
         next(pdu);
-    },suppressed))fail("UDS request rejected by session");
+    },suppressed,false,std::move(recoverableNegative)))fail("UDS request rejected by session");
 }
 void FlashJob::enterProgramming(){
     const QByteArray req=QByteArray(1,char(0x10))+char(m_profile.flow=="legacy"?m_profile.session:2);
@@ -228,7 +240,12 @@ void FlashJob::nextSegment(){
     if(m_index>=m_segments.size()){finalSteps();return;}
     const auto &s=m_segments[m_index];m_offset=0;m_sequence=1;m_transferPacket=0;
     if(m_index<m_driverCount){report("Flash driver");download();return;}
-    if(m_index>m_driverCount){download();return;}
+    if(m_index==m_bootIndex){
+        report("Erase Boot slot");
+        const auto req=routine(m_profile.eraseRoutine)+char(0x44)+be32(m_profile.bootEraseBase)+be32(m_profile.bootEraseLength);
+        step("erase",req,positive(req,4)+char(0),[this](const QByteArray &){download();});return;
+    }
+    if(m_index!=m_appIndex){download();return;}
     report("Erase application segment");
     const auto req=routine(m_profile.eraseRoutine)+char(0x44)+be32(m_profile.applicationEraseBase)+be32(m_profile.applicationEraseLength);
     step("erase",req,positive(req,4)+char(0),[this](const QByteArray &){download();});
@@ -254,7 +271,12 @@ void FlashJob::download(){
             m_blockSize=1024;
         }
         block();
-    },true);
+    },true,[this,req](const QByteArray &pdu){
+        if(m_index!=m_bootIndex||req!=QByteArray::fromHex("340044000050000000f000")||
+           pdu!=QByteArray::fromHex("7f3470")||m_bootSlotB.size()!=0xf000)return false;
+        emit notice("Boot slot A unavailable (NRC 70); trying slot B");
+        m_segments[m_index]={0x6d000,std::move(m_bootSlotB)};m_bootSlotB.clear();download();return true;
+    },m_index==m_bootIndex&&s.address==0x5000&&!m_bootSlotB.isEmpty()?QByteArray::fromHex("7f3470"):QByteArray());
 }
 void FlashJob::block(){
     const auto &s=m_segments[m_index];
@@ -275,21 +297,27 @@ void FlashJob::block(){
 }
 void FlashJob::verify(){
     const auto &s=m_segments[m_index];report((m_isV2||m_profile.isT008())?"Verification service response (algorithm not implemented)":"Verify segment CRC32");
-    const auto req=routine(m_profile.verifyRoutine)+be32(s.address)+be32(quint32(s.data.size()))+be32(crc32(s.data));
-    step(m_index<m_driverCount?"driverVerify":"appVerify",req,positive(req,4)+char(0),[this](const QByteArray &){++m_index;nextSegment();});
+    const auto req=routine(m_profile.verifyRoutine)+be32(s.address)+be32(quint32(s.data.size()))+
+        ((m_isV2||m_profile.isT008())?QByteArray(4,'\0'):be32(crc32(s.data)));
+    step(m_index<m_driverCount?"driverVerify":"appVerify",req,positive(req,4)+char(0),[this](const QByteArray &){
+        if(m_index==m_bootIndex){
+            const auto commit=routine(m_profile.dependencyRoutine);
+            step("dependency",commit,positive(commit,4)+char(0),[this](const QByteArray &){++m_index;if(m_index>=m_segments.size())resetAfterTransfers();else nextSegment();});
+        }else{++m_index;nextSegment();}
+    });
 }
 void FlashJob::finalSteps(){
-    auto reset=[this]{
-        step("reset",QByteArray::fromHex("1101"),QByteArray::fromHex("5101"),[this](const QByteArray &){
-            const auto epoch=m_epoch;
-            QTimer::singleShot(m_profile.resetWaitMs,this,[this,epoch]{
-                if(!m_running||epoch!=m_epoch)return;
-                if(m_profile.flow=="legacy")identify();else postSteps(0);
-            });
-        });
-    };
     const auto req=routine(m_profile.dependencyRoutine);
-    step("dependency",req,positive(req,4)+char(0),[reset](const QByteArray &){reset();});
+    step("dependency",req,positive(req,4)+char(0),[this](const QByteArray &){resetAfterTransfers();});
+}
+void FlashJob::resetAfterTransfers(){
+    step("reset",QByteArray::fromHex("1101"),QByteArray::fromHex("5101"),[this](const QByteArray &){
+        const auto epoch=m_epoch;
+        QTimer::singleShot(m_profile.resetWaitMs,this,[this,epoch]{
+            if(!m_running||epoch!=m_epoch)return;
+            if(m_profile.flow=="legacy")identify();else postSteps(0);
+        });
+    });
 }
 void FlashJob::postSteps(int index){
     static const char *ids[]={"post1003","post14","post2800","post8501","post1001"};

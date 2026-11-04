@@ -94,7 +94,7 @@ private:
     QObject *m_canNotifier=nullptr;
     qint64 m_traceOffsetUs=0,m_lastCaptureUs=0;
     bool m_running=false,m_scanning=false,m_waiting=false;
-    boot::FirmwareImage m_stagedApp,m_stagedDriver;quint64 m_confirmationId=0;bool m_confirmationPending=false;
+    boot::FirmwareImage m_stagedApp,m_stagedDriver,m_stagedBoot;quint64 m_confirmationId=0;bool m_confirmationPending=false;
     int m_round=0,m_totalRounds=1;
     int m_progress=0,m_scanId=0,m_scanSent=0,m_scanEvents=0,m_scanResponses=0,m_scanErrors=0;
     QString m_receiveError;

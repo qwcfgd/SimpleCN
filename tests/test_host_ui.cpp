@@ -598,11 +598,12 @@ private slots:
         QTRY_COMPARE(qvariant_cast<TaskState>(tasks.last()[0]),TaskState::Cancelled);
         const int count=frames.size();QTest::qWait(100);QCOMPARE(frames.size(),count);worker.shutdown();
         QString error;ChannelSettings restored;QVERIFY(ChannelSettings::fromJson(settings.toJson(),restored,error));
-        auto migrated=settings.downloadProfile;migrated["flow"]="app";
-        migrated["stepEnabled"]=ChannelPageInitialValues::initialStepEnabled("app");
-        migrated["negativeResponseChecks"]=ChannelPageInitialValues::initialDownloadProfile()["negativeResponseChecks"];
-        migrated["timeoutChecks"]=ChannelPageInitialValues::initialDownloadProfile()["timeoutChecks"];
-        QCOMPARE(restored.downloadProfile,migrated);
+        const auto normalized=settings.toJson().value("downloadProfile").toObject();
+        QCOMPARE(normalized.value("consecutiveFrameByteLimit").toInt(),34);
+        QVERIFY(!normalized.contains("blockDataLimit"));
+        QCOMPARE(restored.downloadProfile,normalized);
+        ChannelSettings roundTrip;QVERIFY(ChannelSettings::fromJson(restored.toJson(),roundTrip,error));
+        QCOMPARE(roundTrip.downloadProfile,normalized);
     }
     void canDownloadUsesIsoTpAndPersistsProfile() {
         MainWindow window(m_temp.path()+"/can-stage4.json",true);
@@ -610,7 +611,7 @@ private slots:
         auto vm=window.canChannel();QTRY_VERIFY(vm->canConnect());
         auto settings=vm->settings();settings.extendedId=true;settings.requestId="18DA10F1";settings.responseId="18DAF110";
         settings.flashRequired=false;settings.p2Ms=30;settings.p2StarMs=60;
-        settings.applicationPath=fixture("can-stage4.bin",128);
+        settings.applicationPath=fixture("can-stage4.bin",128);settings.flashPath=fixture("can-stage4-driver.bin",128);
         settings.canNetwork=QJsonObject{{"blockSize",1},{"stMin",2},{"maxWaitFrames",1}};
         QVERIFY(vm->setSettings(settings));vm->toggleConnection();QTRY_VERIFY(vm->connected()&&!vm->pending());
         vm->start();QTRY_COMPARE_WITH_TIMEOUT(vm->taskState(),TaskState::Completed,5000);
@@ -810,7 +811,7 @@ private slots:
         QVERIFY2(window.width()<=client.width() && window.height()<=client.height(),
             qPrintable(QString("minimum %1x%2 exceeds %3x%4 at DPR %5").arg(window.width()).arg(window.height()).arg(client.width()).arg(client.height()).arg(dpr)));
         auto page=window.findChild<ChannelPage*>("linPage");
-        for(const QString &name:{"imageRegion","taskRegion","startButton","applicationPath","flashPath","downloadProgress","frameTable","eventLog"}){
+        for(const QString &name:{"imageRegion","taskRegion","startButton","downloadFiles","addDownloadFiles","removeDownloadFiles","defaultDownloadFiles","downloadProgress","frameTable","eventLog"}){
             auto w=page->findChild<QWidget*>(name);QVERIFY(w);QVERIFY(w->isVisible());
             const QRect rect(w->mapTo(&window,QPoint()),w->size());
             QVERIFY2(window.rect().contains(rect),qPrintable(name+" outside window"));
@@ -836,7 +837,7 @@ private slots:
         auto first=window.canChannel();auto firstSettings=first->settings();firstSettings.flashRequired=false;QVERIFY(first->setSettings(firstSettings));
         auto s=preview(Bus::Can);s.softwareId="CAN02";
         auto second=window.addChannel(s,error);QVERIFY(second);QTRY_VERIFY(first->canConnect());
-        QVERIFY(first->chooseImage(false,fixture()));first->toggleConnection();QTRY_VERIFY(first->connected() && !first->pending());
+        QVERIFY(first->chooseImage(false,fixture()));QVERIFY(first->chooseImage(true,fixture("delete-driver.bin",128)));first->toggleConnection();QTRY_VERIFY(first->connected() && !first->pending());
         QTRY_VERIFY(second->canConnect());second->toggleConnection();QTRY_VERIFY(second->connected() && !second->pending());
         const auto released=first->settings().handle,remaining=second->settings().handle;
         first->start();QTRY_VERIFY(first->taskState()==TaskState::Running && !first->pending());
@@ -889,7 +890,7 @@ private slots:
         auto vm=window.canChannel();auto page=window.findChild<ChannelPage*>("canPage");
         auto noDriver=vm->settings();noDriver.flashRequired=false;noDriver.p2Ms=30;noDriver.p2StarMs=60;QVERIFY(vm->setSettings(noDriver));
         QVERIFY(!page->findChild<QPushButton*>("browseFlashDirectory"));QVERIFY(!page->findChild<QPushButton*>("browseApplicationDirectory"));
-        QTRY_VERIFY(vm->canConnect());QVERIFY(vm->chooseImage(false,fixture()));
+        QTRY_VERIFY(vm->canConnect());QVERIFY(vm->chooseImage(false,fixture()));QVERIFY(vm->chooseImage(true,fixture("wait-driver.bin",128)));
         vm->toggleConnection();QTRY_VERIFY(vm->connected() && !vm->pending());
         auto button=page->findChild<QPushButton*>("downloadSettings");QVERIFY(button->isEnabled());
         QTimer::singleShot(30,&window,[&](){

@@ -59,4 +59,38 @@ bool FirmwareImage::load(const QString &path,quint32 base,FirmwareImage &out,QSt
     if(!result.size)return fail("Image has no data");
     result.sha256=hash.result();out=std::move(result);return true;
 }
+FirmwareImage::Kind FirmwareImage::identify(const FirmwareImage &image){
+    if(image.segments.isEmpty())return Kind::Unknown;
+    const auto &first=image.segments.first();
+    if(first.data.startsWith("T008DRV1"))return Kind::Driver;
+    if(first.data.startsWith("T008APP2"))return Kind::Application;
+    constexpr quint32 slotSize=0xf000,slotA=0x5000,slotB=0x6d000;
+    if(image.segments.size()==2 && first.address==slotA && first.data.size()==int(slotSize) &&
+       image.segments[1].address==slotB && image.segments[1].data.size()==int(slotSize))return Kind::BootBundle;
+    if(image.segments.size()==1 && (first.address==slotA||first.address==slotB) && first.data.size()==int(slotSize)){
+        const auto *p=reinterpret_cast<const unsigned char *>(first.data.constData()+4);
+        const quint32 entry=quint32(p[0])|(quint32(p[1])<<8)|(quint32(p[2])<<16)|(quint32(p[3])<<24);
+        if((entry&1)&&(entry&~1u)>=first.address&&(entry&~1u)<first.address+slotSize)return Kind::IncompleteBoot;
+    }
+    if(image.segments.size()==1 && first.data.size()==int(2*slotSize)){
+        auto word=[&](int offset){const auto *p=reinterpret_cast<const unsigned char *>(first.data.constData()+offset);return quint32(p[0])|(quint32(p[1])<<8)|(quint32(p[2])<<16)|(quint32(p[3])<<24);};
+        const auto a=word(4),b=word(slotSize+4);
+        if((a&1)&&(b&1)&&(a&~1u)>=slotA&&(a&~1u)<slotA+slotSize&&(b&~1u)>=slotB&&(b&~1u)<slotB+slotSize)return Kind::BootBundle;
+    }
+    return Kind::Unknown;
+}
+bool FirmwareImage::loadBootBundle(const QString &path,FirmwareImage &out,QString &error){
+    FirmwareImage parsed;if(!load(path,0x5000,parsed,error))return false;
+    constexpr int slotSize=0xf000;
+    if(parsed.segments.size()==2 && parsed.segments[0].address==0x5000 && parsed.segments[0].data.size()==slotSize &&
+       parsed.segments[1].address==0x6d000 && parsed.segments[1].data.size()==slotSize){
+        parsed.segments[0].data+=parsed.segments[1].data;parsed.segments.removeLast();
+        QCryptographicHash hash(QCryptographicHash::Sha256);hash.addData(be32(parsed.segments[0].address));
+        hash.addData(be32(quint32(parsed.segments[0].data.size())));hash.addData(parsed.segments[0].data);parsed.sha256=hash.result();
+    }else if(QFileInfo(path).suffix().compare("bin",Qt::CaseInsensitive)!=0 ||
+             parsed.segments.size()!=1 || parsed.segments[0].data.size()!=2*slotSize){
+        error="Boot input must contain both complete 60 KiB slot images (120 KiB total)";return false;
+    }
+    out=std::move(parsed);return true;
+}
 }

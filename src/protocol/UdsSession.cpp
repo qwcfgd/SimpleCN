@@ -30,10 +30,10 @@ UdsSession::UdsSession(DiagnosticTransport &transport,SessionOptions options,QOb
     });
     if(options.testerPresentMs>0)m_keepalive.start(options.testerPresentMs);
 }
-bool UdsSession::request(QByteArray b,QByteArray expected,Reply reply,bool suppressed,bool functional){
+bool UdsSession::request(QByteArray b,QByteArray expected,Reply reply,bool suppressed,bool functional,QByteArray recoverableNegative){
     if(b.isEmpty()||b.size()>maximumPdu()||m_queue.size()>=32)return false;
     if(expected.isEmpty())expected=QByteArray(1,char(quint8(b[0])+0x40));
-    m_queue.enqueue({std::move(b),std::move(expected),std::move(reply),suppressed,functional});
+    m_queue.enqueue({std::move(b),std::move(expected),std::move(reply),suppressed,functional,std::move(recoverableNegative)});
     emit activityChanged(true);
     const auto epoch=m_epoch;QTimer::singleShot(0,this,[this,epoch]{if(epoch==m_epoch)pump();});return true;
 }
@@ -84,10 +84,11 @@ void UdsSession::finish(bool ok,const QByteArray &pdu,const QString &error){
     if(!m_active)return;
     if(error=="UDS P2/P2* timeout")emit deadlineObserved(m_pending?"UDS_P2_STAR":"UDS_P2",m_response.interval(),m_responseElapsed.elapsed());
     else if(error=="UDS absolute response deadline"||error=="UDS transmit timeout")emit deadlineObserved(m_sent?"UDS_RESPONSE_LIMIT":"UDS_TX_LIMIT",m_limit.interval(),m_limitElapsed.elapsed());
+    const bool preserveSession=!ok&&!m_current.recoverableNegative.isEmpty()&&pdu==m_current.recoverableNegative;
     m_transport.cancel();m_response.stop();m_limit.stop();m_active=m_sent=false;
     auto reply=std::move(m_current.reply);m_current={};
     QQueue<Request> abandoned;
-    if(!ok){abandoned.swap(m_queue);m_established=false;}
+    if(!ok){abandoned.swap(m_queue);if(!preserveSession)m_established=false;}
     if(m_options.testerPresentMs>0)m_keepalive.start(m_options.testerPresentMs);
     const auto epoch=m_epoch;if(reply)reply(ok,pdu,error);
     // A manual diagnostic may be waiting behind TesterPresent. Report its

@@ -5,7 +5,7 @@
 #include "model/FrameFilterProxy.h"
 class QComboBox;class QLineEdit;class QCheckBox;class QLabel;
 class QPushButton;class QProgressBar;class QTableView;class QPlainTextEdit;
-class QTreeView;class QSplitter;class QResizeEvent;class QTabWidget;
+class QTreeView;class QSplitter;class QResizeEvent;class QShowEvent;class QTabWidget;class QTableWidget;
 namespace host {
 class ChannelPage : public QWidget {
     Q_OBJECT
@@ -14,6 +14,7 @@ public:
     ChannelViewModel *viewModel()const{return m_vm;}
 protected:
     void resizeEvent(QResizeEvent *)override;
+    void showEvent(QShowEvent *)override;
 private:
     void build();
     void updateRegionSizes();
@@ -22,6 +23,11 @@ private:
     void editDownload();
     void render();
     void browseImage(bool flash);
+    void addDownloadFiles();
+    void removeDownloadFiles();
+    void saveDownloadFiles();
+    void rememberDownloadFiles();
+    void restoreDownloadFiles();
     void exportFrames();
     void exportFrameBatch(const FrameBatch &,const QString &title);
     void configureColumnFilter(int,QPoint);
@@ -40,6 +46,9 @@ private:
     bool m_restoringMonitor=false;
     QPlainTextEdit *m_log;
     QWidget *m_images;
+    QTableWidget *m_imageTable=nullptr;
+    QJsonArray m_entryFiles;
+    bool m_hasEntryFiles=false;
     QSplitter *m_regions=nullptr,*m_outputs=nullptr;
     QTabWidget *m_tasks=nullptr;
     double m_downloadRatio=0.30,m_udsRatio=0.62,m_signalRatio=0.68;

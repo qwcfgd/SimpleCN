@@ -44,6 +44,7 @@ struct FlashProfile {
     quint16 eraseRoutine=0xff00,verifyRoutine=0xff01,dependencyRoutine=0xff02,identityDid=0xf180;
     int consecutiveFrameByteLimit=4095,resetWaitMs=10;
     quint32 applicationEraseBase=0,applicationEraseLength=0x4000000;
+    quint32 bootEraseBase=0x5000,bootEraseLength=0xf000;
     QByteArray fingerprintData;
     static bool fromJson(const QJsonObject &,FlashProfile &,QString &);
     QJsonObject toJson() const;
@@ -54,6 +55,7 @@ public:
     FlashJob(UdsSession &,FlashProfile,std::unique_ptr<KeyProvider>,QObject *parent=nullptr);
     ~FlashJob() override{cancel();}
     bool start(const FirmwareImage &application,const FirmwareImage &driver,QString &error);
+    bool start(const FirmwareImage &application,const FirmwareImage &driver,const FirmwareImage &bootBundle,QString &error);
     void cancel();
     bool running() const{return m_running;}
 signals:
@@ -71,17 +73,21 @@ private:
     void identify();
     bool withinDeadline();
     void done();
-    void step(const QString &,const QByteArray &,const QByteArray &,std::function<void(const QByteArray &)>,bool requiredData=false);
+    void step(const QString &,const QByteArray &,const QByteArray &,std::function<void(const QByteArray &)>,bool requiredData=false,
+              std::function<bool(const QByteArray &)> specialNegative={},QByteArray recoverableNegative={});
     void nextSegment();
     void download();
     void block();
     void verify();
     void finalSteps();
+    void resetAfterTransfers();
     void fail(const QString &);
     void report(const QString &);
     QString stepText(const QString &) const;
     UdsSession &m_session;FlashProfile m_profile;std::unique_ptr<KeyProvider> m_key;
     QVector<Segment> m_segments;int m_driverCount=0,m_index=0,m_offset=0,m_blockSize=0,m_blockLength=0;
+    int m_bootIndex=-1,m_appIndex=-1;
+    QByteArray m_bootSlotB;
     quint8 m_sequence=1;quint64 m_epoch=0;qint64 m_total=0,m_acked=0;bool m_running=false;
     int m_ignored=0,m_transferPacket=0;bool m_isV2=false;
     QSet<quint8> m_unresolvedSids;

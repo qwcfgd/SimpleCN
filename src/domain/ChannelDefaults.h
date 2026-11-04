@@ -36,7 +36,7 @@ struct ChannelPageInitialValues {
     QString requestId="7E0",responseId="7E8",functionalId="7DF",nad="01",downloadTxId,downloadRxId,fingerprintHex,applicationNote;
     int p2Ms=1000,p2StarMs=5500,testerPresentMs=2000,maxPendingMs=60000;
     int programmingSession=2,securityLevel=0x01;
-    QString flashPath,applicationPath,flashAddress="20001400",applicationAddress="00020000",applicationLength="00057000";
+    QString flashPath,applicationPath,flashAddress="20001400",applicationAddress="00015000",applicationLength="00057000";
     bool flashRequired=true,testerPresentEnabled=false,rxdEnabled=ChannelPageInitialValues::defaultRxdEnabled;
     bool repeatDownloadEnabled=false;
     int repeatDownloadCount=2,repeatDownloadIntervalMs=1000;

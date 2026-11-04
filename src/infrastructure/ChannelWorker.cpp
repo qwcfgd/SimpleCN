@@ -9,6 +9,17 @@
 #include "protocol/PluginKey.h"
 namespace host {
 using namespace communication;
+static bool downloadInputsReady(const ChannelSettings &s){
+    if(s.downloadFiles.isEmpty())return imageReady(s.applicationPath)&&imageReady(s.flashPath);
+    QJsonArray files;if(!effectiveDownloadFiles(s.downloadFiles,files))return false;
+    bool program=false,driver=false;
+    for(const auto &value:files){
+        const auto row=value.toObject();const auto role=row.value("role").toString();
+        if(!imageReady(row.value("path").toString()))return false;
+        driver|=role=="driver";program|=role=="boot"||role=="app";
+    }
+    return program&&driver;
+}
 static void stampFrame(FrameRecord &record){
     const auto now=QDateTime::currentDateTime();record.epochMs=now.toMSecsSinceEpoch();
     record.timestamp=now.toString("HH:mm:ss.zzz");
@@ -204,8 +215,7 @@ void ChannelWorker::startPreview(ChannelSettings s) {
     if(m_traceEnabled&&(m_traceFailed||s.bus!=Bus::Can||s.simulation)){emit logMessage("Trace mode unavailable: evidence incomplete or not physical CAN.");emit commandFinished();return;}
     if(!s.toConfiguration(config,error)){emit logMessage(error);emit commandFinished();return;}
     if(!m_operations.permits(OperationCoordinator::Task::Download) || m_running || m_scanning || m_manualBusy || (m_manualMode && m_uds && m_uds->busy()) || s.simulation!=m_settings.simulation || !m_session ||
-       m_session->state()!=ConnectionState::Connected || !imageReady(s.applicationPath) ||
-       (s.flashRequired && !imageReady(s.flashPath))) {
+       m_session->state()!=ConnectionState::Connected || !downloadInputsReady(s)) {
         emit logMessage("无法开始下载：请检查连接和镜像。");emit commandFinished();return;
     }
     if(!diagnosticMaster(error)){emit logMessage(error);emit commandFinished();return;}
@@ -218,7 +228,7 @@ void ChannelWorker::startPreview(ChannelSettings s) {
 void ChannelWorker::beginPreviewRound() {
     if(!m_running)return;
     if(!m_session || m_session->state()!=ConnectionState::Connected){failPreview("连接已关闭");return;}
-    if(!imageReady(m_settings.applicationPath) || (m_settings.flashRequired && !imageReady(m_settings.flashPath))){
+    if(!downloadInputsReady(m_settings)){
         failPreview("镜像文件不存在或不可读取");return;
     }
     m_waiting=false;m_progress=0;++m_round;
@@ -256,28 +266,42 @@ void ChannelWorker::clearProtocol(){
 }
 void ChannelWorker::beginDownload(bool confirmed){
     clearProtocol();
-    boot::FirmwareImage application,driver;QString error;
-    if(confirmed){application=std::move(m_stagedApp);driver=std::move(m_stagedDriver);}
-    else if(!boot::FirmwareImage::load(m_settings.applicationPath,m_settings.applicationAddress.toUInt(nullptr,16),application,error)||
-       (m_settings.flashRequired&&!boot::FirmwareImage::load(m_settings.flashPath,m_settings.flashAddress.toUInt(nullptr,16),driver,error))){failPreview(error);return;}
+    boot::FirmwareImage application,driver,bootBundle;QString error;
+    if(confirmed){application=std::move(m_stagedApp);driver=std::move(m_stagedDriver);bootBundle=std::move(m_stagedBoot);}
+    else if(!m_settings.downloadFiles.isEmpty()){
+        QJsonArray files;if(!effectiveDownloadFiles(m_settings.downloadFiles,files)){failPreview("Invalid download file list");return;}
+        for(const auto &value:files){
+            const auto row=value.toObject();const auto role=row.value("role").toString(),path=row.value("path").toString();
+            auto *image=role=="driver"?&driver:role=="boot"?&bootBundle:&application;
+            const quint32 base=role=="driver"?m_settings.flashAddress.toUInt(nullptr,16):role=="boot"?0x5000u:m_settings.applicationAddress.toUInt(nullptr,16);
+            const bool loaded=role=="boot"?boot::FirmwareImage::loadBootBundle(path,*image,error):boot::FirmwareImage::load(path,base,*image,error);
+            if(!loaded){failPreview(error);return;}
+        }
+    }else if(!boot::FirmwareImage::load(m_settings.applicationPath,m_settings.applicationAddress.toUInt(nullptr,16),application,error)||
+       !boot::FirmwareImage::load(m_settings.flashPath,m_settings.flashAddress.toUInt(nullptr,16),driver,error)){failPreview(error);return;}
     boot::FlashProfile profile;
     if(!boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error)){failPreview(error);return;}
     if(!confirmed&&(profile.isT008()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))&&
        ((profile.enabled("driver36")&&!profile.enabled("driver34"))||(profile.enabled("app36")&&!profile.enabled("app34")))){failPreview("TransferData requires RequestDownload");return;}
     if(!confirmed&&(m_settings.checkDriverAbi||m_settings.checkAppVersion||m_settings.checkMinimumBoot)){
         boot::t008::Plan plan;
-        if(!boot::t008::images(application,driver,plan,error)){failPreview(error);return;}
+        if(!application.segments.isEmpty()){
+            if(!boot::t008::images(application,driver,plan,error)){failPreview(error);return;}
+        }else if(driver.segments.size()==1){
+            const auto &data=driver.segments.first().data;
+            if(data.size()>=14&&data.startsWith("T008DRV1")){plan.driverMajor=quint16(quint8(data[10])|(quint16(quint8(data[11]))<<8));plan.driverMinor=quint16(quint8(data[12])|(quint16(quint8(data[13]))<<8));plan.hasDriverAbi=true;}
+        }
         QMap<QString,QString> expected;
         if(m_settings.checkDriverAbi)expected["driverAbi"]=m_settings.expectedDriverAbi;
         if(m_settings.checkAppVersion)expected["appVersion"]=m_settings.expectedAppVersion;
         if(m_settings.checkMinimumBoot)expected["minimumBoot"]=m_settings.expectedMinimumBoot;
         QStringList mismatches;if(!boot::t008::compareFileVersions(plan,expected,mismatches,error)){failPreview(error);return;}
         if(!mismatches.isEmpty()){
-            m_stagedApp=application;m_stagedDriver=driver;m_confirmationPending=true;const auto id=++m_confirmationId;
+            m_stagedApp=application;m_stagedDriver=driver;m_stagedBoot=bootBundle;m_confirmationPending=true;const auto id=++m_confirmationId;
             emit packageConfirmationRequested(id,QString("版本不一致或无法解析，请确认是否继续：\n")+mismatches.join("\n"));return;
         }
     }
-    if(profile.isT008()&&(m_settings.simulation||m_settings.bus!=Bus::Can||m_settings.bitrate!=500000||!m_settings.flashRequired||m_settings.repeatDownloadEnabled||m_settings.autoReconnect)){
+    if(profile.isT008()&&(m_settings.simulation||m_settings.bus!=Bus::Can||m_settings.bitrate!=500000||m_settings.repeatDownloadEnabled||m_settings.autoReconnect)){
         failPreview("T008 requires physical CAN at 500000 bit/s, native driver, one attempt and auto reconnect disabled");return;
     }
     if(profile.isT008()){
@@ -288,6 +312,8 @@ void ChannelWorker::beginDownload(bool confirmed){
     }
     profile.applicationEraseBase=m_settings.applicationAddress.toUInt(nullptr,16);
     profile.applicationEraseLength=m_settings.applicationLength.toUInt(nullptr,16);
+    profile.bootEraseBase=m_settings.bootAddress.toUInt(nullptr,16);
+    profile.bootEraseLength=m_settings.bootEraseLength.toUInt(nullptr,16);
     profile.fingerprintData=QByteArray::fromHex(m_settings.fingerprintHex.toLatin1());
     profile.name=m_settings.profileId;profile.session=quint8(m_settings.programmingSession);
     if(profile.flow=="legacy")profile.securityLevel=quint8(m_settings.securityLevel);
@@ -295,9 +321,9 @@ void ChannelWorker::beginDownload(bool confirmed){
     if(!m_settings.simulation)emit logMessage(profile.keyLibrary.trimmed().isEmpty()
         ?"未配置 27 DLL：收到的 seed 原样作为 key 发送":"安全访问使用已配置的 27 DLL");
     if(!createProtocol(profile,error,false)){failPreview(error);return;}
-    if(m_settings.simulation&&(profile.isT008()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))){
-        if(m_canEcu)m_canEcu->uds.maxBlockLength=1026;
-        if(m_ecu)m_ecu->maxBlockLength=1026;
+    if(m_settings.simulation&&(profile.isT008()||!bootBundle.segments.isEmpty()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))){
+        if(m_canEcu){m_canEcu->uds.maxBlockLength=1026;m_canEcu->uds.t008VerifySkipped=true;m_canEcu->uds.t008BootSelection=!bootBundle.segments.isEmpty();}
+        if(m_ecu){m_ecu->maxBlockLength=1026;m_ecu->t008VerifySkipped=true;m_ecu->t008BootSelection=!bootBundle.segments.isEmpty();}
     }
     emit logMessage(QString("镜像快照 %1 B · SHA256 %2 · 配置 %3").arg(application.size).arg(QString::fromLatin1(application.sha256.toHex())).arg(profile.name));
     m_job.reset(new boot::FlashJob(*m_uds,profile,std::move(key)));
@@ -307,12 +333,12 @@ void ChannelWorker::beginDownload(bool confirmed){
         if(!m_running)return;m_progress=value;emit taskChanged(TaskState::Running,value,QString("第 %1/%2 次 · %3").arg(m_round).arg(m_totalRounds).arg(step));
     });
     connect(m_job.get(),&boot::FlashJob::finished,this,[this](bool ok,const QString &why){if(ok)completeRound(why);else failPreview(why);});
-    if(!m_job->start(application,driver,error))failPreview(error);
+    if(!m_job->start(application,driver,bootBundle,error))failPreview(error);
 }
 void ChannelWorker::confirmPackage(quint64 id,bool accepted){
     if(!m_running||!m_confirmationPending||id!=m_confirmationId)return;
     m_confirmationPending=false;
-    if(!accepted){m_stagedApp={};m_stagedDriver={};cancelTask();return;}
+    if(!accepted){m_stagedApp={};m_stagedDriver={};m_stagedBoot={};cancelTask();return;}
     beginDownload(true);
 }
 

@@ -9,6 +9,9 @@ struct FirmwareImage {
     QByteArray sha256;
     qint64 size=0;
     static bool load(const QString &path,quint32 binaryBase,FirmwareImage &out,QString &error);
+    enum class Kind { Unknown, Driver, Application, BootBundle, IncompleteBoot };
+    static Kind identify(const FirmwareImage &image);
+    static bool loadBootBundle(const QString &path,FirmwareImage &out,QString &error);
 };
 quint32 crc32(const QByteArray &bytes);
 QByteArray be32(quint32 value);

@@ -6,14 +6,14 @@
 
 [简体中文](README.md) · English · [GitHub: SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.45-2563eb)
+![Version](https://img.shields.io/badge/version-1.48-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 Developed with assistance from OpenAI Codex.
 
-[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.45 release notes (Chinese)](docs/Release-1.45.md)
+[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.48 release notes (Chinese)](docs/Release-1.48.md)
 
 </div>
 

@@ -5,6 +5,7 @@
 #include "FrameColumnMenu.h"
 #include "FrameHeaderView.h"
 #include "infrastructure/TraceExporter.h"
+#include "protocol/FirmwareImage.h"
 #include <QMenu>
 #include <QJsonArray>
 #include <QTabWidget>
@@ -24,6 +25,7 @@
 #include <QToolButton>
 #include <QProgressBar>
 #include <QTableView>
+#include <QTableWidget>
 #include <QTreeView>
 #include <memory>
 #include "FrameDataDelegate.h"
@@ -43,10 +45,12 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QMessageBox>
+#include <QSettings>
 #include <QFormLayout>
 #include <QScopedValueRollback>
 #include <QScreen>
 #include <QResizeEvent>
+#include <QShowEvent>
 #include <QtMath>
 #include "protocol/FlashJob.h"
 namespace host {
@@ -97,7 +101,7 @@ void ChannelPage::build() {
     auto downloadLayout=new QVBoxLayout(download);downloadLayout->setContentsMargins(12,8,12,8);downloadLayout->setSpacing(6);
     m_images=new QWidget;m_images->setObjectName("imageRegion");
     auto imageGrid=new QGridLayout(m_images);imageGrid->setContentsMargins(0,0,0,0);imageGrid->setHorizontalSpacing(6);imageGrid->setVerticalSpacing(3);
-    auto heading=label("下载镜像");heading->setObjectName("sectionTitle");
+    auto heading=label("ROM 更新");heading->setObjectName("sectionTitle");
     m_downloadSettings=new QPushButton("下载设置…");m_downloadSettings->setObjectName("downloadSettings");
     auto imageHeader=new QHBoxLayout;imageHeader->addWidget(heading);imageHeader->addStretch();
     imageHeader->addWidget(m_downloadSettings);imageGrid->addLayout(imageHeader,0,0,1,3);
@@ -106,15 +110,19 @@ void ChannelPage::build() {
     m_appPath=edit("applicationPath",32767);m_appPath->setPlaceholderText("Application · BIN / HEX");
     m_flashInfo=label("");m_appInfo=label("");m_flashInfo->setObjectName("muted");m_appInfo->setObjectName("muted");
     for(auto info:{m_flashInfo,m_appInfo})info->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);
-    for(int i=0;i<2;++i){
-        imageGrid->addWidget(label(i==0?"Driver":"Application"),1+i*2,0);
-        imageGrid->addWidget(i==0?m_flashPath:m_appPath,1+i*2,1);
-        auto file=new QPushButton("文件…");file->setObjectName(i==0?"browseFlash":"browseApplication");
-        if(i==0)m_browseFlash=file;
-        imageGrid->addWidget(file,1+i*2,2);
-        imageGrid->addWidget(i==0?m_flashInfo:m_appInfo,2+i*2,1,1,2);
-        connect(file,&QPushButton::clicked,this,[this,i](){browseImage(i==0);});
-    }
+    m_imageTable=new QTableWidget(0,2,m_images);m_imageTable->setObjectName("downloadFiles");
+    m_imageTable->setHorizontalHeaderLabels({"类型","文件"});m_imageTable->horizontalHeader()->setStretchLastSection(true);
+    m_imageTable->setSelectionBehavior(QAbstractItemView::SelectRows);m_imageTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_imageTable->setEditTriggers(QAbstractItemView::NoEditTriggers);m_imageTable->setMinimumHeight(110);
+    imageGrid->addWidget(m_imageTable,1,0,1,2);
+    auto controls=new QVBoxLayout;auto add=new QPushButton("添加"),remove=new QPushButton("删除"),restore=new QPushButton("默认");
+    add->setObjectName("addDownloadFiles");remove->setObjectName("removeDownloadFiles");restore->setObjectName("defaultDownloadFiles");
+    controls->addWidget(add);controls->addWidget(remove);controls->addWidget(restore);controls->addStretch();imageGrid->addLayout(controls,1,2);
+    connect(add,&QPushButton::clicked,this,&ChannelPage::addDownloadFiles);connect(remove,&QPushButton::clicked,this,&ChannelPage::removeDownloadFiles);
+    connect(restore,&QPushButton::clicked,this,&ChannelPage::restoreDownloadFiles);
+    m_flashPath->setParent(this);m_appPath->setParent(this);m_flashPath->hide();m_appPath->hide();
+    m_flashInfo->setParent(this);m_appInfo->setParent(this);m_flashInfo->hide();m_appInfo->hide();
+    m_browseFlash=new QPushButton(this);m_browseFlash->hide();
     m_flashAddress=edit("flashAddress",10);m_appAddress=edit("applicationAddress",10);
     // Image addresses live in the settings dialog; image selection and task controls stay visible.
     for(auto address:{m_flashAddress,m_appAddress}){address->setParent(this);address->hide();}
@@ -264,7 +272,7 @@ void ChannelPage::build() {
     m_log->setPlaceholderText("连接变化、扫描和任务结果将在这里显示。");logLayout->addWidget(m_log);
     frameCard->setMinimumWidth(510);logCard->setMinimumWidth(210);outputs->addWidget(frameCard);outputs->addWidget(logCard);outputs->setSizes({850,330});
     m_regions->addWidget(outputs);m_regions->setStretchFactor(0,0);m_regions->setStretchFactor(1,1);
-    connect(tasks,&QTabWidget::currentChanged,this,[this]{updateRegionSizes();});
+    connect(tasks,&QTabWidget::currentChanged,this,[this](int index){if(index==0&&isVisible())rememberDownloadFiles();updateRegionSizes();});
     connect(m_regions,&QSplitter::splitterMoved,this,[this]{const auto sizes=m_regions->sizes();const int total=sizes.value(0)+sizes.value(1);if(total>0)(m_tasks->currentIndex()==2?m_signalRatio:m_tasks->currentIndex()==1?m_udsRatio:m_downloadRatio)=double(sizes[0])/total;});
     QTimer::singleShot(0,this,[this]{updateRegionSizes();});
     connect(m_start,&QPushButton::clicked,m_vm,&ChannelViewModel::start);
@@ -302,10 +310,23 @@ void ChannelPage::resizeEvent(QResizeEvent *event){
     QWidget::resizeEvent(event);
     updateRegionSizes();
 }
+void ChannelPage::showEvent(QShowEvent *event){
+    QWidget::showEvent(event);
+    if(!event->spontaneous()&&m_tasks&&m_tasks->currentIndex()==0)rememberDownloadFiles();
+}
 void ChannelPage::loadSettings() {
     m_loading=true;const auto &s=m_vm->settings();
     m_rxdEnabled->setChecked(s.rxdEnabled);
     m_flashPath->setText(s.flashPath);m_appPath->setText(s.applicationPath);m_flashAddress->setText(s.flashAddress);m_appAddress->setText(s.applicationAddress);
+    QJsonArray files;if(!effectiveDownloadFiles(s.downloadFiles,files))files=s.downloadFiles;
+    if(files.isEmpty()){
+        if(!s.flashPath.isEmpty())files.append(QJsonObject{{"role","driver"},{"path",s.flashPath}});
+        if(!s.applicationPath.isEmpty())files.append(QJsonObject{{"role","app"},{"path",s.applicationPath}});
+    }
+    m_imageTable->setRowCount(0);
+    for(const auto &expected:{"driver","boot","app"})for(const auto &value:files){const auto row=value.toObject();const auto role=row.value("role").toString();if(role!=expected)continue;const int i=m_imageTable->rowCount();m_imageTable->insertRow(i);
+        auto type=new QTableWidgetItem(role=="driver"?"Driver":role=="boot"?"Boot":"App");type->setData(Qt::UserRole,role);m_imageTable->setItem(i,0,type);
+        m_imageTable->setItem(i,1,new QTableWidgetItem(row.value("path").toString()));}
     m_loading=false;
 }
 void ChannelPage::applyForm() {
@@ -342,13 +363,10 @@ void ChannelPage::editDownload() {
         if(!path.isEmpty())keyLibrary->setText(path);
     });
     form->addRow("27 DLL",keyRow);
-    auto flow=new QComboBox;flow->setObjectName("downloadFlow");flow->addItem("App下载流程","app");flow->addItem("Boot下载流程","boot");
+    auto flow=new QComboBox;flow->setObjectName("downloadFlow");flow->addItem("App起始流程","app");flow->addItem("Boot起始流程","boot");
     flow->setCurrentIndex(profile.flow=="boot"?1:0);
-    auto flashRequired=new QCheckBox("Flash Driver使能");flashRequired->setObjectName("flashRequired");
-    flashRequired->setChecked(original.flashRequired);flashRequired->setToolTip("勾选后下载需要 Flash Driver 镜像。");
     auto downloadRow=new QWidget;auto downloadRowLayout=new QHBoxLayout(downloadRow);downloadRowLayout->setContentsMargins(0,0,0,0);
-    downloadRowLayout->addWidget(label("下载流程"));downloadRowLayout->addWidget(flow,1);
-    downloadRowLayout->addSpacing(24);downloadRowLayout->addWidget(label("下载镜像"));downloadRowLayout->addWidget(flashRequired);
+    downloadRowLayout->addWidget(label("下载起始流程"));downloadRowLayout->addWidget(flow,1);
     form->addRow(downloadRow);
     auto checksWidget=new QWidget;auto grid=new QGridLayout(checksWidget);grid->setContentsMargins(0,0,0,0);
     QVector<QCheckBox*> stepEnables,negativeChecks,timeoutChecks;
@@ -381,19 +399,13 @@ void ChannelPage::editDownload() {
         stepEnables.append(stepEnable);negativeChecks.append(negative);timeoutChecks.append(timeout);
     }
     grid->setColumnStretch(0,1);grid->setColumnStretch(5,1);
-    const auto driverStep=[](int i){
-        const auto id=QString::fromLatin1(boot::downloadSteps()[i].id);
-        return id=="driver34"||id=="driver36"||id=="driver37"||id=="driverVerify";
-    };
     const auto selectedPolicy=[flow]{
         boot::FlashProfile selected;selected.flow=flow->currentData().toString();return selected;
     };
-    auto enableChecks=[flashRequired,stepEnables,negativeChecks,timeoutChecks,driverStep]{
+    auto enableChecks=[stepEnables,negativeChecks,timeoutChecks]{
         for(int i=0;i<negativeChecks.size();++i){
-            const bool driverAllowed=flashRequired->isChecked()||!driverStep(i);
-            if(!driverAllowed){QSignalBlocker blocker(stepEnables[i]);stepEnables[i]->setChecked(false);}
-            stepEnables[i]->setEnabled(driverAllowed);
-            const bool active=driverAllowed&&stepEnables[i]->isChecked();
+            stepEnables[i]->setEnabled(true);
+            const bool active=stepEnables[i]->isChecked();
             const auto id=QString::fromLatin1(boot::downloadSteps()[i].id);
             const bool fixedNegative=boot::requiresNegativeResponseCheck(id);
             if(fixedNegative){QSignalBlocker blocker(negativeChecks[i]);negativeChecks[i]->setChecked(true);}
@@ -412,12 +424,7 @@ void ChannelPage::editDownload() {
         }
         enableChecks();
     });
-    connect(flashRequired,&QCheckBox::toggled,&dialog,[stepEnables,driverStep,enableChecks](bool checked){
-        if(checked)for(int i=0;i<stepEnables.size();++i)if(driverStep(i)){
-            stepEnables[i]->setEnabled(true);stepEnables[i]->setChecked(true);
-        }
-        enableChecks();
-    });enableChecks();
+    enableChecks();
 
     auto policy=label("使能：勾选后执行该步骤；未勾选时跳过，且负响应/超时判定不可操作。负响应或超时判定勾选时遇到对应异常停止，未勾选时忽略并继续。App 默认全部使能；Boot 默认启用 10 03，其余 10 02 之前的步骤默认不启用。下载开始后本页不可修改。");policy->setWordWrap(true);policy->setObjectName("muted");
     const auto defaults=ChannelSettings::defaults(original.bus);
@@ -473,7 +480,7 @@ void ChannelPage::editDownload() {
     connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
     connect(buttons,&QDialogButtonBox::accepted,&dialog,[&](){
         for(auto field:{count,interval,erase,verifyRid,dependencyRid,did,block,resetWait})if(!field->hasAcceptableInput()){error->setText("请输入有效范围内的参数");error->show();field->setFocus();return;}
-        auto s=m_vm->settings();s.flashRequired=flashRequired->isChecked();
+        auto s=m_vm->settings();
         bool appOk=false,bootOk=false;
         const auto appValue=appLevel->text().toUInt(&appOk,16),bootValue=bootLevel->text().toUInt(&bootOk,16);
         if(!appOk||!bootOk||!appLevel->hasAcceptableInput()||!bootLevel->hasAcceptableInput()||
@@ -513,14 +520,14 @@ void ChannelPage::render() {
     if(s.simulation)hardware.replace("模拟 CAN 双通道适配器","模拟CAN双通道适配器").replace("模拟 LIN 双通道适配器","模拟LIN双通道适配器");
     m_hardwareSummary->setText(QString("%1 · %2 · %3 · %4 bit/s").arg(s.simulation?"模拟模式":"在线硬件",hardware,port).arg(s.bitrate));
     m_connectionStatus->setText(connectionText(m_vm->state()));m_connectionStatus->setToolTip(m_vm->healthDetail());
-    m_images->setEnabled(!m_vm->busy());m_flashPath->setEnabled(s.flashRequired);m_browseFlash->setEnabled(s.flashRequired);
-    m_flashInfo->setEnabled(s.flashRequired);
+    m_images->setEnabled(!m_vm->busy());m_flashPath->setEnabled(!m_vm->busy());m_browseFlash->setEnabled(!m_vm->busy());
+    m_flashInfo->setEnabled(!m_vm->busy());
     m_connectButton->setText(m_vm->connected()?"断开":"连接");
     m_connectButton->setEnabled(!m_vm->pending()&&(m_vm->connected()?!m_vm->otherTaskBusy():m_vm->canConnect()));
     if(m_tasks&&m_tasks->count()>2){
         m_tasks->setTabText(2,Language::text("信号发送"));
     }
-    m_flashAddress->setEnabled(!m_vm->busy()&&s.flashRequired);
+    m_flashAddress->setEnabled(!m_vm->busy());
     m_appAddress->setEnabled(!m_vm->busy());
     m_start->setText(s.simulation?"开始模拟下载":"开始下载");m_start->setEnabled(m_vm->canStart());
     const auto hint=m_vm->startHint();
@@ -550,6 +557,60 @@ void ChannelPage::browseImage(bool flash) {
     const QString start=current.isEmpty()?QDir::homePath():QFileInfo(current).absolutePath();
     const QString path=QFileDialog::getOpenFileName(this,Language::text("选择镜像"),start,"Firmware (*.bin *.hex *.BIN *.HEX)");
     if(!path.isEmpty())m_vm->chooseImage(flash,path);
+}
+void ChannelPage::addDownloadFiles(){
+    QSettings preferences("Qt-GeneralController","DownloadFiles");
+    const auto saved=preferences.value("lastDirectory").toString();
+    const auto initial=QFileInfo(saved).isDir()?saved:QDir::homePath();
+    const auto paths=QFileDialog::getOpenFileNames(this,"选择下载文件",initial,"Firmware (*.bin *.hex *.BIN *.HEX)");
+    if(!paths.isEmpty())preferences.setValue("lastDirectory",QFileInfo(paths.last()).absolutePath());
+    bool changed=false;
+    for(const auto &path:paths){
+        boot::FirmwareImage image;QString error;
+        if(!boot::FirmwareImage::load(path,0x5000,image,error)){QMessageBox::warning(this,"无法读取下载文件",QFileInfo(path).fileName()+": "+error);continue;}
+        const auto kind=boot::FirmwareImage::identify(image);QString choice;
+        if(kind==boot::FirmwareImage::Kind::IncompleteBoot){QMessageBox::warning(this,"Boot 文件不完整",QFileInfo(path).fileName()+": 请选择包含两个完整槽镜像的文件。");continue;}
+        if(kind==boot::FirmwareImage::Kind::Driver)choice="Driver";
+        else if(kind==boot::FirmwareImage::Kind::Application)choice="App";
+        else if(kind==boot::FirmwareImage::Kind::BootBundle)choice="Boot";
+        else {bool ok=false;choice=QInputDialog::getItem(this,"无法自动识别文件类型",QFileInfo(path).fileName(),{"Driver","Boot","App"},0,false,&ok);if(!ok)continue;}
+        const auto role=choice=="Driver"?QString("driver"):choice=="Boot"?QString("boot"):QString("app");
+        if(role=="boot"&&!boot::FirmwareImage::loadBootBundle(path,image,error)){QMessageBox::warning(this,"Boot 文件不完整",QFileInfo(path).fileName()+": "+error);continue;}
+        for(int row=m_imageTable->rowCount()-1;row>=0;--row)
+            if(m_imageTable->item(row,0)->data(Qt::UserRole).toString()==role)m_imageTable->removeRow(row);
+        const int i=m_imageTable->rowCount();m_imageTable->insertRow(i);auto type=new QTableWidgetItem(choice);type->setData(Qt::UserRole,role);m_imageTable->setItem(i,0,type);m_imageTable->setItem(i,1,new QTableWidgetItem(path));
+        changed=true;
+    }
+    if(changed)saveDownloadFiles();
+}
+void ChannelPage::removeDownloadFiles(){
+    auto rows=m_imageTable->selectionModel()->selectedRows();std::sort(rows.begin(),rows.end(),[](const QModelIndex &a,const QModelIndex &b){return a.row()>b.row();});
+    for(const auto &row:rows)m_imageTable->removeRow(row.row());if(!rows.isEmpty())saveDownloadFiles();
+}
+void ChannelPage::saveDownloadFiles(){
+    auto settings=m_vm->settings();QJsonArray files;settings.flashPath.clear();settings.applicationPath.clear();
+    for(const auto role:{"driver","boot","app"})for(int i=0;i<m_imageTable->rowCount();++i){
+        if(m_imageTable->item(i,0)->data(Qt::UserRole).toString()!=role)continue;
+        const auto path=m_imageTable->item(i,1)->text();files.append(QJsonObject{{"role",role},{"path",path}});
+        if(QString(role)=="driver")settings.flashPath=path;else if(QString(role)=="app")settings.applicationPath=path;
+    }
+    settings.downloadFiles=files;m_vm->setSettings(settings);
+}
+void ChannelPage::rememberDownloadFiles(){
+    m_entryFiles={};
+    for(int i=0;i<m_imageTable->rowCount();++i){
+        const auto role=m_imageTable->item(i,0)->data(Qt::UserRole).toString();
+        m_entryFiles.append(QJsonObject{{"role",role},{"path",m_imageTable->item(i,1)->text()}});
+    }
+    m_hasEntryFiles=true;
+}
+void ChannelPage::restoreDownloadFiles(){
+    if(!m_hasEntryFiles||m_vm->busy())return;
+    auto settings=m_vm->settings();settings.downloadFiles=m_entryFiles;settings.flashPath.clear();settings.applicationPath.clear();
+    for(const auto &value:m_entryFiles){const auto row=value.toObject();const auto role=row.value("role").toString(),path=row.value("path").toString();
+        if(role=="driver")settings.flashPath=path;else if(role=="app")settings.applicationPath=path;
+    }
+    m_vm->setSettings(settings);
 }
 void ChannelPage::saveFrameFilter(){
     if(m_restoringMonitor||!m_frameProxy)return;

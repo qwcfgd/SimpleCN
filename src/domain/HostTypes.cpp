@@ -1,8 +1,20 @@
 #include "HostTypes.h"
 #include <QRegularExpression>
+#include <QHash>
 #include "protocol/FlashJob.h"
 #include "protocol/CanTransport.h"
 namespace host {
+bool effectiveDownloadFiles(const QJsonArray &files,QJsonArray &result){
+    QHash<QString,QJsonObject> latest;
+    for(const auto &value:files){
+        if(!value.isObject())return false;
+        const auto row=value.toObject();const auto role=row.value("role").toString();
+        if(role!="driver"&&role!="boot"&&role!="app")return false;
+        latest.insert(role,row);
+    }
+    result={};for(const auto role:{"driver","boot","app"})if(latest.contains(role))result.append(latest.value(role));
+    return true;
+}
 ChannelSettings::ChannelSettings(){boot::FlashProfile p;QString error;if(boot::FlashProfile::fromJson(downloadProfile,p,error))downloadProfile=p.toJson();}
 ChannelSettings ChannelSettings::defaults(communication::Bus bus) {
     ChannelSettings s;s.bus=bus;
@@ -82,7 +94,7 @@ QJsonObject ChannelSettings::toJson() const {
         {"autoReconnect",autoReconnect},{"extendedId",extendedId},{"requestId",requestId},{"responseId",responseId},
         {"functionalId",functionalId},{"nad",nad},{"downloadTxId",downloadTxId},{"downloadRxId",downloadRxId},{"fingerprintHex",fingerprintHex},{"p2Ms",p2Ms},{"p2StarMs",p2StarMs},
         {"testerPresentEnabled",testerPresentEnabled},{"testerPresentMs",testerPresentMs},{"maxPendingMs",maxPendingMs},{"programmingSession",programmingSession},
-        {"securityLevel",securityLevel},{"flashPath",flashPath},{"applicationPath",applicationPath},
+        {"securityLevel",securityLevel},{"flashPath",flashPath},{"applicationPath",applicationPath},{"downloadFiles",downloadFiles},
         {"flashAddress",flashAddress},{"applicationAddress",applicationAddress},{"applicationLength",applicationLength},{"applicationNote",applicationNote},{"bootAddress",bootAddress},{"bootEraseLength",bootEraseLength},
         {"checkDriverAbi",checkDriverAbi},{"checkAppVersion",checkAppVersion},{"checkMinimumBoot",checkMinimumBoot},{"expectedDriverAbi",expectedDriverAbi},{"expectedAppVersion",expectedAppVersion},{"expectedMinimumBoot",expectedMinimumBoot},
         {"flashRequired",flashRequired},{"rxdEnabled",rxdEnabled},{"repeatDownloadEnabled",repeatDownloadEnabled},
@@ -134,7 +146,10 @@ bool ChannelSettings::fromJson(const QJsonObject &o,ChannelSettings &result,QStr
     s.programmingSession=o.value("programmingSession").toInt(s.programmingSession);
     s.securityLevel=o.value("securityLevel").toInt(s.securityLevel);
     s.flashPath=text("flashPath",s.flashPath);s.applicationPath=text("applicationPath",s.applicationPath);
-    s.flashAddress=text("flashAddress",s.flashAddress);s.applicationAddress=text("applicationAddress",s.applicationAddress);
+    if(o.contains("downloadFiles")&&!o["downloadFiles"].isArray()){error="downloadFiles must be an array";return false;}
+    s.downloadFiles=o["downloadFiles"].toArray();
+    // Configurations saved before this field existed retain their former base.
+    s.flashAddress=text("flashAddress",s.flashAddress);s.applicationAddress=text("applicationAddress",QStringLiteral("00020000"));
     s.applicationLength=text("applicationLength",s.applicationLength);s.applicationNote=text("applicationNote",{});
     s.bootAddress=text("bootAddress",s.bootAddress);s.bootEraseLength=text("bootEraseLength",s.bootEraseLength);
     s.checkDriverAbi=o.value("checkDriverAbi").toBool(false);s.checkAppVersion=o.value("checkAppVersion").toBool(false);s.checkMinimumBoot=o.value("checkMinimumBoot").toBool(false);

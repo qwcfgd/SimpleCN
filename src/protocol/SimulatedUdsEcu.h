@@ -14,6 +14,9 @@ public:
     QByteArray memory(quint32 address) const{return m_memory.value(address);}
     QList<QByteArray> requests;
     int resets=0,maxBlockLength=258;
+    bool t008VerifySkipped=false;
+    bool t008BootSelection=false;
+    quint32 activeBootAddress=0x5000;
     std::function<QList<QByteArray>(const QByteArray &)> diagnosticHandler;
 private:
     QByteArray process(const QByteArray &);
