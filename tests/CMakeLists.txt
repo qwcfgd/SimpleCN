@@ -199,3 +199,7 @@ add_executable(test_safe_trace_recorder test_safe_trace_recorder.cpp ../src/infr
 target_include_directories(test_safe_trace_recorder PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(test_safe_trace_recorder PRIVATE Qt${QT_VERSION_MAJOR}::Core)
 add_test(NAME safe_trace_recorder COMMAND test_safe_trace_recorder)
+
+# Optional offline regression with user-supplied App and Boot CDDs.
+add_executable(check_lin19200_channels EXCLUDE_FROM_ALL check_lin19200_channels.cpp)
+target_link_libraries(check_lin19200_channels PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Widgets)
