@@ -48,7 +48,7 @@ UdsDiagnosticPage::UdsDiagnosticPage(ChannelViewModel *vm,QWidget *parent):QWidg
     m_request=new QPlainTextEdit;m_request->setObjectName("udsCommand");m_request->setReadOnly(true);m_request->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));m_request->setMinimumHeight(40);requestLayout->addWidget(m_request,1);
     m_validation=plain("");m_validation->setObjectName("udsValidation");m_validation->setWordWrap(true);requestLayout->addWidget(m_validation);
     auto actions=new QHBoxLayout;m_copy=new QPushButton("复制指令");m_copy->setObjectName("copyUdsCommand");m_send=new QPushButton("发送");m_send->setObjectName("sendUdsRequest");m_send->setProperty("primary",true);
-    actions->addWidget(m_copy);actions->addStretch();actions->addWidget(m_send);m_revert=new QPushButton("撤销");m_revert->setObjectName("revertUdsCommand");actions->addWidget(m_revert);requestLayout->addLayout(actions);
+    actions->addWidget(m_copy);actions->addStretch();actions->addWidget(m_send);m_stop=new QPushButton("停止");m_stop->setObjectName("stopUdsRequest");actions->addWidget(m_stop);requestLayout->addLayout(actions);
     m_response=new QPlainTextEdit;m_response->setObjectName("udsResponse");m_response->setReadOnly(true);m_response->setMaximumBlockCount(1000);m_response->setPlaceholderText("请求结果、响应 HEX 和 CDD 字段解析");m_response->setMinimumHeight(55);
     auto responsePanel=new QWidget;auto responseLayout=new QVBoxLayout(responsePanel);responseLayout->setContentsMargins(0,0,0,0);responseLayout->setSpacing(3);auto responseHeading=plain("解析结果");responseHeading->setObjectName("sectionTitle");responseHeading->setAlignment(Qt::AlignLeft|Qt::AlignVCenter);responseLayout->addWidget(responseHeading);responseLayout->addWidget(m_response,1);
     detailSplit->addWidget(parameterPanel);detailSplit->addWidget(requestPanel);detailSplit->addWidget(responsePanel);detailSplit->setSizes({130,115,100});
@@ -58,10 +58,12 @@ UdsDiagnosticPage::UdsDiagnosticPage(ChannelViewModel *vm,QWidget *parent):QWidg
     connect(m_services->selectionModel(),&QItemSelectionModel::currentRowChanged,this,[this]{selectService();});
     connect(m_suppress,&QCheckBox::toggled,this,&UdsDiagnosticPage::updateRequest);
     connect(m_request,&QPlainTextEdit::textChanged,this,[this]{if(!m_updating){m_custom=true;updateRequest();}});
-    connect(m_revert,&QPushButton::clicked,this,[this]{m_custom=false;updateRequest();});
+    connect(m_stop,&QPushButton::clicked,this,[this]{
+        if(m_vm->diagnosticBusy()){m_vm->cancel();return;}
+        m_custom=false;updateRequest();
+    });
     connect(m_copy,&QPushButton::clicked,this,[this]{if(!m_bytes.isEmpty()&&m_error.isEmpty())QApplication::clipboard()->setText(QString::fromLatin1(m_bytes.toHex(' ')).toUpper());});
     connect(m_send,&QPushButton::clicked,this,[this]{
-        if(m_vm->diagnosticBusy()){m_vm->cancel();return;}
         updateRequest();if(!m_error.isEmpty())return;QString error;
         bool sent=m_vm->settings().udsRepeatEnabled?m_vm->repeatDiagnostic(sourceRow(),m_bytes,error,m_custom):m_vm->sendDiagnostic(sourceRow(),m_bytes,error,m_custom);
         if(!sent)m_validation->setText(error);
@@ -114,10 +116,9 @@ void UdsDiagnosticPage::updateRequest(){
 void UdsDiagnosticPage::render(){
     const bool idle=!m_vm->busy();for(auto w:QList<QWidget*>{m_settings,m_services})w->setEnabled(idle);
     m_repeatStatus->setText(m_vm->diagnosticRepeatStatus());m_repeatStatus->setToolTip(m_repeatStatus->text());
-    m_parameters->setEnabled(idle&&!m_custom);m_request->setReadOnly(!idle);m_revert->setEnabled(idle&&m_custom);m_suppress->setEnabled(idle&&!m_custom);
-    m_send->setText(m_vm->diagnosticBusy()?"取消发送":"发送");
+    m_parameters->setEnabled(idle&&!m_custom);m_request->setReadOnly(!idle);m_stop->setEnabled(m_vm->diagnosticBusy()||(idle&&m_custom));m_suppress->setEnabled(idle&&!m_custom);
     auto hint=m_vm->diagnosticHint();auto s=m_vm->diagnosticServices()->service(sourceRow());
-    m_send->setEnabled(m_vm->diagnosticBusy()||(m_error.isEmpty()&&!m_bytes.isEmpty()&&hint.isEmpty()&&(m_custom||(s&&(s->physical||s->functional)))));m_copy->setEnabled(m_error.isEmpty()&&!m_bytes.isEmpty());
+    m_send->setEnabled(m_error.isEmpty()&&!m_bytes.isEmpty()&&hint.isEmpty()&&(m_custom||(s&&(s->physical||s->functional))));m_copy->setEnabled(m_error.isEmpty()&&!m_bytes.isEmpty());
     m_validation->setText(!m_error.isEmpty()?m_error:(!hint.isEmpty()?hint:QString("%1 字节 · %2").arg(m_bytes.size()).arg(m_vm->settings().simulation?"模拟响应仅用于功能验证":(m_custom?"原始报文":(s&&s->functional?"功能寻址":"物理寻址")))));
     m_validation->setStyleSheet(m_error.isEmpty()?QString():"color:#A33A2B;");
     const auto response=Language::text(m_vm->diagnosticResult());if(m_response->toPlainText()!=response)m_response->setPlainText(response);

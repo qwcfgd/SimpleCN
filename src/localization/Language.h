@@ -12,6 +12,7 @@ public:
     QString code() const { return m_english ? "en" : "zh_CN"; }
     void setCode(const QString &code);
     static QString text(const QString &source);
+    static QString englishText(const QString &source);
 signals:
     void changed();
 private:

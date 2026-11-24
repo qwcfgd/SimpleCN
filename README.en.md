@@ -6,16 +6,22 @@
 
 [简体中文](README.md) · English · [GitHub: SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.48-2563eb)
+![Version](https://img.shields.io/badge/version-1.60-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 Developed with assistance from OpenAI Codex.
 
-[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md) · [V1.48 release notes (Chinese)](docs/Release-1.48.md)
+[Quick start](#quick-start) · [User guide (Chinese)](docs/User-Guide.md)
 
 </div>
+
+## V1.60
+
+- CAN transmission and LIN scheduling start and stop from the same button. Signal analysis opens above the control row.
+- The monitor resolves frame names per channel and retains the initial row colors while scrolling.
+- A manual send attempts one reconnect when the connected CAN channel reports a fault.
 
 ## V1.45: CAN / LIN accent color differentiation and UI refinements
 
@@ -86,6 +92,8 @@ These V1.3 screenshots use simulated channels and synthetic signals; they are no
 
 - **Simulation:** no hardware required; replay runs as fast as possible and retains Sim Tx / Sim Rx directions.
 - **PEAK:** PCAN / PLIN backends require compatible vendor drivers and APIs.
+- **Vector VN16xx:** XL Driver Library backend enumerates classic CAN/LIN ports by hardware capability. Physical-bus acceptance is still required; see [Vector hardware](docs/Vector-Hardware.md).
+- **Runtime packaging:** CMake copies the project `driver/` tree beside the executable, including PEAK, TOSUN and Vector user-mode APIs. Windows device drivers still require official installation. Staged local runtimes do not imply external redistribution permission; see [deployment and licensing](docs/Driver-Packaging.md).
 - **TOSUN:** classic CAN and LIN for TC1016 / TC1016P with TSMaster / libTSCAN runtimes. CAN1 / CAN2 external loopback was verified previously; real LIN ECU acceptance remains outstanding.
 - **Hardware replay:** original 1× timing, manually mapped channels, excluding only IDs explicitly published by the current database node.
 - **CAN FD:** supported in relevant log handling and simulated replay, but real CAN FD transmission/reception is not enabled.
@@ -95,7 +103,7 @@ V1.4.2 Release builds and all 16 CTest suites ultimately passed with both Qt 5.1
 
 ## Quick start
 
-1. Run `QtBootloader.exe`. CAN01 and LIN01 are created initially without automatic hardware connection.
+1. Run `SimpleCN.exe`. CAN01 and LIN01 are created initially without automatic hardware connection.
 2. Select simulation or installed hardware, configure the channel and bitrate, then connect.
 3. Import a DBC / LDF on the signal transmission page, select a message or schedule, edit values and enable entries.
 4. Use repeated or periodic transmission. Open Graphics to add database signals.
@@ -114,15 +122,15 @@ ctest --preset qt6
 # Use qt5 for Qt 5.
 ```
 
-Presets use Release builds and fixed toolchain/output paths based on `C:/Documents/0_Qt/Qt-GeneralController`. Adjust paths for another machine. First configuration fetches pinned dbcppp / Boost versions; see [build documentation](docs/Signal-Transmission-Implementation.md) for offline dependencies.
+Presets use Release builds and fixed toolchain/output paths based on `C:/Documents/0_Qt/Qt-SimpleCN`. Adjust paths for another machine. First configuration fetches pinned dbcppp / Boost versions; see [build documentation](docs/Signal-Transmission-Implementation.md) for offline dependencies.
 
 ```text
 ../build/
-├── Qt-GeneralController-qt5/     # Application and runtime dependencies
-├── Qt-GeneralController-qt6/     # Application and runtime dependencies
+├── Qt-SimpleCN-qt5/     # Application and runtime dependencies
+├── Qt-SimpleCN-qt6/     # Application and runtime dependencies
 └── qttemp/
-    ├── Qt-GeneralController-qt5/ # Build cache, tests, debug tools and logs
-    └── Qt-GeneralController-qt6/ # Separate Qt 6 build and test output
+    ├── Qt-SimpleCN-qt5/ # Build cache, tests, debug tools and logs
+    └── Qt-SimpleCN-qt6/ # Separate Qt 6 build and test output
 ```
 
 Paths remain fixed across worktrees. Do not share a build directory between simultaneous checkouts or create build output in the source directory. Use `-DBUILD_TESTING=OFF` for application-only builds; `HOST_RUNTIME_OUTPUT_DIR` controls runtime deployment, while CMake `-B` belongs under `../build/qttemp`.
@@ -136,7 +144,7 @@ cmake --build --preset qt6 --target package_release
 ctest --preset qt6 -R release_runtime
 ```
 
-Release copies, ZIPs and SHA256 files are written under `qttemp/Qt-GeneralController-qtN/release/`. Existing release directories are not overwritten; set `HOST_RELEASE_OUTPUT` to a new path. `VerifyRelease.exe` stays in the tests directory; `HOST_RELEASE_DIR` selects an alternative release copy for verification.
+Release copies, ZIPs and SHA256 files are written under `qttemp/Qt-SimpleCN-qtN/release/`. Existing release directories are not overwritten; set `HOST_RELEASE_OUTPUT` to a new path. `VerifyRelease.exe` stays in the tests directory; `HOST_RELEASE_DIR` selects an alternative release copy for verification.
 
 ## Documentation
 

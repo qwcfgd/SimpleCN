@@ -1,4 +1,5 @@
 #pragma once
+#include "DriverLibrary.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QString>
@@ -9,7 +10,7 @@
 namespace communication {
 inline HINSTANCE loadPeakLibrary(const QString &name, QString &path, DWORD &error, bool keepLoadedUntilExit=false)
 {
-    path = QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("dll/" + name);
+    path = driverLibraryPath(QStringLiteral("peak"), name);
     HINSTANCE dll = LoadLibraryExW(reinterpret_cast<LPCWSTR>(path.utf16()), nullptr,
                                   LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (!dll) { error=GetLastError(); return nullptr; }

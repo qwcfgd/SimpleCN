@@ -9,7 +9,27 @@ Schedule LinScheduleRunner::effective(const QString&name)const{
     for(int n=result.entries.size()-1;n>=0;--n)for(const auto&i:m_plan.items)if(i.key==result.entries[n].frame&&!i.enabled){result.entries.removeAt(n);break;}
     if(result.entries.size()!=source->entries.size())result.issue.clear();return result;
 }
-void LinScheduleRunner::applyEnabled(){for(auto&i:m_plan.items)if(m_pendingEnabled.contains(i.key))i.enabled=m_pendingEnabled.value(i.key);m_pendingEnabled.clear();m_enableBoundary=false;m_slaveBoundary=false;}
+bool LinScheduleRunner::armRound(QString &error){
+    if(m_device&&m_plan.role==LinRole::Master&&!m_effective.entries.isEmpty()&&!m_enableBoundary&&m_roundsRemaining==0&&m_status.state==RunState::Running){
+        if(!m_device->requestBoundary(error,true))return fault(error);
+        m_enableBoundary=true;
+    }
+    return true;
+}
+bool LinScheduleRunner::replacePlan(const TxPlan &next,QString &error){
+    m_next=next;m_replace=true;m_payloads.clear();m_pendingEnabled.clear();return armRound(error);
+}
+void LinScheduleRunner::applyEnabled(){
+    if(m_replace){m_plan=std::move(m_next);m_replace=false;}
+    for(auto &item:m_plan.items){
+        if(m_pendingEnabled.contains(item.key))item.enabled=m_pendingEnabled.value(item.key);
+        const auto it=m_payloads.constFind(item.key);
+        if(it!=m_payloads.cend()&&it->revision>item.revision&&it->bytes.size()==item.payload.size()){
+            item.payload=it->bytes;item.revision=it->revision;
+        }
+    }
+    m_payloads.clear();m_pendingEnabled.clear();m_enableBoundary=false;m_slaveBoundary=false;
+}
 QString LinScheduleRunner::validate(const Schedule&s)const{if(s.entries.isEmpty())return {};QVector<FrameDefinition> frames;for(const auto&i:m_plan.items){FrameDefinition f;f.key=i.key;f.id=i.id;f.length=i.payload.size();frames.append(f);}return SignalCodec::validateSchedule(s,frames,m_bitrate);}
 QSet<QString> LinScheduleRunner::responseSet(const Schedule&s)const{QSet<QString> result;if(m_plan.role==LinRole::Monitor)return result;for(const auto&entry:s.entries)for(const auto&item:m_plan.items)if(item.enabled&&item.key==entry.frame&&item.publisher==m_plan.node)result.insert(item.key);return result;}
 bool LinScheduleRunner::fault(QString&error){const auto cause=error;QString cleanup;if(m_device&&!m_device->stop(cleanup)&&!cleanup.isEmpty())error=cause+"；清理失败："+cleanup;m_publish.clear();m_status.state=RunState::Faulted;m_status.detail=error;return false;}
@@ -24,7 +44,7 @@ bool LinScheduleRunner::activate(const QString&name,qint64 now,QString&error){
 }
 bool LinScheduleRunner::start(const TxPlan&plan,int bitrate,qint64 now,QString&error){
     if(active(m_status.state)){error="LIN 任务已在运行";return false;}m_plan=plan;m_roundsRemaining=plan.periodic?0:qBound(1,plan.repeatCount,1000000);m_bitrate=bitrate;m_status={};m_status.run=plan.run;
-    m_publish.clear();m_slot=0;m_due=now;m_frameEnd=now;m_pendingEnabled.clear();m_enableBoundary=false;m_slaveBoundary=false;m_observed=false;m_gapPending=false;
+    m_replace=false;m_payloads.clear();m_publish.clear();m_slot=0;m_due=now;m_frameEnd=now;m_pendingEnabled.clear();m_enableBoundary=false;m_slaveBoundary=false;m_observed=false;m_gapPending=false;
     if(m_device&&(!m_device->configure(plan.role,bitrate,error)||!m_device->stop(error)))return fault(error);
     if(plan.role==LinRole::Monitor){m_effective=effective(plan.schedule);m_status.current=plan.schedule;QVector<TxItem> monitorItems;QSet<quint32> monitorIds;for(const auto &i:plan.items)if(!monitorIds.contains(i.id)){monitorItems.append(i);monitorIds.insert(i.id);}if(m_device&&!m_device->install(monitorItems,{},error))return fault(error);m_status.state=RunState::Running;return true;}
     return activate(plan.schedule,now,error);
@@ -40,37 +60,45 @@ bool LinScheduleRunner::switchTo(const QString&name,qint64 now,QString&error){
 }
 bool LinScheduleRunner::setEnabled(const QString&key,bool enabled,qint64,QString&error){
     if(!active(m_status.state))return true;
-    auto item=std::find_if(m_plan.items.begin(),m_plan.items.end(),[&](const auto&i){return i.key==key;});
-    if(item==m_plan.items.end()){error="使能更新引用未知帧";return false;}
-    m_pendingEnabled[key]=enabled;
-    if(m_device&&m_plan.role==LinRole::Master&&!m_effective.entries.isEmpty()&&!m_enableBoundary&&m_status.state==RunState::Running){if(!m_device->requestBoundary(error,true))return fault(error);m_enableBoundary=true;}
-    return true;
+    const auto &items=m_replace?m_next.items:m_plan.items;
+    if(std::none_of(items.cbegin(),items.cend(),[&](const auto&i){return i.key==key;})){error="使能更新引用未知帧";return false;}
+    m_pendingEnabled[key]=enabled;return armRound(error);
 }
 bool LinScheduleRunner::tick(qint64 now,QString&error){
     if(!active(m_status.state))return true;
-    if(m_roundsRemaining>0&&m_plan.role==LinRole::Master&&m_status.state==RunState::Running){
-        bool ended=!m_device&&m_slot>=m_effective.entries.size()&&now>=m_due;
-        if(m_device&&!m_device->boundary(ended,error,true))return fault(error);
-        if(ended){if(--m_roundsRemaining==0){if(!stop(error))return false;m_status.detail="多次调度已完成";return true;}
-            if(m_device&&!activate(m_status.current,now,error))return false;else if(!m_device)m_slot=0;}
-    }
     const bool switching=m_status.state==RunState::SwitchPending;
+    const bool finite=m_roundsRemaining>0&&m_plan.role==LinRole::Master;
     bool boundary=false;
     if(switching){
         boundary=now>=m_frameEnd;
-        if(boundary&&m_device&&m_plan.role==LinRole::Master&&!m_effective.entries.isEmpty()){if(!m_device->boundary(boundary,error,false))return fault(error);}
-    }else if(!m_pendingEnabled.isEmpty()){
+        if(boundary&&m_device&&m_plan.role==LinRole::Master&&!m_effective.entries.isEmpty())
+            if(!m_device->boundary(boundary,error,false))return fault(error);
+    }else if(hasChanges()||finite){
         boundary=m_effective.entries.isEmpty();
-        if(m_device&&m_plan.role==LinRole::Master&&m_enableBoundary){if(!m_device->boundary(boundary,error,true))return fault(error);}
-        else if(m_plan.role==LinRole::Slave)boundary=boundary||m_slaveBoundary;
+        if(!boundary&&m_device&&m_plan.role==LinRole::Master&&(m_enableBoundary||finite)){
+            if(!m_device->boundary(boundary,error,true))return fault(error);
+        }else if(m_plan.role==LinRole::Slave)boundary=boundary||m_slaveBoundary;
         else if(!m_device)boundary=boundary||(m_slot>=m_effective.entries.size()&&now>=m_due);
     }
     if(boundary){
         if(m_device&&drainBeforeSwitch&&!drainBeforeSwitch())return true;
         if(!active(m_status.state)){error="边界前接收队列排空失败";return fault(error);}
+        if(finite&&!switching&&--m_roundsRemaining==0){
+            if(!stop(error))return false;m_status.detail="多次调度已完成";return true;
+        }
         const auto next=switching?m_status.pending:m_status.current;
         m_gapPending=switching&&m_observed;m_gapAnchor=m_lastObserved;m_gapFrom=m_status.current;m_gapTo=next;
-        applyEnabled();const auto upcoming=effective(next);if(upcoming.entries.isEmpty())m_gapPending=false;
+        if(m_plan.role==LinRole::Slave&&!switching&&!m_replace&&m_pendingEnabled.isEmpty()){
+            for(auto &item:m_plan.items){
+                const auto change=m_payloads.constFind(item.key);
+                if(change==m_payloads.cend())continue;
+                item.payload=change->bytes;item.revision=change->revision;
+                if(m_device&&m_publish.contains(item.key)&&!m_device->update(item,error))return fault(error);
+            }
+            m_payloads.clear();m_slaveBoundary=false;return true;
+        }
+        applyEnabled();if(!schedule(next)){m_status.current.clear();return stop(error);}
+        const auto upcoming=effective(next);if(upcoming.entries.isEmpty())m_gapPending=false;
         if(m_gapPending)for(const auto&i:m_plan.items)if(i.key==upcoming.entries.first().frame)m_gapFirstId=i.id;
         if(m_device&&m_plan.role!=LinRole::Master&&!m_device->stop(error))return fault(error);
         if(!activate(next,now,error))return false;
@@ -102,14 +130,23 @@ void LinScheduleRunner::observe(const BusFrameEvent&e){
     }
     const auto*s=&m_effective;
     if(m_plan.role==LinRole::Slave&&!s->entries.isEmpty()&&s->entries[m_observedSlot].frame==key){
-        if(++m_observedSlot==s->entries.size()){m_observedSlot=0;if(!m_pendingEnabled.isEmpty())m_slaveBoundary=true;}
+        if(++m_observedSlot==s->entries.size()){m_observedSlot=0;if(hasChanges())m_slaveBoundary=true;}
     }
     if(s)for(const auto&entry:s->entries)if(entry.frame==key){m_lastObserved=e;m_observed=true;break;}
 }
 bool LinScheduleRunner::update(const QString&key,const AppliedPayload&payload,QString&error){
     if(!active(m_status.state)||m_plan.role==LinRole::Monitor)return true;
-    for(auto&item:m_plan.items)if(item.key==key){if(payload.bytes.size()!=item.payload.size()){error="热更新帧长度改变";return fault(error);}if(payload.revision<=item.revision)return true;item.payload=payload.bytes;item.revision=payload.revision;
-        if(m_publish.contains(key)&&m_device&&!m_device->update(item,error))return fault(error);return true;}
+    auto &items=m_replace?m_next.items:m_plan.items;
+    for(auto &item:items)if(item.key==key){
+        if(payload.bytes.size()!=item.payload.size()){error="热更新帧长度改变";return fault(error);}
+        if(payload.revision>item.revision&&payload.revision>m_payloads.value(key).revision){
+            if(!m_replace&&!m_publish.contains(key)){
+                item.payload=payload.bytes;item.revision=payload.revision;return true;
+            }
+            m_payloads.insert(key,payload);return armRound(error);
+        }
+        break;
+    }
     return true;
 }
 bool LinScheduleRunner::stop(QString&error){m_publish.clear();m_pendingEnabled.clear();m_enableBoundary=false;m_slaveBoundary=false;m_gapPending=false;m_status.pending.clear();if(m_device&&!m_device->stop(error)){m_status.state=RunState::Faulted;m_status.detail=error;return false;}m_status.state=RunState::Stopped;m_status.detail="已停止；响应已关闭";return true;}

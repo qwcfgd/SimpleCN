@@ -19,7 +19,7 @@ public:
     void startMonitoring(int intervalMs=500);
 public slots:
     void poll();
-    bool connectChannel();
+    bool connectChannel(bool retryOnFailure=true);
     bool disconnectChannel();
 signals:
     void hardwareChanged(const communication::HardwareChannels &channels);

@@ -32,6 +32,7 @@ public:
     unsigned long lastErrorCode() const { return t_LastLinErr; }
     QString lastErrorText() const;
     communication::Health hardwareHealth(QString *detail=nullptr);
+    bool wakeUp();
     bool sendRaw(TLINMsg message);
     DWORD recvRaw(DWORD capacity, TLINRcvMsg messages[]);
 

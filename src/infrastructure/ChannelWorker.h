@@ -19,7 +19,8 @@ class ChannelWorker : public QObject {
     Q_OBJECT
 public:
     using CanFactory=std::function<std::unique_ptr<CanHardware>()>;
-    explicit ChannelWorker(ChannelSettings settings,CanFactory canFactory={}):m_settings(std::move(settings)),m_canFactory(std::move(canFactory)){}
+    using LinFactory=std::function<std::unique_ptr<LinHardware>()>;
+    explicit ChannelWorker(ChannelSettings settings,CanFactory canFactory={},LinFactory linFactory={}):m_settings(std::move(settings)),m_canFactory(std::move(canFactory)),m_linFactory(std::move(linFactory)){}
     ~ChannelWorker() override { stopReceiveNotifier(); }
 public slots:
     void initialize();
@@ -31,7 +32,7 @@ public slots:
     void confirmPackage(quint64,bool);
     void cancelTask();
     void startHeaderScan();
-    void sendDiagnostic(host::ChannelSettings,host::diag::Request);
+    void sendDiagnostic(host::ChannelSettings,host::diag::Request,bool manualStart=true);
     void resetDiagnostic();
     void startSignals(host::signal::TxPlan);
     void stopSignals(quint64);
@@ -42,8 +43,8 @@ signals:
     void bindingChanged(QString,quint32);
     void ready();
     void hardwareChanged(communication::HardwareChannels);
-    void stateChanged(communication::ConnectionState,QString);
-    void healthChanged(communication::Health,QString);
+    void stateChanged(communication::ConnectionState,QString,bool quiet=false);
+    void healthChanged(communication::Health,QString,bool quiet=false);
     void framesReceived(host::FrameBatch);
     void observedFrames(host::FrameBatch);
     void logMessage(QString);
@@ -61,10 +62,15 @@ private:
     void traceDeadline(const QString &,int,qint64);
     void traceFailure();
     void createSession();
+    void bindCanReceiveNotifier(bool pumpImmediately=true);
     void stopReceiveNotifier();
     bool apply(const ChannelSettings &);
     void receive();
     bool handleCanState(CanBusState,const QString&);
+    void withCanStartPermission(bool manualStart,std::function<void()> start,
+                                std::function<void(const QString&)> reject);
+    void beginSignalRun(const signal::TxPlan &);
+    void beginManualDiagnostic(ChannelSettings,diag::Request);
     void beginPreviewRound();
     void failPreview(const QString &);
     void beginDownload(bool confirmed=false);
@@ -78,6 +84,7 @@ private:
     void publishFrames(host::FrameBatch);
     ChannelSettings m_settings;
     CanFactory m_canFactory;
+    LinFactory m_linFactory;
     SafeTraceRecorder m_safeTrace;
     QSet<quint32> m_traceDiagnosticIds;
     bool m_traceEnabled=false,m_traceFailed=false;
@@ -94,7 +101,7 @@ private:
     QObject *m_canNotifier=nullptr;
     qint64 m_traceOffsetUs=0,m_lastCaptureUs=0;
     bool m_running=false,m_scanning=false,m_waiting=false;
-    boot::FirmwareImage m_stagedApp,m_stagedDriver,m_stagedBoot;quint64 m_confirmationId=0;bool m_confirmationPending=false;
+    boot::FirmwareImage m_stagedApp,m_stagedDriver,m_stagedBoot,m_stagedCalib;quint64 m_confirmationId=0;bool m_confirmationPending=false;
     int m_round=0,m_totalRounds=1;
     int m_progress=0,m_scanId=0,m_scanSent=0,m_scanEvents=0,m_scanResponses=0,m_scanErrors=0;
     QString m_receiveError;
@@ -108,6 +115,8 @@ private:
     quint64 m_lastSignalRun=0;
     bool m_receiveDrained=true;
     bool m_canBlocked=false,m_canHealthInitialized=false,m_canUnresolved=false;
+    bool m_reconnectingCan=false,m_canStartAfterReconnect=false;
+    CanBusState m_reportedCanState=CanBusState::Unsupported;
     bool m_udsWriteAttempted=false,m_recoveryCloseSucceeded=false;
 };
 }

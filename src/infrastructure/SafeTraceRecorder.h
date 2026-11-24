@@ -11,6 +11,7 @@ struct TraceTiming {
 };
 class SafeTraceRecorder {
 public:
+ static QString securitySeedObservation(const QByteArray &positiveResponse);
  bool open(const QString &root);
  bool open(QIODevice *device);
  bool sendIfHealthy(const std::function<bool()> &send) const { return m_healthy && send(); }

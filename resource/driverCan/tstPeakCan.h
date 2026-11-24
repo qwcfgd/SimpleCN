@@ -25,7 +25,7 @@ public:
     /* public functions */
     //following are the device interface function:
     bool startDevice();
-    bool stopDevice();
+    bool stopDevice(bool *released=nullptr);
 
     communication::HardwareChannels availableHardware();
     bool setHardwareHandle(quint32 handle);
@@ -86,7 +86,6 @@ private:
     bool t_ownsApi = true;
     bool t_open = false;
     bool t_acquired = false;
-    bool t_hardResetArmed = false;
     HANDLE t_receiveEvent = nullptr;
     ReceiveEventFactory t_eventFactory = nullptr;
     //PLinApiClass *m_pPLinApi; // the masked API pointer.

@@ -3,7 +3,15 @@
 #include <QUuid>
 #include <QStringList>
 #include <QElapsedTimer>
+#include <QCryptographicHash>
 namespace host {
+QString SafeTraceRecorder::securitySeedObservation(const QByteArray &response){
+ if(response.size()<3||quint8(response[0])!=0x67||!(quint8(response[1])&1))return {};
+ const auto seed=response.mid(2);const auto level=QString::number(quint8(response[1]),16).rightJustified(2,'0').toUpper();
+ if(seed==QByteArray(seed.size(),'\0'))return "SECURITY_ALREADY_UNLOCKED_27_"+level;
+ // Compare observed challenges across roles/resets without storing seed or key.
+ return "SECURITY_SEED_27_"+level+"_SHA256_"+QString::fromLatin1(QCryptographicHash::hash(seed,QCryptographicHash::Sha256).toHex());
+}
 bool SafeTraceRecorder::open(const QString &root){
  m_healthy=false;
  QDir parent(root); if(!parent.exists())return false;

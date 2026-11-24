@@ -4,10 +4,12 @@
 #include <QCoreApplication>
 #include "protocol/FlashJob.h"
 #include "domain/CddConfiguration.h"
+#include "infrastructure/TraceExporter.h"
 namespace host {
 using namespace communication;
-ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent):
-    QObject(parent),m_settings(std::move(settings)),m_model(new ChannelModel(m_settings,this)),m_frames(this),m_backendSimulation(m_settings.simulation) {
+ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent,ChannelModel *model):
+    QObject(parent),m_settings(std::move(settings)),m_model(model?model:new ChannelModel(m_settings)),m_frames(this),m_backendSimulation(m_settings.simulation) {
+    m_model->setParent(this);
     m_signals=new SignalTransmitViewModel(m_settings.bus==Bus::Can?signal::Bus::Can:signal::Bus::Lin,this);
     connect(m_signals,&SignalTransmitViewModel::startRequested,m_model,&ChannelModel::signalsRequested);
     connect(m_signals,&SignalTransmitViewModel::stopRequested,m_model,&ChannelModel::signalStopRequested);
@@ -17,10 +19,15 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent):
     connect(m_model,&ChannelModel::busEvents,m_signals,&SignalTransmitViewModel::receive);
     connect(m_model,&ChannelModel::observedFrames,m_signals,&SignalTransmitViewModel::observeFrames);
     connect(&m_frames,&FrameTableModel::cleared,m_signals,&SignalTransmitViewModel::clearTrace);
-    connect(m_signals,&SignalTransmitViewModel::structureChanged,this,[this]{m_frames.setDatabase(m_signals->database());});
+    const auto updateMonitorNames=[this]{
+        m_frames.setDatabase(m_signals->database());
+        m_frames.setCustomNames(m_signals->database()->bus,m_signals->monitorCustomNames());
+    };
+    connect(m_signals,&SignalTransmitViewModel::structureChanged,this,updateMonitorNames);
+    connect(m_signals,&SignalTransmitViewModel::monitorNamesChanged,this,updateMonitorNames);
     connect(m_model,&ChannelModel::connectionGenerationChanged,this,[this](quint64 generation){m_connectionGeneration=generation;});
     connect(m_signals,&SignalTransmitViewModel::notice,this,&ChannelViewModel::log);
-    connect(m_signals,&SignalTransmitViewModel::changed,this,[this]{emit changed();});
+    connect(m_signals,&SignalTransmitViewModel::changed,this,[this](bool countersOnly){if(!countersOnly)emit changed();});
     connect(this,&ChannelViewModel::changed,this,[this]{m_signals->setAvailability(connected(),otherTaskBusy(),m_settings.bitrate,m_connectionGeneration);});
     m_diagnosticRepeatTimer.setSingleShot(true);
     m_diagnosticRepeatTimer.setTimerType(Qt::PreciseTimer);
@@ -29,26 +36,39 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent):
         if(!connected()||m_pending){cancel();return;}
         --m_repeatRemaining;m_diagnosticBusy=true;
         m_diagnosticResult=QString("自动重发：第 %1/%2 次发送，等待 ECU 响应…").arg(m_repeatCompleted+1).arg(m_repeatTotal);
-        m_model->diagnosticRequested(m_diagnosticSettings,m_lastDiagnostic);emit changed();
+        m_model->diagnosticRequested(m_diagnosticSettings,m_lastDiagnostic,false);emit changed();
     });
     connect(m_model,&ChannelModel::bindingChanged,this,[this](QString key,quint32 handle){
         m_settings.hardwareKey=key;m_settings.handle=handle;emit settingsChanged();
     });
     connect(m_model,&ChannelModel::ready,this,[this](){m_ready=true;emit changed();});
     connect(m_model,&ChannelModel::hardwareChanged,this,[this](HardwareChannels list){m_hardware=std::move(list);selectAvailableHardware();emit hardwareListChanged();emit changed();});
-    connect(m_model,&ChannelModel::stateChanged,this,[this](ConnectionState state,QString detail){
+    connect(m_model,&ChannelModel::stateChanged,this,[this](ConnectionState state,QString detail,bool quiet){
         if(state==ConnectionState::Connected){m_wasConnected=true;m_lost=false;m_manualDisconnect=false;}
         else if(m_wasConnected && !m_manualDisconnect && (state==ConnectionState::Missing || state==ConnectionState::Fault))m_lost=true;
         m_state=state;m_error=state==ConnectionState::Fault?detail:QString();
         if(state!=ConnectionState::Connected){
             m_health=Health::Removed;m_healthDetail=connectionText(state);
-            if(m_repeatActive){m_repeatActive=false;m_diagnosticRepeatTimer.stop();log("自动重发已停止：连接关闭");}
+            if(m_repeatActive){m_repeatActive=false;m_diagnosticRepeatTimer.stop();if(!quiet)log("自动重发已停止：连接关闭");}
         }
         emit changed();
     });
-    connect(m_model,&ChannelModel::healthChanged,this,[this](Health h,QString detail){if(m_health!=h && !detail.isEmpty())log(detail);
+    connect(m_model,&ChannelModel::healthChanged,this,[this](Health h,QString detail,bool quiet){if(!quiet && m_health!=h && !detail.isEmpty())log(detail);
         m_health=h;m_healthDetail=std::move(detail);emit changed();});
-    connect(m_model,&ChannelModel::framesReceived,&m_frames,&FrameTableModel::append);
+    // Physical download traffic often arrives as single-frame queued events.
+    // Keep every frame, but update the 10k-row view in display-sized batches so
+    // the GUI can also handle progress, input and cancellation between updates.
+    m_monitorFlushTimer.setSingleShot(true);m_monitorFlushTimer.setInterval(33);
+    m_monitorFlushTimer.setObjectName("frameBatchTimer");
+    connect(&m_monitorFlushTimer,&QTimer::timeout,this,&ChannelViewModel::flushMonitorFrames);
+    connect(m_model,&ChannelModel::framesReceived,this,[this](const FrameBatch &batch){
+        m_pendingMonitorFrames+=batch;if(!m_monitorFlushTimer.isActive())m_monitorFlushTimer.start();
+    });
+    connect(&m_frames,&FrameTableModel::cleared,this,[this]{m_pendingMonitorFrames.clear();m_monitorFlushTimer.stop();});
+    connect(m_model,&ChannelModel::commandFinished,this,&ChannelViewModel::flushMonitorFrames);
+    connect(m_model,&ChannelModel::diagnosticFinished,this,&ChannelViewModel::flushMonitorFrames);
+    connect(m_model,&ChannelModel::taskChanged,this,[this](TaskState state,int,QString){if(state!=TaskState::Running)flushMonitorFrames();});
+    connect(m_model,&ChannelModel::signalStatus,this,[this](signal::RunStatus status){if(!signal::active(status.state)&&!status.cleanupPending)flushMonitorFrames();});
     connect(m_model,&ChannelModel::logMessage,this,&ChannelViewModel::log);
     connect(m_model,&ChannelModel::packageConfirmationRequested,this,&ChannelViewModel::packageConfirmationRequested);
     connect(m_model,&ChannelModel::taskChanged,this,[this](TaskState state,int progress,QString text){
@@ -82,6 +102,10 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent):
     if(!m_settings.signalConfiguration.isEmpty())QTimer::singleShot(0,this,[this]{m_signals->readConfigurationAsync(m_settings.signalConfiguration,{});});
 }
 ChannelSettings ChannelViewModel::snapshotSettings()const{auto snapshot=m_settings;snapshot.signalConfiguration=m_signals->configuration();return snapshot;}
+void ChannelViewModel::flushMonitorFrames(){
+    m_monitorFlushTimer.stop();if(m_pendingMonitorFrames.isEmpty())return;
+    auto batch=std::move(m_pendingMonitorFrames);m_pendingMonitorFrames=FrameBatch();m_frames.append(batch);
+}
 bool ChannelViewModel::setSettings(const ChannelSettings &s) {
     if(busy() || s.bus!=m_settings.bus)return false;
     auto old=m_settings.toJson(),next=s.toJson();
@@ -92,7 +116,14 @@ bool ChannelViewModel::setSettings(const ChannelSettings &s) {
     SoftwareChannelConfiguration config;QString error;
     if(!s.toConfiguration(config,error)){m_error=error;emit changed();return false;}
     const bool modeChanged=m_settings.simulation!=s.simulation;
-    m_settings=s;
+    const auto rangeChanged=[&]{
+        for(const auto &key:{"flashAddress","applicationAddress","applicationLength","applicationBAddress","bootAddress","bootEraseLength","bootBAddress","calibAddress","calibLength"})
+            if(m_settings.toJson().value(key)!=s.toJson().value(key))return true;
+        return false;
+    };
+    const bool defaults=m_settings.defaultMemoryLayout&&s.defaultMemoryLayout&&!rangeChanged()&&
+        m_settings.downloadProfile.value("target").toString("generic")==s.downloadProfile.value("target").toString("generic");
+    m_settings=s;m_settings.defaultMemoryLayout=defaults;
     if(modeChanged && s.hardwareKey==old.value("hardwareKey").toString()){m_settings.hardwareKey.clear();m_settings.handle=0;}
     const bool valid=true;m_error.clear();
     if(m_downloadStartBlocked){m_downloadStartBlocked=false;m_taskText="等待开始";}
@@ -145,16 +176,16 @@ QString ChannelViewModel::downloadInputHint() const {
     SoftwareChannelConfiguration c;QString error;if(!m_settings.toConfiguration(c,error))return error;
     if(!connected())return "请先连接软件通道";
     if(!m_settings.simulation){
-        if(m_health!=Health::Ready&&m_health!=Health::Sleeping)return "硬件通道状态异常";
+        if(m_settings.bus==Bus::Lin&&m_health!=Health::Ready&&m_health!=Health::Sleeping&&m_health!=Health::BusOff)return "硬件通道状态异常";
     }
     if(!m_settings.downloadFiles.isEmpty()){
         QJsonArray files;if(!effectiveDownloadFiles(m_settings.downloadFiles,files))return "下载文件列表无效";
         bool driver=false,program=false;
         for(const auto &value:files){const auto row=value.toObject();const auto role=row.value("role").toString();
             if(!imageReady(row.value("path").toString()))return "请选择有效的下载文件";
-            driver|=role=="driver";program|=role=="boot"||role=="app";
+            driver|=role=="driver";program|=role=="boot"||role=="calib"||role=="app";
         }
-        if(!program)return "请选择 Boot 或 Application 镜像";
+        if(!program)return "请选择 Boot、Calib 或 Application 镜像";
         if(!driver)return "此配置需要有效的 Flash Driver 镜像";
     }else{
         if(!imageReady(m_settings.applicationPath))return "请选择有效的 Application 镜像";
@@ -213,10 +244,33 @@ void ChannelViewModel::log(const QString &text){
     m_logs.append(line);while(m_logs.size()>ChannelPageInitialValues::logCapacity)m_logs.removeFirst();emit logAdded(line);
 }
 void ChannelViewModel::clearLogs(){m_logs.clear();emit logsCleared();}
+namespace {
+void adaptFreshT010(host::ChannelSettings &s){
+    if(!s.defaultMemoryLayout||s.flashPath.isEmpty()||s.applicationPath.isEmpty())return;
+    const auto number=[](const QString &v){return v.toUInt(nullptr,16);};
+    if(number(s.flashAddress)!=0x20001400||number(s.applicationAddress)!=0x1a000||number(s.applicationLength)!=0x4d000||!s.applicationBAddress.isEmpty()||
+       number(s.bootAddress)!=0x5000||number(s.bootEraseLength)!=0x14000||number(s.bootBAddress)!=0x68000||number(s.calibAddress)!=0x7e000||number(s.calibLength)!=0x1000)return;
+    boot::FirmwareImage driver,app;boot::FlashProfile profile;QString error;
+    if(!boot::FlashProfile::fromJson(s.downloadProfile,profile,error)||profile.target!="generic")return;
+    if(!boot::FirmwareImage::load(s.flashPath,0x20001400,driver,error)||!boot::t008::validateCurrentDriver(driver,true,error,11)||
+       !boot::FirmwareImage::loadTarget(s.applicationPath,0x1a000,0x4b000,true,0x30000,app,error))return;
+    QVector<boot::Segment> primary,alternate;
+    if(!boot::FirmwareImage::planSlots(app,0x1a000,0x4b000,true,0x30000,primary,alternate,error))return;
+    for(const auto &parts:{primary,alternate}){
+        if(parts.isEmpty())continue;
+        boot::FirmwareImage selected;selected.segments=parts;boot::t008::Plan plan;
+        const auto base=parts.first().address;
+        if(!parts.first().data.startsWith("T010APP1")||!boot::t008::completeApplication(selected,base,0x30000,true,base==0x4b000?1:0,plan,error,app.binary))return;
+    }
+    profile.target="s32k144-t010-v2";
+    s.downloadProfile=profile.toJson();s.applicationLength="00030000";s.applicationBAddress="0004B000";s.bootBAddress.clear();
+}
+}
 bool ChannelViewModel::chooseImage(bool flash,const QString &path) {
     if(path.isEmpty() || busy())return false;
     if(!imageReady(path)){m_error="镜像必须是可读取的非空 BIN / HEX 文件。";log(m_error);emit changed();return false;}
     auto s=m_settings;if(flash)s.flashPath=QFileInfo(path).absoluteFilePath();else s.applicationPath=QFileInfo(path).absoluteFilePath();
+    adaptFreshT010(s);
     return setSettings(s);
 }
 QStringList ChannelViewModel::imageCandidates(const QString &path) {
@@ -234,6 +288,38 @@ bool ChannelViewModel::exportLogs(const QString &path,QString &error) const {
 }
 bool ChannelViewModel::flashProfile(boot::FlashProfile &profile,QString &error) const {
     return boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error);
+}
+bool ChannelViewModel::exportFrames(const QString &path,const FrameBatch &snapshot,QString &error)const{
+    return TraceExporter::write(path,snapshot,error);
+}
+bool ChannelViewModel::inspectDownloadFile(const QString &path,QString &suggestedRole,QString &error)const{
+    suggestedRole.clear();error.clear();boot::FirmwareImage image;
+    if(!boot::FirmwareImage::load(path,0x5000,image,error))return false;
+    const auto kind=boot::FirmwareImage::identify(image);
+    if(kind==boot::FirmwareImage::Kind::Unknown&&boot::FirmwareImage::hasCurrentMarker(image)){error="Invalid ROM marker, length or CRC64";return false;}
+    switch(kind){
+    case boot::FirmwareImage::Kind::Driver:suggestedRole="driver";break;
+    case boot::FirmwareImage::Kind::Application:suggestedRole="app";break;
+    case boot::FirmwareImage::Kind::Calibration:suggestedRole="calib";break;
+    case boot::FirmwareImage::Kind::BootBundle:
+    case boot::FirmwareImage::Kind::IncompleteBoot:suggestedRole="boot";break;
+    default:break; // An unknown file still needs the user's existing role dialog.
+    }
+    return true;
+}
+bool ChannelViewModel::updateDownloadFiles(const QJsonArray &files,QString &error){
+    error.clear();
+    if(busy()){error=QString::fromUtf8("\u5f53\u524d\u901a\u9053\u5fd9\uff0c\u539f\u6587\u4ef6\u5217\u8868\u4fdd\u6301\u4e0d\u53d8");return false;}
+    QJsonArray ordered;
+    if(!effectiveDownloadFiles(files,ordered,&error)){m_error=error;emit changed();return false;}
+    auto next=m_settings;next.downloadFiles=ordered;next.flashPath.clear();next.applicationPath.clear();
+    for(const auto &value:ordered){const auto row=value.toObject();const auto role=row.value("role").toString();
+        if(role=="driver")next.flashPath=row.value("path").toString();
+        else if(role=="app")next.applicationPath=row.value("path").toString();
+    }
+    adaptFreshT010(next);
+    if(setSettings(next))return true;
+    error=m_error;return false;
 }
 bool ChannelViewModel::updateDownloadSettings(const ChannelSettings &s,const boot::FlashProfile &profile,QString &error) {
     if(busy()){error="通道正在执行操作，无法保存下载设置";return false;}
@@ -282,7 +368,7 @@ bool ChannelViewModel::selectDiagnosticTarget(const QString &ecuText,const QStri
 QString ChannelViewModel::diagnosticHint()const{
     if(busy())return "通道正在执行操作";
     if(!connected())return "请先连接通道";
-    if(!m_settings.simulation&&m_health!=communication::Health::Ready&&m_health!=communication::Health::Sleeping)return "硬件通道状态异常";
+    if(!m_settings.simulation&&m_settings.bus==Bus::Lin&&m_health!=Health::Ready&&m_health!=Health::Sleeping&&m_health!=Health::BusOff)return "硬件通道状态异常";
     return {};
 }
 bool ChannelViewModel::applyDiagnosticConfiguration(const diag::Database &db,const ChannelSettings &settings,QString &error){
