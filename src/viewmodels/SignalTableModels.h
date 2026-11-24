@@ -39,7 +39,7 @@ private:SignalTransmitViewModel*m_vm;QVector<signal::FrameDefinition>m_definitio
 class SignalTreeModel : public QStandardItemModel {
     Q_OBJECT
 public:explicit SignalTreeModel(SignalTransmitViewModel*,QObject*parent=nullptr);
-private:void rebuild();SignalTransmitViewModel*m_vm;signal::Database m_source;
+private:void rebuild();SignalTransmitViewModel*m_vm;
 };
 class LinScheduleTableModel : public QAbstractTableModel {
     Q_OBJECT

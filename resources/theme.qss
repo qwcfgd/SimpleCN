@@ -57,16 +57,6 @@ QPushButton:pressed { background: #DDF0F2; }
 QPushButton[primary="true"] { color: white; background: #0D8499; border-color: #0D8499; font-weight: 600; }
 QPushButton[primary="true"]:hover { background: #086D82; }
 QPushButton:disabled, QToolButton:disabled { background: #EDF2F6; color: #9AA9B6; border-color: #E0E7EE; }
-/* A disabled action retains the visual weight of a primary button without its bus color. */
-QWidget QPushButton#signalSendOnce[primary="true"]:disabled,
-QWidget QPushButton#startButton[primary="true"]:disabled,
-QWidget QPushButton#sendUdsRequest[primary="true"]:disabled,
-QWidget QPushButton#signalStart[primary="true"]:disabled {
-    background: #A9B1BB; color: #303943; border-color: #9AA5B1;
-}
-QWidget QPushButton#signalSendOnce[primary="true"]:disabled,
-QWidget QPushButton#startButton[primary="true"]:disabled,
-QWidget QPushButton#signalStart[primary="true"]:disabled { color: white; }
 QCheckBox { spacing: 6px; }
 QProgressBar { background: #EAF0F5; border: none; border-radius: 6px; color: #20364E; text-align: center; font-weight: 600; }
 QProgressBar::chunk { background: #45B5AC; border-radius: 6px; }

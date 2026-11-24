@@ -8,7 +8,7 @@ class ChannelWorker;
 class ChannelModel : public QObject {
     Q_OBJECT
 public:
-    explicit ChannelModel(ChannelSettings,QObject *parent=nullptr,ChannelWorker *worker=nullptr);
+    explicit ChannelModel(ChannelSettings,QObject *parent=nullptr);
     ~ChannelModel() override;
 signals:
     void settingsRequested(host::ChannelSettings);
@@ -19,7 +19,7 @@ signals:
     void packageConfirmationReply(quint64,bool);
     void cancelRequested();
     void scanRequested();
-    void diagnosticRequested(host::ChannelSettings,host::diag::Request,bool manualStart=true);
+    void diagnosticRequested(host::ChannelSettings,host::diag::Request);
     void resetDiagnosticRequested();
     void signalsRequested(host::signal::TxPlan);
     void signalStopRequested(quint64);
@@ -34,8 +34,8 @@ signals:
     void bindingChanged(QString,quint32);
     void ready();
     void hardwareChanged(communication::HardwareChannels);
-    void stateChanged(communication::ConnectionState,QString,bool quiet=false);
-    void healthChanged(communication::Health,QString,bool quiet=false);
+    void stateChanged(communication::ConnectionState,QString);
+    void healthChanged(communication::Health,QString);
     void framesReceived(host::FrameBatch);
     void observedFrames(host::FrameBatch);
     void logMessage(QString);

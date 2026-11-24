@@ -10,7 +10,7 @@ namespace host {
 class ChannelViewModel : public QObject {
     Q_OBJECT
 public:
-    explicit ChannelViewModel(ChannelSettings,QObject *parent=nullptr,ChannelModel *model=nullptr);
+    explicit ChannelViewModel(ChannelSettings,QObject *parent=nullptr);
     const ChannelSettings &settings()const{return m_settings;}
     ChannelSettings snapshotSettings()const;
     communication::HardwareChannels hardware()const;
@@ -42,11 +42,8 @@ public:
     QStringList logs()const{return m_logs;}
     bool setSettings(const ChannelSettings &);
     bool chooseImage(bool flash,const QString &path);
-    bool inspectDownloadFile(const QString &path,QString &suggestedRole,QString &error)const;
-    bool updateDownloadFiles(const QJsonArray &,QString &error);
     static QStringList imageCandidates(const QString &path);
     bool exportLogs(const QString &,QString &error)const;
-    bool exportFrames(const QString &,const FrameBatch &,QString &error)const;
     bool flashProfile(boot::FlashProfile &profile,QString &error)const;
     bool updateDownloadSettings(const ChannelSettings &settings,const boot::FlashProfile &profile,QString &error);
     const diag::Database &diagnosticDatabase()const{return m_database;}
@@ -62,7 +59,6 @@ public:
     QString diagnosticResult()const{return m_diagnosticResult;}
     QString diagnosticHint()const;
 public slots:
-    void flushMonitorFrames();
     void toggleConnection();
     void refresh();
     void start();
@@ -88,8 +84,6 @@ private:
     SignalTransmitViewModel *m_signals=nullptr;
     quint64 m_connectionGeneration=0;
     FrameTableModel m_frames;
-    FrameBatch m_pendingMonitorFrames;
-    QTimer m_monitorFlushTimer;
     communication::HardwareChannels m_hardware;
     communication::ConnectionState m_state=communication::ConnectionState::Missing;
     communication::Health m_health=communication::Health::Removed;

@@ -12,12 +12,11 @@ static const PhysicalRange *rangeFor(const SignalDefinition&s,quint64 bits){for(
 QString SignalCodec::differenceText(const QString&a,const QString&b){
     try{return decimal::text(decimal::require(a)-decimal::require(b));}catch(...){return "—";}
 }
-QString SignalCodec::physicalText(const SignalDefinition&s,const RawValue&r,const QString &unavailable){
-    const auto missing=unavailable.isEmpty()?QStringLiteral("无换算定义"):unavailable;
-    if(s.array||!s.conversion)return s.labels.contains(r.bits)?s.labels.value(r.bits):missing;
-    try {QString factor=s.factor,offset=s.offset;if(!s.ranges.isEmpty()){const auto p=rangeFor(s,r.bits);if(!p)return s.labels.value(r.bits,missing);factor=p->factor;offset=p->offset;}
+QString SignalCodec::physicalText(const SignalDefinition&s,const RawValue&r){
+    if(s.array||!s.conversion)return s.labels.contains(r.bits)?s.labels.value(r.bits):QStringLiteral("无换算定义");
+    try {QString factor=s.factor,offset=s.offset;if(!s.ranges.isEmpty()){const auto p=rangeFor(s,r.bits);if(!p)return s.labels.value(r.bits,"无换算定义");factor=p->factor;offset=p->offset;}
         return decimal::text(Number(integer(s,r))*require(factor)+require(offset));
-    }catch(...){return unavailable.isEmpty()?QStringLiteral("无效换算定义"):unavailable;}
+    }catch(...){return "无效换算定义";}
 }
 bool SignalCodec::parseBytes(const QString &text,int length,QByteArray &out,QString &error){
     QString compact=text;compact.remove(QRegularExpression("\\s"));

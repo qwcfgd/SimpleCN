@@ -1,5 +1,4 @@
 #include "SimulatedUdsEcu.h"
-#include "S32kLayout.h"
 namespace boot {
 QList<QByteArray> SimulatedUdsEcu::handle(const QByteArray &pdu){
     QList<QByteArray> replies;if(pdu.isEmpty())return replies;
@@ -60,17 +59,10 @@ QByteArray SimulatedUdsEcu::process(const QByteArray &r){
             if(r.size()!=13||quint8(r[4])!=0x44)return nrc(0x13);
             const auto address=readBe(r.mid(5,4)),length=readBe(r.mid(9,4));
             if(!length||length>64*1024*1024||quint64(address)+length>0x100000000ULL)return nrc(0x31);
-            if(t008BootSelection&&s32kBootLayout(address,length)&&address==activeBootAddress)return nrc(0x31);
             m_memory.remove(address);return positive(4)+char(0);
         }
         if(rid==m_profile.verifyRoutine){
             if(r.size()!=16)return nrc(0x13);const auto address=readBe(r.mid(4,4)),length=readBe(r.mid(8,4)),crc=readBe(r.mid(12,4));
-            if(rid==0xdd02){
-                // Simulation of the ECU's security placeholder, never a host reply.
-                // Transfer completeness remains checked; no cryptographic claim.
-                if(m_transfer||!m_memory.contains(address)||quint32(m_memory[address].size())!=length||r.mid(12)!=QByteArray(4,char(0)))return nrc(0x24);
-                return positive(4)+char(faults.badVerify?1:0);
-            }
             if(t008VerifySkipped){
                 if(m_transfer||!m_memory.contains(m_address)||m_pending.size()!=0||m_length==0)return nrc(0x24);
                 if(address!=m_address||length!=m_length)return nrc(0x31);
@@ -79,24 +71,15 @@ QByteArray SimulatedUdsEcu::process(const QByteArray &r){
             if(faults.badVerify||!m_memory.contains(address)||quint32(m_memory[address].size())!=length||crc32(m_memory[address])!=crc)return positive(4)+char(1);
             return positive(4)+char(0);
         }
-        if(rid==m_profile.dependencyRoutine){
-            if(r.size()!=4)return nrc(0x13);
-            // Test-only Flash state; use the same file contract as production.
-            if(m_profile.isS32kV2()&&!m_profile.isT010V2()){
-                RomMarker bootMarker,calMarker,appMarker;QString error;
-                const auto selected=m_pendingBootAddress?m_pendingBootAddress:activeBootAddress;
-                if(!FirmwareImage::validateMarker({selected,m_memory.value(selected)},ROM_MARKER_BOOT,bootMarker,error))return positive(4)+char(2);
-                if(!FirmwareImage::validateMarker({m_profile.calibBase,m_memory.value(m_profile.calibBase)},ROM_MARKER_CAL,calMarker,error)||!RomMarker_Match(&bootMarker,&calMarker))return positive(4)+char(4);
-                if(!FirmwareImage::validateMarker({m_profile.applicationEraseBase,m_memory.value(m_profile.applicationEraseBase)},ROM_MARKER_APP,appMarker,error)||!RomMarker_Match(&bootMarker,&appMarker)||!RomMarker_Match(&calMarker,&appMarker))return positive(4)+char(1);
-                if(m_pendingBootAddress){activeBootAddress=m_pendingBootAddress;m_pendingBootAddress=0;}
-            }
-            return positive(4)+char(m_memory.isEmpty()?1:0);
-        }
+        if(rid==m_profile.dependencyRoutine){if(r.size()!=4)return nrc(0x13);return positive(4)+char(m_memory.isEmpty()?1:0);}
         return nrc(0x31);
     }
     if(sid==0x34){
         if(r.size()!=11||r.mid(1,2)!=QByteArray::fromHex("0044"))return nrc(0x13);
         if(m_transfer)return nrc(0x24);
+        if(t008BootSelection){const auto address=readBe(r.mid(3,4)),length=readBe(r.mid(7,4));
+            if(length==0xf000&&(address==0x5000||address==0x6d000)&&address==activeBootAddress)return nrc(0x70);
+        }
         m_address=readBe(r.mid(3,4));m_length=readBe(r.mid(7,4));
         if(!m_length||m_length>64*1024*1024||quint64(m_address)+m_length>0x100000000ULL)return nrc(0x31);
         m_pending.clear();m_transfer=true;m_sequence=1;
@@ -114,9 +97,7 @@ QByteArray SimulatedUdsEcu::process(const QByteArray &r){
     if(sid==0x37){
         if(r.size()!=1)return nrc(0x13);
         if(!m_transfer||quint32(m_pending.size())!=m_length)return nrc(0x24);
-        m_memory[m_address]=m_pending;
-        if(s32kBootLayout(m_address,quint32(m_pending.size())))m_pendingBootAddress=m_address;
-        m_transfer=false;m_pending.clear();return positive(1);
+        m_memory[m_address]=m_pending;m_transfer=false;m_pending.clear();return positive(1);
     }
     if(sid==0x11){
         if(r!=QByteArray::fromHex("1101"))return nrc(0x12);

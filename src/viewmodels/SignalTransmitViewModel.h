@@ -3,7 +3,6 @@
 #include "domain/HostTypes.h"
 #include <QObject>
 #include <functional>
-#include <deque>
 #include <QFutureWatcher>
 #include <QJsonObject>
 #include "infrastructure/TraceReader.h"
@@ -17,12 +16,10 @@ public:
     const signal::RunStatus &status()const{return m_status;}
     QVector<signal::FrameDefinition> definitions()const;
     QVector<signal::FrameDefinition> queuedDefinitions()const;
-    QHash<quint64,QString> monitorCustomNames()const;
     bool selectCanNode(const QString&,const QString &direction,QString&error);
     bool removeQueuedFrame(const QString&,QString&error);
     const signal::FrameDefinition *frame(const QString&)const;
     bool running()const{return signal::active(m_status.state)||m_status.cleanupPending||m_replayGroupRunning;}
-    bool periodicRun()const{return m_periodic;}
     bool replayRunning()const{return m_replayGroupRunning||(m_replaying&&signal::active(m_status.state));}
     bool canStructure()const{return !running()&&!m_externalBusy&&!m_importing;}
     bool canData()const{return !m_status.cleanupPending&&!m_externalBusy&&!m_importing&&!(running()&&m_work.role==signal::LinRole::Monitor&&m_bus==signal::Bus::Lin);}
@@ -34,7 +31,6 @@ public:
     bool hasInvalidDraft()const;
     QString protocolInfo(const QString&)const;
     QString publicationHint(const QString&)const;
-    bool publishesLin(const QString&)const;
     void setAvailability(bool connected,bool otherTaskBusy,int bitrate,quint64 connection);
     bool importFile(const QString&,QString&error);
     void importAsync(const QString&);
@@ -61,16 +57,8 @@ public:
     void importReplay(const QString&);void resetReplay();void setReplayMapping(const QJsonObject&);
     bool startReplayPlan(signal::TxPlan,QString&);
     std::function<QStringList(signal::Bus)> replayTargets;
-    bool changeId(const QString&,quint32,QString&,bool allowSameId=false,int slotRow=-1);
+    bool changeId(const QString&,quint32,QString&,bool allowSameId=false);
     bool createSchedule(QString&);
-    bool deleteSchedule(QString&);
-    bool addImported(const QStringList&, QString&);
-    bool moveRows(QVector<int>, int destination, QString&);
-    bool renameRow(int, const QString&);
-    bool removeSlots(QVector<int>, QString&);
-    bool canEditList() const;
-    void publishList();
-    int scheduleIndex() const;
     bool setLinDelay(int,const QString&,QString&);
     void setRepeatCount(int);
     void setUiSettings(const QJsonObject&);
@@ -78,18 +66,16 @@ public:
     void applyStatus(host::signal::RunStatus);
     void receive(host::signal::BusFrameEvents);
     void observeFrames(host::FrameBatch);
-    FrameBatch traceHistory() const;
+    const FrameBatch &traceHistory() const {return m_traceHistory;}
     void clearTrace();
 signals:
     void replayRequested(bool);void replayStopRequested();
     void framesObserved(host::FrameBatch);
     void traceCleared();
-    // Counter-only updates do not change any controls or table cells.
-    void changed(bool countersOnly=false);
+    void changed();
     void structureChanged();
     void configurationRestored();
     void frameChanged(QString);
-    void monitorNamesChanged();
     void startRequested(host::signal::TxPlan);
     void stopRequested(quint64);
     void payloadRequested(host::signal::PayloadUpdate);
@@ -102,11 +88,10 @@ private:
     void restoreSnapshot(const signal::WorkingSet&);
     void applyConfiguration(signal::Database,const signal::WorkingSet&);
     signal::Bus m_bus;
-    std::deque<FrameRecord> m_traceHistory;
+    FrameBatch m_traceHistory;
     qint64 m_traceOrigin=-1;
     signal::Database m_database;
     signal::WorkingSet m_work,m_baseline;
-    QHash<QString,QStringList> m_rxCopies;
     QVector<signal::WorkingSet> m_history;
     signal::RunStatus m_status;
     bool m_replayGroupRunning=false;

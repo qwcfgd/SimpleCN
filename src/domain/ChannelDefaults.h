@@ -25,7 +25,7 @@ struct ChannelPageInitialValues {
         }
         return {{"flow","app"},{"stepEnabled",initialStepEnabled("app")},{"negativeResponseChecks",checks},{"timeoutChecks",timeouts},{"simulationOnly",false},
             {"keyProvider","seed-as-key"},{"keyLibrary",""},{"appSecurityLevel",0x01},{"securityLevel",0x11},
-            {"eraseRoutine",0xff00},{"verifyRoutine",0xdd02},{"dependencyRoutine",0xff01},
+            {"eraseRoutine",0xff00},{"verifyRoutine",0xff01},{"dependencyRoutine",0xff02},
             {"identityDid",0xf180},{"consecutiveFrameByteLimit",4095},{"resetWaitMs",1000}};
     }
     QJsonObject downloadProfile=initialDownloadProfile();
@@ -36,7 +36,7 @@ struct ChannelPageInitialValues {
     QString requestId="7E0",responseId="7E8",functionalId="7DF",nad="01",downloadTxId,downloadRxId,fingerprintHex,applicationNote;
     int p2Ms=1000,p2StarMs=5500,testerPresentMs=2000,maxPendingMs=60000;
     int programmingSession=2,securityLevel=0x01;
-    QString flashPath,applicationPath,flashAddress="20001400",applicationAddress="0001A000",applicationLength="0004D000";
+    QString flashPath,applicationPath,flashAddress="20001400",applicationAddress="00015000",applicationLength="00057000";
     bool flashRequired=true,testerPresentEnabled=false,rxdEnabled=ChannelPageInitialValues::defaultRxdEnabled;
     bool repeatDownloadEnabled=false;
     int repeatDownloadCount=2,repeatDownloadIntervalMs=1000;

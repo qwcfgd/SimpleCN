@@ -19,4 +19,4 @@ ChannelSettings 继承 ChannelPageInitialValues，不再复制字段初值；创
 
 协议库的 FlashProfile / CanOptions / SessionOptions 保留独立协议层默认值，供非 UI 调用及历史协议测试使用；实际页面运行时由 ChannelSettings 提供参数。协议层不依赖 QWidget，默认配置头只包含 Qt Core 类型与步骤元数据。
 
-构建使用 stage6-qt6 / stage6-qt5 预设。Windows 图标在 resources/app.rc 中引用根目录 SimpleCN.ico，同时 Qt 窗口通过 qrc 使用同一文件。
+构建使用 stage6-qt6 / stage6-qt5 预设。Windows 图标在 resources/app.rc 中引用根目录 Bootloader.ico，同时 Qt 窗口通过 qrc 使用同一文件。

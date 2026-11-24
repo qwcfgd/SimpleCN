@@ -30,10 +30,9 @@ struct FlashProfile {
     bool simulationOnly=true;
     QString flow="legacy",keyLibrary,target="generic";
     bool isT008()const{return target==t008::Target;}
-    bool isS32kV2()const{return target=="s32k144-t008-t009-v2"||target=="s32k144-t010-v2";}
-    bool isT010V2()const{return target=="s32k144-t010-v2";}
     QJsonObject stepEnabled,negativeResponseChecks,timeoutChecks;
     bool enabled(const QString &id)const{
+        if(isT008())for(const auto &step:downloadSteps())if(id==step.id)return flow!="boot"||!step.appOnly||id=="pre1003";
         for(const auto &step:downloadSteps())if(id==step.id)return stepEnabled.value(id).toBool(flow!="boot"||!step.appOnly);
         return false;
     }
@@ -42,13 +41,10 @@ struct FlashProfile {
         return !suppressesPositiveResponse(step)&&!fixedUncheckedTimeout(step)&&timeoutChecks.value(step).toBool(isT008()||flow=="legacy");
     }
     quint8 session=2,appSecurityLevel=0x01,securityLevel=0x11;
-    quint16 eraseRoutine=0xff00,verifyRoutine=0xdd02,dependencyRoutine=0xff01,identityDid=0xf180;
+    quint16 eraseRoutine=0xff00,verifyRoutine=0xff01,dependencyRoutine=0xff02,identityDid=0xf180;
     int consecutiveFrameByteLimit=4095,resetWaitMs=10;
     quint32 applicationEraseBase=0,applicationEraseLength=0x4000000;
-    quint32 bootEraseBase=0x5000,bootEraseLength=0x14000;
-    quint32 applicationBBase=0,bootBBase=0x68000;
-    bool applicationHasB=false,bootHasB=true;
-    quint32 calibBase=0x7e000,calibLength=0x1000;
+    quint32 bootEraseBase=0x5000,bootEraseLength=0xf000;
     QByteArray fingerprintData;
     static bool fromJson(const QJsonObject &,FlashProfile &,QString &);
     QJsonObject toJson() const;
@@ -60,7 +56,6 @@ public:
     ~FlashJob() override{cancel();}
     bool start(const FirmwareImage &application,const FirmwareImage &driver,QString &error);
     bool start(const FirmwareImage &application,const FirmwareImage &driver,const FirmwareImage &bootBundle,QString &error);
-    bool start(const FirmwareImage &application,const FirmwareImage &driver,const FirmwareImage &bootBundle,const FirmwareImage &calibration,QString &error);
     void cancel();
     bool running() const{return m_running;}
 signals:
@@ -80,9 +75,7 @@ private:
     void done();
     void step(const QString &,const QByteArray &,const QByteArray &,std::function<void(const QByteArray &)>,bool requiredData=false,
               std::function<bool(const QByteArray &)> specialNegative={},QByteArray recoverableNegative={});
-    void nextImage();
-    enum class RomTarget { Boot,Calib,App };
-    void eraseTarget(RomTarget,bool useB=false);
+    void nextSegment();
     void download();
     void block();
     void verify();
@@ -94,12 +87,10 @@ private:
     UdsSession &m_session;FlashProfile m_profile;std::unique_ptr<KeyProvider> m_key;
     QVector<Segment> m_segments;int m_driverCount=0,m_index=0,m_offset=0,m_blockSize=0,m_blockLength=0;
     int m_bootIndex=-1,m_appIndex=-1;
-    int m_calibIndex=-1;
-    QVector<Segment> m_bootAlternate,m_appAlternate;
-    bool m_bootUsingB=false,m_appUsingB=false;
+    QByteArray m_bootSlotB;
     quint8 m_sequence=1;quint64 m_epoch=0;qint64 m_total=0,m_acked=0;bool m_running=false;
     int m_ignored=0,m_transferPacket=0;bool m_isV2=false;
     QSet<quint8> m_unresolvedSids;
-    t008::Plan m_targetPlan,m_alternateTargetPlan;QTimer m_deadline;QElapsedTimer m_wall;QString m_versionObservation;
+    t008::Plan m_targetPlan;QTimer m_deadline;QElapsedTimer m_wall;QString m_versionObservation;
 };
 }

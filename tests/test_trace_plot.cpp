@@ -16,7 +16,6 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QFile>
-#include <QtEndian>
 #include <QDir>
 #include <QTableWidget>
 #include <QDialogButtonBox>
@@ -54,7 +53,7 @@ class TracePlotTest : public QObject {
         QVERIFY(proxy.setColumnFilter(5,f));
     }
 private slots:
-    void initTestCase(){UiLanguageController::instance();QApplication::setStyle("Fusion");QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf");QApplication::setFont(QFont("Microsoft YaHei",9));QDir().mkpath(artifacts());}
+    void initTestCase(){QApplication::setStyle("Fusion");QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf");QApplication::setFont(QFont("Microsoft YaHei",9));QDir().mkpath(artifacts());}
     void idRangeParsing(){
         FrameIdRange range;
         for(const auto &rule:QVector<QPair<QString,int>>{{"0x120 - 12F",16},{"100100000-0b100101111",2},{"0o440-457",8},{"288 - 303",10}}){
@@ -69,14 +68,14 @@ private slots:
     void idFilterCompleteHistoryAndSignalChildren(){
         FrameTableModel model;FrameFilterProxy proxy;proxy.setSourceModel(&model);
         FrameBatch batch;for(int n=0;n<FrameTableModel::Capacity+8;++n)batch.append(frame(n*1000,2,10,0x120+n%4));
-        model.append(batch);idFilter(proxy,true,true,{{0x121,0x122}});QCOMPARE(proxy.rowCount(),5004);
+        model.append(batch);idFilter(proxy,true,true,{{0x121,0x122}});QCOMPARE(proxy.rowCount(),5000);
         QCOMPARE(proxy.filteredHistory().size(),5004);QCOMPARE(model.historyCount(),qint64(10008));
         for(const auto &format:QStringList{"asc","blf"}){QString error;const auto path=artifacts()+"/filtered-cache."+format;
             QVERIFY2(TraceExporter::write(path,proxy.filteredHistory(),error),qPrintable(error));const auto read=TraceReader::read(path);QVERIFY2(read.error.isEmpty(),qPrintable(read.error));
             // Replay readers normalize their first event to zero; exported timestamps retain the capture origin.
             QCOMPARE(read.frames.size(),5004);QCOMPARE(read.frames.first().timeUs,qint64(0));QCOMPARE(read.frames.last().timeUs,qint64(10005000));
             if(format=="asc"){QFile file(path);QVERIFY(file.open(QIODevice::ReadOnly));QVERIFY(file.readAll().contains("0.001000 1 121 Rx"));}}
-        model.setPaused(true);model.append({frame(10008000,2,10,0x121)});QCOMPARE(proxy.rowCount(),5004);QCOMPARE(proxy.filteredHistory().size(),5005);
+        model.setPaused(true);model.append({frame(10008000,2,10,0x121)});QCOMPARE(proxy.rowCount(),5000);QCOMPARE(proxy.filteredHistory().size(),5005);
         idFilter(proxy,true,false,{{0x121,0x122}});QCOMPARE(proxy.filteredHistory().size(),5004);
         idFilter(proxy,true,true,{});QCOMPARE(proxy.rowCount(),0);QVERIFY(proxy.filteredHistory().isEmpty());
         idFilter(proxy,true,false,{});QCOMPARE(proxy.rowCount(),10000);QCOMPARE(proxy.filteredHistory().size(),10009);
@@ -301,15 +300,7 @@ private slots:
         display->setCurrentIndex(1);QCOMPARE(canvas->visibleRows().size(),2);table->clearSelection();QCOMPARE(canvas->visibleRows().size(),0);display->setCurrentIndex(0);
         axes->setCurrentIndex(0);auto before=canvas->xRange();const QPointF position(canvas->width()/2,canvas->height()-25);
         QWheelEvent wheel(position,canvas->mapToGlobal(position.toPoint()),QPoint(),QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
-        // The 1.47 interaction contract disables wheel-based value changes.
-        // Install the global controller explicitly so isolated/full-suite runs agree.
-        QApplication::sendEvent(canvas,&wheel);QCOMPARE(canvas->xRange().first,before.first);QCOMPARE(canvas->xRange().second,before.second);
-        auto *c1=dialog.findChild<QDoubleSpinBox*>("plotC1");const auto cursor=c1->value();
-        const QPointF c1pos(c1->rect().center());QWheelEvent cursorWheel(c1pos,c1->mapToGlobal(c1pos.toPoint()),QPoint(),QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
-        QApplication::sendEvent(c1,&cursorWheel);QCOMPARE(c1->value(),cursor);
-        const int axisMode=axes->currentIndex();const QPointF apos(axes->rect().center());
-        QWheelEvent axisWheel(apos,axes->mapToGlobal(apos.toPoint()),QPoint(),QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
-        QApplication::sendEvent(axes,&axisWheel);QCOMPARE(axes->currentIndex(),axisMode);
+        QApplication::sendEvent(canvas,&wheel);QVERIFY(canvas->xRange().second-canvas->xRange().first<before.second-before.first);
         table->clearSelection();table->topLevelItem(0)->setSelected(true);table->setFocus();QTest::keyClick(table,Qt::Key_Delete);QCOMPARE(model->rowCount(),1);
     }
     void exportPreservesInputAndStableTimeOrder(){
@@ -336,84 +327,10 @@ private slots:
         lin.timeUs=6000;lin.noResponse=false;lin.error=true;lin.errorFlags=4;rows.append(lin);
         QString error;for(const auto &format:QStringList{"csv","asc","blf"})QVERIFY2(TraceExporter::write(artifacts()+"/mixed."+format,rows,error),qPrintable(error));
         QFile blf(artifacts()+"/mixed.blf");QVERIFY(blf.open(QIODevice::ReadOnly));QCOMPARE(blf.read(4),QByteArray("LOGG"));
-        QFile asc(artifacts()+"/mixed.asc");QVERIFY(asc.open(QIODevice::ReadOnly));const auto ascBytes=asc.readAll();
-        QVERIFY(ascBytes.contains("0 0 3000 0 0 0 0 0"));
-        QVERIFY(ascBytes.contains("CANFD   1 Rx        123 "+QByteArray(32,' ')+" 1 0 d 32"));
         auto bad=frame();bad.length=64;QVERIFY(!TraceExporter::write(artifacts()+"/bad.blf",{bad},error));
     }
-    void blfInteroperabilityFixtures(){
-        for(const auto &mode:QStringList{"can","lin","mixed"}){
-            FrameBatch rows;QJsonArray expected;QMap<QString,int> channels;int annotations=0;
-            for(int n=0;n<6000;++n){
-                auto r=frame(qint64(n)*137,n&255,(n>>8)&255);
-                r.bus=(mode=="lin"||(mode=="mixed"&&n%2))?Bus::Lin:Bus::Can;
-                r.channel=(r.bus==Bus::Lin?"LIN":"CAN")+QString(n%4+1,'A');
-                r.id=r.bus==Bus::Lin?quint32(n%60):quint32(0x120+n%31);
-                r.direction=n%2?"TX":"RX";r.simulated=n%7==0;
-                r.status="status"+QString(n%4,'s');r.checksum=0x30+n%16;
-                const int variant=n%11;
-                if(r.bus==Bus::Lin){
-                    r.length=n%9;r.payload=r.payload.left(r.length);
-                    r.noResponse=variant==1;r.error=variant==2;
-                }else{
-                    r.extended=n%3==0;if(r.extended)r.id+=0x12340000;
-                    r.fd=variant==1;r.brs=r.fd&&n%2;r.esi=r.fd&&n%3==0;
-                    if(r.fd){r.length=n%2?32:64;r.payload=QByteArray(r.length,char(n&255));}
-                    r.rtr=variant==2;r.error=variant==4;
-                }
-                if(variant==3){r.request=true;r.simulated=false;}
-                if(r.rtr||r.error||r.noResponse)r.payload.clear();
-                if(r.bus==Bus::Lin&&!r.error&&!r.noResponse){
-                    unsigned sum=SignalCodec::linPid(quint8(r.id));
-                    for(auto byte:r.payload){sum+=quint8(byte);if(sum>255)sum-=255;}r.checksum=quint8(~sum);
-                }
-                r.identifier="0x"+QString::number(r.id,16).toUpper();r.data=r.payload.toHex(' ').toUpper();
-                const auto key=QString::number(int(r.bus))+":"+r.channel;
-                if(!channels.contains(key))channels[key]=channels.size()+1;
-                rows.append(r);
-                if(r.request){++annotations;continue;}
-                QJsonObject event{{"bus",r.bus==Bus::Lin?"LIN":"CAN"},{"channel",channels.value(key)},{"us",double(r.timeUs)}};
-                if(r.error){event["kind"]="error";if(r.bus==Bus::Lin){event["id"]=int(r.id);event["dlc"]=r.length;}}
-                else if(r.noResponse){event["kind"]="no-response";event["id"]=int(r.id);event["dlc"]=r.length;}
-                else{
-                    event["kind"]="frame";event["id"]=int(r.id);event["dlc"]=r.length;
-                    event["data"]=QString(r.payload.toHex());event["tx"]=r.direction=="TX";
-                    if(r.bus==Bus::Can){event["extended"]=r.extended;event["rtr"]=r.rtr;event["fd"]=r.fd;event["brs"]=r.brs;event["esi"]=r.esi;}
-                    else event["checksum"]=r.checksum;
-                }
-                expected.append(event);if(r.simulated||r.error||r.noResponse)++annotations;
-            }
-            QString error;const auto stem=artifacts()+"/interop-"+mode;
-            for(const auto &format:QStringList{"blf","asc"})QVERIFY2(TraceExporter::write(stem+"."+format,rows,error),qPrintable(error));
-            QFile blf(stem+".blf");QVERIFY(blf.open(QIODevice::ReadOnly));const auto bytes=blf.readAll();
-            const auto read32=[](const QByteArray &b,int pos){return qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(b.constData()+pos));};
-            QByteArray raw;int containers=0;
-            for(int pos=144;pos<bytes.size();){
-                const auto size=read32(bytes,pos+8);const auto rawSize=read32(bytes,pos+24);
-                QByteArray packed(4,0);qToBigEndian(rawSize,reinterpret_cast<uchar*>(packed.data()));packed+=bytes.mid(pos+32,size-32);
-                const auto block=qUncompress(packed);QCOMPARE(quint32(block.size()),rawSize);raw+=block;
-                pos+=size+size%4;++containers;
-            }
-            QVERIFY(containers>1);QSet<int> remainders;int objects=0;
-            for(int pos=0;pos<raw.size();){
-                QCOMPARE(raw.mid(pos,4),QByteArray("LOBJ"));const auto size=read32(raw,pos+8);QVERIFY(size>=32);
-                QCOMPARE(raw.mid(pos+size,size%4),QByteArray(size%4,0));remainders.insert(size%4);
-                pos+=size+size%4;QVERIFY(pos<=raw.size());++objects;
-            }
-            QCOMPARE(remainders.size(),4);QCOMPARE(objects,expected.size()+annotations+channels.size());
-            QFile manifest(stem+".json");QVERIFY(manifest.open(QIODevice::WriteOnly));
-            manifest.write(QJsonDocument(QJsonObject{{"events",expected},{"objects",expected.size()+annotations+channels.size()}}).toJson());
-        }
-    }
-    void csvIntervalHeader(){
-        FrameTableModel model;model.append({frame(0),frame(1000),frame(4000)});QString error;
-        const auto path=artifacts()+"/interval-header.csv";QVERIFY2(model.exportTrace(path,error),qPrintable(error));
-        QFile file(path);QVERIFY(file.open(QIODevice::ReadOnly));const auto bytes=file.readAll();
-        QVERIFY(bytes.contains(QString("\"间隔时间/s\"").toUtf8()));QVERIFY(!bytes.contains(QString("绝对时间/s").toUtf8()));
-        QVERIFY(bytes.contains("\"0.004\",\"0.003\""));
-    }
     void suppliedAscExport(){
-        QFile file(QString(TEST_SOURCE_DIR)+"/../log/test.asc");if(!file.open(QIODevice::ReadOnly))QSKIP("Optional sample");
+        QFile file(QString(TEST_SOURCE_DIR)+"/../testsrc/test.asc");if(!file.open(QIODevice::ReadOnly))QSKIP("Optional sample");
         FrameBatch rows;QJsonArray expected;
         while(!file.atEnd()&&rows.size()<3000){
             const auto tokens=QString::fromLatin1(file.readLine()).simplified().split(' ');bool ok=false;const double seconds=tokens.value(0).toDouble(&ok);if(!ok)continue;

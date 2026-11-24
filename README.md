@@ -6,22 +6,16 @@
 
 简体中文 · [English](README.en.md) · [GitHub：SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.60-2563eb)
+![Version](https://img.shields.io/badge/version-1.48-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
 从数据库信号编辑，到报文监视、日志回放和图像观测，在同一工作台完成。由 OpenAI Codex 协助开发。
 
-[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [许可说明](docs/Licensing.md)
+[快速上手](#快速上手) · [使用说明](docs/User-Guide.md) · [1.48 更新](docs/Release-1.48.md) · [许可说明](docs/Licensing.md)
 
 </div>
-
-## V1.60
-
-- CAN 发送和 LIN 调度使用同一按钮启停，信号解析表在控制行上方展开。
-- 报文监视按通道匹配报文名称，并保持滚动列表中已显示报文的底色。
-- 已连接的 CAN 通道发生故障时，手动发送操作先尝试重新连接一次。
 
 ## V1.45：CAN / LIN 色系区分与界面交互优化
  
@@ -34,7 +28,7 @@
 
 - 连接和所需镜像就绪后，LIN 在线下载未配置 27 DLL 时默认将收到的 seed 原样作为 key 发送，无需桥接 EXE。已填写但无效的 DLL 路径仍显示红色“27 dll未加载”并阻止启动。
 - 下载设置第一行提供 27 DLL 路径及现代 Windows 文件选择按钮；任务窗格显示连接、镜像及运行依赖的具体提示。LIN / CAN 模拟下载使用模拟算法。
-- 下载设置不显示目标协议选择；新建设置默认通用 UDS，旧配置不自动覆盖。擦除、校验和依赖 RID 使用现有下载设置菜单的使用值。Driver 基址上方的 App/Boot 解锁等级为单字节十六进制，默认分别为 `01`、`11`；种子请求为 `27 <等级>`，密钥请求为 `27 <等级+1> <key>`。UDS 种子子功能须为 `01–7D` 的奇数，下载等级独立于通道的旧安全等级参数保存。
+- 下载设置不再显示目标协议选择，设置页默认使用并保存为通用 UDS。Driver 基址上方的 App/Boot 解锁等级为单字节十六进制，默认分别为 `01`、`11`；种子请求为 `27 <等级>`，密钥请求为 `27 <等级+1> <key>`。UDS 种子子功能须为 `01–7D` 的奇数，下载等级独立于通道的旧安全等级参数保存。
 - 本机 Qt 5 / Qt 6 预设同时构建、部署 `seedkey/SeedkeyBridge32.exe`，供已配置 DLL 的下载调用；公开打包脚本携带该通用桥接程序，不携带私有算法。
 - 通信源码、PEAK API 头文件及 x64 运行库纳入本仓库 `resource/`，不再依赖其他工程的通信目录。详见 [1.44 更新说明](docs/Release-1.44.md)。
 
@@ -113,8 +107,7 @@
 | --- | --- |
 | 模拟模式 | 无硬件即可使用模拟通道；日志尽可能快速重现，保留 Sim Tx / Sim Rx 区分。 |
 | PEAK | PCAN / PLIN 后端；需要匹配的厂商驱动及 API。 |
-| 同星 TOSUN | TC1016 / TC1016P 系列经典 CAN 与 LIN 适配；应用运行库部署于 `driver/tosun/x64`。 |
-| Vector VN16xx | XL Driver Library 后端，按实际硬件能力枚举经典 CAN / LIN；详见 [Vector 硬件说明](docs/Vector-Hardware.md)，实机收发待验收。 |
+| 同星 TOSUN | TC1016 / TC1016P 系列经典 CAN 与 LIN 适配；需要 TSMaster / libTSCAN 运行库。 |
 | 真实硬件回放 | 原始 1 倍速；仅排除数据库明确属于当前节点的报文 ID；按人工映射选择参与通道。 |
 | CAN FD | 日志读写和模拟回放可处理相关记录；当前不开放真实 CAN FD 收发。 |
 | ECU 下载 | CAN 下载目前仅支持模拟；LIN 在线下载需实际目标参数及授权的安全访问算法。 |
@@ -123,7 +116,7 @@
 
 ## 快速上手
 
-1. 启动程序目录中的 `SimpleCN.exe`，首次创建 CAN01 和 LIN01，不自动连接硬件。
+1. 启动程序目录中的 `QtBootloader.exe`，首次创建 CAN01 和 LIN01，不自动连接硬件。
 2. 在通道配置中选择模拟模式，或选择已安装驱动的实际硬件及通道，设置波特率后连接。
 3. 在“信号发送”页导入 DBC / LDF，选择报文或调度表，编辑值并使能发送项。
 4. 使用“多次发送 / 多次调度”或周期模式，观察下方报文；点击“图像…”添加数据库信号。
@@ -142,22 +135,22 @@ ctest --preset qt6
 # Qt 5 使用 qt5
 ```
 
-预设默认为 Release，并固定到原工程 `C:/Documents/0_Qt/Qt-SimpleCN` 对应的工具链和输出路径。其他机器需调整 `CMakePresets.json` 的路径。首次配置获取固定版本的 dbcppp / Boost；离线依赖配置见 [构建实施记录](docs/Signal-Transmission-Implementation.md)。
+预设默认为 Release，并固定到原工程 `C:/Documents/0_Qt/Qt-GeneralController` 对应的工具链和输出路径。其他机器需调整 `CMakePresets.json` 的路径。首次配置获取固定版本的 dbcppp / Boost；离线依赖配置见 [构建实施记录](docs/Signal-Transmission-Implementation.md)。
 
 ### 程序与构建内容分离
 
 ```text
 ../build/
-├── Qt-SimpleCN-qt5/          # Qt 5 主程序与必要运行依赖
-├── Qt-SimpleCN-qt6/          # Qt 6 主程序与必要运行依赖
+├── Qt-GeneralController-qt5/          # Qt 5 主程序与必要运行依赖
+├── Qt-GeneralController-qt6/          # Qt 6 主程序与必要运行依赖
 └── qttemp/
-    ├── Qt-SimpleCN-qt5/      # 缓存、中间文件、tests、调试工具及日志
-    └── Qt-SimpleCN-qt6/      # Qt 6 独立构建与测试内容
+    ├── Qt-GeneralController-qt5/      # 缓存、中间文件、tests、调试工具及日志
+    └── Qt-GeneralController-qt6/      # Qt 6 独立构建与测试内容
 ```
 
 路径不随 worktree 改变；同一构建目录不应被不同检出同时使用。不在源码目录创建 build。`-DBUILD_TESTING=OFF` 可仅构建主程序；自定义程序位置使用 `HOST_RUNTIME_OUTPUT_DIR`，CMake `-B` 仍应放在 `../build/qttemp` 中。
 
-必要的 Qt / MinGW DLL、插件和硬件 API 应与 EXE 一起保留。工程根目录的 `driver/` 会由 CMake 复制到程序旁，包含 PEAK、TOSUN 和 Vector 应用运行库；Windows 设备驱动仍须安装。依赖和许可边界见 [驱动打包说明](docs/Driver-Packaging.md)。测试程序、模拟素材与缓存不进入运行目录。本机预设已启用 32 位安全访问桥接程序；自定义构建需设置 `BUILD_SEEDKEY_BRIDGE=ON` 和 `SEEDKEY_CXX32`。未配置 DLL 时使用 seed 原样回传，无需桥接程序；外部算法由使用者另行提供。
+必要的 Qt / MinGW DLL、插件和硬件 API 应与 EXE 一起保留。测试程序、模拟素材与缓存不进入运行目录。本机预设已启用 32 位安全访问桥接程序；自定义构建需设置 `BUILD_SEEDKEY_BRIDGE=ON` 和 `SEEDKEY_CXX32`。未配置 DLL 时使用 seed 原样回传，无需桥接程序；外部算法由使用者另行提供。
 
 ### 打包与独立验证
 
@@ -166,7 +159,7 @@ cmake --build --preset qt6 --target package_release
 ctest --preset qt6 -R release_runtime
 ```
 
-发布副本、ZIP 和 SHA256 位于相应 `qttemp/Qt-SimpleCN-qtN/release/` 下。打包不会覆盖已有目录，可用 `-DHOST_RELEASE_OUTPUT=<新目录>` 指定新路径。`VerifyRelease.exe` 留在 `qttemp` 的 tests 目录，通过 `HOST_RELEASE_DIR` 可指定另一份发布副本进行启动验证。
+发布副本、ZIP 和 SHA256 位于相应 `qttemp/Qt-GeneralController-qtN/release/` 下。打包不会覆盖已有目录，可用 `-DHOST_RELEASE_OUTPUT=<新目录>` 指定新路径。`VerifyRelease.exe` 留在 `qttemp` 的 tests 目录，通过 `HOST_RELEASE_DIR` 可指定另一份发布副本进行启动验证。
 
 ## 文档导航
 

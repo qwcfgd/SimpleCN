@@ -1,5 +1,4 @@
 #include <QtTest>
-#include "TestEventWait.h"
 #include "infrastructure/SettingsStore.h"
 #include <algorithm>
 #include <QApplication>
@@ -50,7 +49,7 @@ class DownloadRevisionTest : public QObject {
     Q_OBJECT
     QTemporaryDir temp;
     static FlashProfile profile(const QString &flow,bool checked=false){
-        FlashProfile p;p.applicationEraseBase=0x10000;p.flow=flow;p.resetWaitMs=1;
+        FlashProfile p;p.flow=flow;p.resetWaitMs=1;
         for(const auto &step:downloadSteps()){
             p.negativeResponseChecks[step.id]=checked;
             p.timeoutChecks[step.id]=checked;
@@ -58,7 +57,6 @@ class DownloadRevisionTest : public QObject {
         return p;
     }
     static FirmwareImage image(quint32 address,int n){
-        if(address==0xff00)address=0x10000;if(address<0x10000000)n=(n+4095)&~4095;
         FirmwareImage result;result.segments.append({address,QByteArray(n,char(0x5a))});result.size=n;return result;
     }
 private slots:
@@ -82,9 +80,9 @@ private slots:
         QTimer::singleShot(0,&page,[&]{auto d=page.findChild<QDialog*>("downloadSettingsDialog");
             if(!d){errors<<"missing dialog";return;}auto flow=d->findChild<QComboBox*>("downloadFlow");auto check=d->findChild<QCheckBox*>("enable_pre1003");
             if(!flow||!check){errors<<"missing controls";d->reject();return;}
-            if(loadedBoot&&check->isChecked())errors<<"saved unchecked boot option changed";
+            if(loadedBoot&&!check->isChecked())errors<<"loaded boot did not check";
             if(!loadedBoot){if(check->isChecked())errors<<"app changed";flow->setCurrentIndex(flow->findData("boot"));}
-            if(!loadedBoot&&!check->isChecked())errors<<"boot selection did not check";
+            if(!check->isChecked())errors<<"boot selection did not check";
             check->setChecked(false);if(check->isChecked())errors<<"manual uncheck blocked";
             flow->setCurrentIndex(flow->findData("app"));flow->setCurrentIndex(flow->findData("boot"));
             if(!check->isChecked())errors<<"reselection did not check";inspected=true;d->reject();});
@@ -144,7 +142,7 @@ private slots:
     void downloadButtonReadiness(){
         QFETCH(bool,lin);QFETCH(bool,connectFirst);
         auto settings=ChannelSettings::defaults(lin?communication::Bus::Lin:communication::Bus::Can);
-        settings.simulation=true;settings.applicationLength="00001000";settings.downloadProfile["resetWaitMs"]=1;
+        settings.simulation=true;settings.downloadProfile["resetWaitMs"]=1;
         ChannelViewModel vm(settings);ChannelPage page(&vm);
         auto button=page.findChild<QPushButton*>("startButton");
         auto hint=page.findChild<QLabel*>("downloadStartHint");QVERIFY(button);QVERIFY(hint);
@@ -153,7 +151,7 @@ private slots:
         auto connectChannel=[&]{vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());};
         if(connectFirst)connectChannel();
         const auto app=temp.filePath(QString("readiness-%1-%2.bin").arg(lin).arg(connectFirst));
-        QFile file(app);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QByteArray(4096,1));file.close();
+        QFile file(app);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QByteArray(32,1));file.close();
         QVERIFY(vm.chooseImage(false,app));
         if(!connectFirst)connectChannel();
         QVERIFY(!button->isEnabled());QCOMPARE(hint->text(),QString("此配置需要有效的 Flash Driver 镜像"));
@@ -163,7 +161,7 @@ private slots:
         QVERIFY(vm.chooseImage(true,app));QVERIFY(button->isEnabled());QVERIFY(hint->isHidden());
         QSignalSpy requested(vm.findChild<ChannelModel*>(),&ChannelModel::previewRequested);
         button->click();QCOMPARE(requested.count(),1);QVERIFY(!button->isEnabled());
-        QVERIFY(waitForTest([&]{return vm.taskState()==TaskState::Completed;},15000));
+        QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),TaskState::Completed,7001);
         QTRY_VERIFY(button->isEnabled());QVERIFY(hint->isHidden());
         auto model=vm.findChild<ChannelModel*>();
         model->taskChanged(TaskState::Running,0,"busy");QVERIFY(!button->isEnabled());QVERIFY(!hint->isHidden());
@@ -289,28 +287,28 @@ private slots:
     }
     void appAndBootWireSequence(){
         QFETCH(QString,flow);QFETCH(bool,checked);QFETCH(bool,customLevels);
-        auto p=profile(flow,checked);p.applicationEraseBase=0x10000;p.applicationEraseLength=0x1000;if(customLevels){p.appSecurityLevel=0x03;p.securityLevel=0x21;}WireBench bench(p);
+        auto p=profile(flow,checked);p.applicationEraseBase=0xff00;p.applicationEraseLength=0x20;if(customLevels){p.appSecurityLevel=0x03;p.securityLevel=0x21;}WireBench bench(p);
         FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished),events(&job,&FlashJob::stepEvent);
         QString error;const auto app=image(0xff00,32),driver=image(0x10000000,16);
-        QVERIFY2(job.start(app,driver,error),qPrintable(error));QVERIFY(waitForTest([&]{return done.count()==1;},6000));
+        QVERIFY2(job.start(app,driver,error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);
         QVERIFY2(done[0][0].toBool(),qPrintable(done[0][1].toString()));
         const auto requests=bench.ecu.requests;
         if(flow=="app"){
             QCOMPARE(requests[0],hex("1001"));QCOMPARE(requests[1],hex("1003"));QCOMPARE(requests[2],hex("27")+char(p.appSecurityLevel));
             QVERIFY(requests[3].startsWith(hex("27")+char(p.appSecurityLevel+1)));
-            for(const auto request:{"1083","8582","2883f1"})QVERIFY(requests.contains(hex(request)));
+            for(const auto request:{"1083","8582","288301"})QVERIFY(requests.contains(hex(request)));
         }
         else {QCOMPARE(requests[0],hex("1002"));QVERIFY(!requests.contains(hex("2701")));QVERIFY(!requests.contains(hex("220101")));}
         const int programming=requests.indexOf(hex("1002"));QVERIFY(programming>=0);
         QCOMPARE(requests[programming+1],hex("27")+char(p.securityLevel));QVERIFY(requests[programming+2].startsWith(hex("27")+char(p.securityLevel+1)));
         QCOMPARE(requests[programming+3].left(3),hex("2ef184"));QCOMPARE(requests[programming+3].size(),22);
         QCOMPARE(requests[programming+4],hex("3400441000000000000010"));
-        QVERIFY(requests.contains(hex("3101ff00440001000000001000")));
+        QVERIFY(requests.contains(hex("3101ff00440000ff0000000020")));
         const int reset=requests.indexOf(hex("1101"));QVERIFY(reset>programming);
-        QCOMPARE(requests.mid(reset),QList<QByteArray>({hex("1101"),hex("1003"),hex("14ffffff"),hex("2880f1"),hex("8581"),hex("1081"),hex("22f180")}));
+        QCOMPARE(requests.mid(reset),QList<QByteArray>({hex("1101"),hex("1003"),hex("14ffffff"),hex("288001"),hex("8581"),hex("1081"),hex("22f180")}));
         int suppressedCompletions=0;for(const auto &args:events)if(args[0].toString().contains("正响应抑制完成"))++suppressedCompletions;
         QCOMPARE(suppressedCompletions,flow=="app"?6:3);
-        QCOMPARE(bench.ecu.memory(0x10000),app.segments[0].data);QCOMPARE(bench.ecu.memory(0x10000000),driver.segments[0].data);
+        QCOMPARE(bench.ecu.memory(0xff00),app.segments[0].data);QCOMPARE(bench.ecu.memory(0x10000000),driver.segments[0].data);
         QJsonArray trace;for(const auto &r:requests)trace.append(QString::fromLatin1(r.toHex(' ')));
         QDir().mkpath("artifacts");QFile f("artifacts/flow-"+flow+(checked?"-checked":"-unchecked")+".json");QVERIFY(f.open(QIODevice::WriteOnly));
         f.write(QJsonDocument(QJsonObject{{"flow",flow},{"checked",checked},{"requests",trace},{"imageMatches",true},{"physicalBusUsed",false}}).toJson());
@@ -326,7 +324,7 @@ private slots:
     void ignoredTransferIsNotConfirmed(){
         auto p=profile("app",false);WireBench bench(p);bench.ecu.faults.negativeService=0x36;bench.ecu.faults.negativeCode=0x22;
         FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished),progress(&job,&FlashJob::progress);
-        QString error;QVERIFY(job.start(image(0xff00,16),{},error));QVERIFY(waitForTest([&]{return done.count()==1;},6000));
+        QString error;QVERIFY(job.start(image(0xff00,16),{},error));QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);
         QVERIFY(!done[0][0].toBool());QVERIFY(!progress.isEmpty());QVERIFY(progress.last()[0].toInt()<100);
     }
     void negativeResponsePolicy(){
@@ -334,10 +332,10 @@ private slots:
         auto p=profile("app",checked);WireBench bench(p);
         bench.ecu.faults.negativeService=service;bench.ecu.faults.negativeCode=0x22;
         FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished),notice(&job,&FlashJob::notice),events(&job,&FlashJob::stepEvent),progress(&job,&FlashJob::progress);
-        QString error;QVERIFY(job.start(image(0xff00,16),{},error));QVERIFY(waitForTest([&]{return done.count()==1;},6000));
+        QString error;QVERIFY(job.start(image(0xff00,16),{},error));QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);
         QCOMPARE(done[0][0].toBool(),success);
         if(!checked&&service==0x85){QCOMPARE(notice.count(),3);QVERIFY(done[0][1].toString().contains("未完全确认"));QVERIFY(bench.ecu.requests.contains(hex("1101")));QVERIFY(progress.last()[0].toInt()<100);}
-        else if(!checked&&service==0x14){QVERIFY(bench.ecu.requests.contains(hex("2880f1")));QVERIFY(progress.last()[0].toInt()<100);}
+        else if(!checked&&service==0x14){QVERIFY(bench.ecu.requests.contains(hex("288001")));QVERIFY(progress.last()[0].toInt()<100);}
         else {QVERIFY(!bench.ecu.requests.contains(hex("1101")));QVERIFY(done[0][1].toString().contains("NRC"));}
         if(service==0x85){
             bool found=false;for(const auto &args:events)found|=args[0].toString().contains("负响应NRC(0x22)");
@@ -349,10 +347,10 @@ private slots:
         p.stepEnabled["pre8502"]=false;
         WireBench bench(p);FlashJob job(bench.session,p,std::make_unique<SimulationKey>());
         QSignalSpy done(&job,&FlashJob::finished),progress(&job,&FlashJob::progress);QString error;
-        QVERIFY(job.start(image(0xff00,16),{},error));QVERIFY(waitForTest([&]{return done.count()==1;},6000));
+        QVERIFY(job.start(image(0xff00,16),{},error));QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);
         QVERIFY(!done[0][0].toBool());QVERIFY(done[0][1].toString().contains("未完全确认"));QVERIFY(progress.last()[0].toInt()<100);
         QVERIFY(!bench.ecu.requests.contains(hex("8582")));
-        QVERIFY(bench.ecu.requests.contains(hex("2883f1")));
+        QVERIFY(bench.ecu.requests.contains(hex("288301")));
     }
     void transportTimeoutIsNotIgnored(){
         auto p=profile("boot",false);WireBench bench(p);
@@ -364,7 +362,7 @@ private slots:
         });
         FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished),events(&job,&FlashJob::stepEvent);
         QString error;QVERIFY(job.start(image(0xff00,16),image(0x10000000,16),error));
-        QVERIFY(waitForTest([&]{return done.count()==1;},6000));QVERIFY(injected);
+        QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);QVERIFY(injected);
         QVERIFY(!done[0][0].toBool());QVERIFY(done[0][1].toString().contains("N_As"));
         QVERIFY(!bench.ecu.requests.contains(hex("37")));
         bool logged=false;for(const auto &event:events)logged|=event[0].toString().contains("传输超时");QVERIFY(logged);
@@ -381,10 +379,10 @@ private slots:
         else {bench.ecu.faults.pendingService=0x14;bench.ecu.faults.pendingCount=2;}
         FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished),events(&job,&FlashJob::stepEvent);
         QString error;QVERIFY(job.start(image(0xff00,16),{},error));
-        QVERIFY(waitForTest([&]{return done.count()==1;},6000));
+        QTRY_COMPARE_WITH_TIMEOUT(done.count(),1,6000);
         QCOMPARE(done[0][0].toBool(),!drop);
-        if(drop&&checked){QVERIFY(done[0][1].toString().contains("timeout"));QVERIFY(!bench.ecu.requests.contains(hex("2880f1")));}
-        else if(drop){QVERIFY(bench.ecu.requests.contains(hex("2880f1")));}
+        if(drop&&checked){QVERIFY(done[0][1].toString().contains("timeout"));QVERIFY(!bench.ecu.requests.contains(hex("288001")));}
+        else if(drop){QVERIFY(bench.ecu.requests.contains(hex("288001")));}
     }
 
     void seedkeyRejectsInvalidInputs(){
@@ -394,9 +392,9 @@ private slots:
     void defaultsAndDownloadDialog(){
         auto defaults=ChannelSettings::defaults(communication::Bus::Lin);QString error;
         ChannelSettings loaded;QVERIFY(ChannelSettings::fromJson(QJsonObject{{"bus","LIN"}},loaded,error));
-        QCOMPARE(defaults.applicationAddress,QString("0001A000"));
+        QCOMPARE(defaults.applicationAddress,QString("00015000"));
         QCOMPARE(loaded.applicationAddress,QString("00020000"));
-        auto expectedLegacy=defaults.toJson();expectedLegacy["applicationAddress"]="00020000";expectedLegacy["applicationLength"]="00057000";expectedLegacy["bootEraseLength"]="0000F000";expectedLegacy["bootBAddress"]="0006D000";
+        auto expectedLegacy=defaults.toJson();expectedLegacy["applicationAddress"]="00020000";
         QCOMPARE(loaded.toJson(),expectedLegacy);
         ChannelSettings roundTrip;QVERIFY(ChannelSettings::fromJson(defaults.toJson(),roundTrip,error));
         QCOMPARE(roundTrip.toJson(),defaults.toJson());QCOMPARE(defaults.nad,QString("01"));
@@ -423,7 +421,7 @@ private slots:
         ChannelHardwareEditor hardwareEditor(vm);auto modes=hardwareEditor.findChild<QComboBox*>("modeCombo");QVERIFY(modes);
         QCOMPARE(modes->itemText(0),QString("在线硬件"));QCOMPARE(modes->itemText(1),QString("模拟模式"));QCOMPARE(modes->currentIndex(),1);
         window.findChild<QTabWidget*>("channelTabs")->setCurrentIndex(0);
-        auto quick=vm->settings();quick.applicationLength="00001000";quick.p2Ms=30;quick.p2StarMs=60;QVERIFY(vm->setSettings(quick));
+        auto quick=vm->settings();quick.p2Ms=30;quick.p2StarMs=60;QVERIFY(vm->setSettings(quick));
         QTimer::singleShot(15000,&window,[&]{if(auto dialog=page->findChild<QDialog*>("downloadSettingsDialog"))dialog->reject();});
         QTimer::singleShot(30,&window,[&]{
             auto dialog=page->findChild<QDialog*>("downloadSettingsDialog");QVERIFY(dialog);
@@ -445,8 +443,7 @@ private slots:
             QCOMPARE(flow->count(),2);QCOMPARE(flow->itemText(0),QString("App起始流程"));QCOMPARE(flow->itemText(1),QString("Boot起始流程"));
             QVERIFY(!dialog->findChild<QLabel*>("feedbackDecisionTitle"));
             QVERIFY(!dialog->findChild<QCheckBox*>("download_default_flashRequired"));
-            QVERIFY(!dialog->findChild<QLineEdit*>("expectedDriverAbi"));QVERIFY(!dialog->findChild<QLineEdit*>("expectedMinimumBoot"));
-            for(const auto id:{"expectedAppVersion"}){
+            for(const auto id:{"expectedDriverAbi","expectedAppVersion","expectedMinimumBoot"}){
                 auto field=dialog->findChild<QLineEdit*>(id);auto check=dialog->findChild<QCheckBox*>(QString(id)+"Enabled");
                 QVERIFY(field&&check);QVERIFY(!check->isChecked());QVERIFY(!field->isEnabled());check->setChecked(true);QVERIFY(field->isEnabled());check->setChecked(false);
             }
@@ -540,9 +537,9 @@ private slots:
             QCOMPARE(dialog->findChild<QLineEdit*>("bootSecurityLevel")->text(),QString("21"));dialog->reject();
         });
         page->findChild<QPushButton*>("downloadSettings")->click();
-        const auto path=temp.path()+"/test.bin";QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QByteArray(4096,1));file.close();
+        const auto path=temp.path()+"/test.bin";QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QByteArray(32,1));file.close();
         QVERIFY(vm->chooseImage(false,path));QVERIFY(vm->chooseImage(true,path));QTRY_VERIFY(vm->canConnect());vm->toggleConnection();QTRY_VERIFY(vm->connected()&&!vm->pending());
-        vm->start();QVERIFY(waitForTest([&]{return vm->taskState()==TaskState::Completed;},15000));
+        vm->start();QTRY_COMPARE_WITH_TIMEOUT(vm->taskState(),TaskState::Completed,6000);
         const auto sentLevel=[&](const char *prefix){
             for(const auto &frame:vm->frames()->history())if(frame.payload.startsWith(hex(prefix)))return true;
             return false;

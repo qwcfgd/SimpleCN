@@ -61,6 +61,5 @@ const Catalog &catalog(){static const Catalog instance;return instance;}
 Language::Language():QObject(QCoreApplication::instance()){}
 Language &Language::instance(){static Language *language=new Language;return *language;}
 void Language::setCode(const QString&code){const bool next=code=="en";if(m_english==next)return;m_english=next;emit changed();}
-QString Language::text(const QString&source){return instance().english()?englishText(source):source;}
-QString Language::englishText(const QString&source){return catalog().render(source);}
+QString Language::text(const QString&source){return instance().english()?catalog().render(source):source;}
 }

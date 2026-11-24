@@ -4,17 +4,15 @@
 #include "protocol/FlashJob.h"
 #include "protocol/CanTransport.h"
 namespace host {
-bool effectiveDownloadFiles(const QJsonArray &files,QJsonArray &result,QString *error){
-    result={};if(error)error->clear();QHash<QString,QJsonObject> unique;
-    auto fail=[&](const QString &message){if(error)*error=message;return false;};
+bool effectiveDownloadFiles(const QJsonArray &files,QJsonArray &result){
+    QHash<QString,QJsonObject> latest;
     for(const auto &value:files){
-        if(!value.isObject())return fail("下载文件列表包含无效项目");
+        if(!value.isObject())return false;
         const auto row=value.toObject();const auto role=row.value("role").toString();
-        if(role!="driver"&&role!="boot"&&role!="calib"&&role!="app")return fail("下载文件类型无效："+role);
-        if(unique.contains(role))return fail("下载列表存在重复类型："+role+"。每种类型最多一个文件，原列表未改动。");
-        unique.insert(role,row);
+        if(role!="driver"&&role!="boot"&&role!="app")return false;
+        latest.insert(role,row);
     }
-    for(const auto role:{"driver","boot","calib","app"})if(unique.contains(role))result.append(unique.value(role));
+    result={};for(const auto role:{"driver","boot","app"})if(latest.contains(role))result.append(latest.value(role));
     return true;
 }
 ChannelSettings::ChannelSettings(){boot::FlashProfile p;QString error;if(boot::FlashProfile::fromJson(downloadProfile,p,error))downloadProfile=p.toJson();}
@@ -74,8 +72,6 @@ bool ChannelSettings::toConfiguration(communication::SoftwareChannelConfiguratio
         error="App length must be a 32-bit hexadecimal value";
     if(error.isEmpty() && (!hex(bootAddress,0xffffffff,address)||!hex(bootEraseLength,0xffffffff,address)))
         error="Boot address and length must be valid 32-bit hexadecimal values";
-    if(error.isEmpty()&&(!hex(calibAddress,0xffffffff,address)||!hex(calibLength,0xffffffff,address)))error="Calib address and length must be valid 32-bit hexadecimal values";
-    for(const auto &b:{bootBAddress,applicationBAddress})if(error.isEmpty()&&!b.isEmpty()&&!hex(b,0xffffffff,address))error="B address must be empty or a 32-bit hexadecimal address";
     if(error.isEmpty()&&!fingerprintHex.isEmpty()){
         static const QRegularExpression fpPattern("^[0-9a-fA-F]{38}$");
         if(!fpPattern.match(fingerprintHex).hasMatch())error="F184 must contain exactly 19 hexadecimal bytes";
@@ -87,7 +83,6 @@ bool ChannelSettings::toConfiguration(communication::SoftwareChannelConfiguratio
     }
     boot::CanOptions canOptions;canOptions.txId=request;canOptions.rxId=response;canOptions.extended=extendedId;
     if(error.isEmpty() && bus==communication::Bus::Can && !boot::CanOptions::fromJson(canNetwork,canOptions,error))return false;
-    QJsonArray checkedFiles;if(error.isEmpty()&&!effectiveDownloadFiles(downloadFiles,checkedFiles,&error))return false;
     boot::FlashProfile profile;
     if(error.isEmpty()&&!boot::FlashProfile::fromJson(downloadProfile,profile,error))return false;
     return error.isEmpty() && c.isValid();
@@ -100,8 +95,8 @@ QJsonObject ChannelSettings::toJson() const {
         {"functionalId",functionalId},{"nad",nad},{"downloadTxId",downloadTxId},{"downloadRxId",downloadRxId},{"fingerprintHex",fingerprintHex},{"p2Ms",p2Ms},{"p2StarMs",p2StarMs},
         {"testerPresentEnabled",testerPresentEnabled},{"testerPresentMs",testerPresentMs},{"maxPendingMs",maxPendingMs},{"programmingSession",programmingSession},
         {"securityLevel",securityLevel},{"flashPath",flashPath},{"applicationPath",applicationPath},{"downloadFiles",downloadFiles},
-        {"flashAddress",flashAddress},{"applicationAddress",applicationAddress},{"applicationLength",applicationLength},{"applicationNote",applicationNote},{"bootAddress",bootAddress},{"bootEraseLength",bootEraseLength},{"bootBAddress",bootBAddress},{"applicationBAddress",applicationBAddress},{"calibAddress",calibAddress},{"calibLength",calibLength},
-        {"checkAppVersion",checkAppVersion},{"expectedAppVersion",expectedAppVersion},
+        {"flashAddress",flashAddress},{"applicationAddress",applicationAddress},{"applicationLength",applicationLength},{"applicationNote",applicationNote},{"bootAddress",bootAddress},{"bootEraseLength",bootEraseLength},
+        {"checkDriverAbi",checkDriverAbi},{"checkAppVersion",checkAppVersion},{"checkMinimumBoot",checkMinimumBoot},{"expectedDriverAbi",expectedDriverAbi},{"expectedAppVersion",expectedAppVersion},{"expectedMinimumBoot",expectedMinimumBoot},
         {"flashRequired",flashRequired},{"rxdEnabled",rxdEnabled},{"repeatDownloadEnabled",repeatDownloadEnabled},
         {"repeatDownloadCount",repeatDownloadCount},{"repeatDownloadIntervalMs",repeatDownloadIntervalMs},
         {"cddPath",cddPath},{"cddEcu",cddEcu},{"cddVariant",cddVariant},{"signalConfiguration",signalConfiguration},
@@ -112,7 +107,6 @@ QJsonObject ChannelSettings::toJson() const {
 bool ChannelSettings::fromJson(const QJsonObject &o,ChannelSettings &result,QString &error) {
     if(o.value("bus")!="CAN" && o.value("bus")!="LIN"){error="配置中的总线类型无效。";return false;}
     ChannelSettings s=defaults(o.value("bus")=="CAN"?communication::Bus::Can:communication::Bus::Lin);
-    s.defaultMemoryLayout=false;
     const auto text=[&o](const char *key,const QString &fallback){return o.value(key).toString(fallback);};
     s.softwareId=text("softwareId",s.softwareId);s.profileId=text("profileId",s.profileId);
     s.cddPath=text("cddPath",{});s.cddEcu=text("cddEcu",{});s.cddVariant=text("cddVariant",{});
@@ -156,13 +150,10 @@ bool ChannelSettings::fromJson(const QJsonObject &o,ChannelSettings &result,QStr
     s.downloadFiles=o["downloadFiles"].toArray();
     // Configurations saved before this field existed retain their former base.
     s.flashAddress=text("flashAddress",s.flashAddress);s.applicationAddress=text("applicationAddress",QStringLiteral("00020000"));
-    s.applicationLength=text("applicationLength",QStringLiteral("00057000"));s.applicationNote=text("applicationNote",{});
-    s.bootAddress=text("bootAddress",s.bootAddress);s.bootEraseLength=text("bootEraseLength",QStringLiteral("0000F000"));
-    for(const auto key:{"bootBAddress","applicationBAddress","calibAddress","calibLength"})if(o.contains(key)&&!o.value(key).isString()){error=QString::fromLatin1(key)+": must be a hexadecimal string";return false;}
-    s.calibAddress=text("calibAddress",s.calibAddress);s.calibLength=text("calibLength",s.calibLength);
-    s.bootBAddress=text("bootBAddress",QStringLiteral("0006D000"));s.applicationBAddress=text("applicationBAddress",s.applicationBAddress);
-    s.checkAppVersion=o.value("checkAppVersion").toBool(false);
-    s.expectedAppVersion=text("expectedAppVersion",s.expectedAppVersion);
+    s.applicationLength=text("applicationLength",s.applicationLength);s.applicationNote=text("applicationNote",{});
+    s.bootAddress=text("bootAddress",s.bootAddress);s.bootEraseLength=text("bootEraseLength",s.bootEraseLength);
+    s.checkDriverAbi=o.value("checkDriverAbi").toBool(false);s.checkAppVersion=o.value("checkAppVersion").toBool(false);s.checkMinimumBoot=o.value("checkMinimumBoot").toBool(false);
+    s.expectedDriverAbi=text("expectedDriverAbi",s.expectedDriverAbi);s.expectedAppVersion=text("expectedAppVersion",s.expectedAppVersion);s.expectedMinimumBoot=text("expectedMinimumBoot",s.expectedMinimumBoot);
     s.flashRequired=o.value("flashRequired").toBool(s.flashRequired);
     s.rxdEnabled=o.value("rxdEnabled").toBool(s.rxdEnabled);
     s.repeatDownloadEnabled=o.value("repeatDownloadEnabled").toBool(s.repeatDownloadEnabled);

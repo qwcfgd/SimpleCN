@@ -3,7 +3,6 @@
 #include <memory>
 namespace host {
 enum class CanBusState { Unsupported, Ready, Warning, BusOff, Fatal };
-enum class LinWakeResult { Sent, Unsupported, Failed };
 // Raw wire types are confined to infrastructure; application ViewModels are vendor independent.
 class CanHardware : public communication::HardwareBackend {
 public:
@@ -18,13 +17,11 @@ public:
     virtual CanBusState statusFrame(const TPCANMsg&) const {return CanBusState::Unsupported;}
     virtual CanBusState busState(){return CanBusState::Unsupported;}
     virtual bool enableBusOffAutoReset(){return false;}
+    virtual bool resetBusController(){return false;}
 };
 class LinHardware : public communication::HardwareBackend {
 public:
     communication::Bus bus()const override{return communication::Bus::Lin;}
-    // Optional vendor pulse API. Unsupported preserves backends whose SDK
-    // has no verified wake primitive; it never means the ECU is ready.
-    virtual LinWakeResult wakeUp(){return LinWakeResult::Unsupported;}
     virtual bool sendRaw(TLINMsg)=0;
     virtual DWORD recvRaw(DWORD,TLINRcvMsg*)=0;
     virtual unsigned long lastErrorCode()const=0;

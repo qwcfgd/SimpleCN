@@ -20,7 +20,6 @@ bool TransmitPayload::parse(const QString&text,int length,QByteArray&bytes,QStri
     bytes=QByteArray::fromHex(hex.toLatin1()).leftJustified(length,char(0));error.clear();return true;
 }
 bool TransmitPayload::decode(const FrameDefinition&f,const QByteArray&bytes,QVector<RawValue>&values,QString&error){
-    if(bytes.size()==f.length)return SignalCodec::decode(f,bytes,values,error);
     auto layout=f;layout.length=qMax(f.length,int(bytes.size()));
     // Missing tail bits are zero only for decoding. They never enter the wire payload.
     return SignalCodec::decode(layout,bytes.leftJustified(layout.length,char(0)),values,error);

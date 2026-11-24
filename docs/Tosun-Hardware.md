@@ -4,7 +4,7 @@
 
 本轮接入经典 CAN（标准/扩展 ID、收发、时间戳与发送回显）及 LIN 的主节点、从节点、观测模式和调度接口；CAN FD 的发送及完整采集不在本轮范围。FD 控制器的接收队列可能包含经典 CAN 和错误帧，因此读取其 80 字节结构，但 FD 数据会明确标为不支持，不作为经典信号解析。
 
-应用优先加载程序目录 `driver/tosun/x64`（32 位为 `x86`）中的官方运行库及配套依赖，开发调试时可显式设置 `TOSUN_SDK_DIR` 作为回退；不再隐式依赖 TSMaster 安装目录。完整依赖集、来源、系统设备驱动要求和外部分发许可边界见 [Driver-Packaging.md](Driver-Packaging.md)。
+安装与程序位数匹配的 TSMaster 运行库。程序依次查找 `TOSUN_SDK_DIR`、程序目录 `dll/tosun`、TSMaster 默认安装目录（64 位使用 `bin64`）。本机使用 `C:/Program Files (x86)/TOSUN/TSMaster/bin64/libTSCAN.dll`。需要保留厂商配套依赖；工程不复制或分发专有 SDK DLL。
 
 在硬件配置中选择“在线硬件”，刷新后选择 TOSUN 设备及物理通道，再设置波特率并连接。设备按序列号和物理通道持久化；同一适配器的多个 CAN/LIN 通道共享原生连接，关闭其中一路不会断开仍在使用的其他路。设备内置 CAN 终端电阻默认关闭，应按实际总线配置外接终端。
 
@@ -24,8 +24,8 @@ LIN 单独连接默认进入观测模式；启动任务时应用所选角色。�
 - LIN1 接真实 ECU，本轮尚未进行真实 LIN 发送验证；主/从节点响应与 ECU 时序不能以模拟 SDK 测试替代。
 - CAN 下载仍沿用原项目限制，仅支持模拟模式；本轮未扩大下载功能范围。
 
-手动工具 `../build/qttemp/Qt-SimpleCN-qtN/tests/tosun_probe.exe` 默认只枚举设备。`--can-loopback <序列号>` 会打开 CAN1/CAN2 并最多提交 8 帧测试数据，遇到错误或无响应即停止；仅可用于已确认的隔离回环。`--termination` 仅供无外部终端的测试接线使用。该工具不属于自动 CTest，不打开 LIN 通道。
+手动工具 `../build/qttemp/Qt-GeneralController-qtN/tests/tosun_probe.exe` 默认只枚举设备。`--can-loopback <序列号>` 会打开 CAN1/CAN2 并最多提交 8 帧测试数据，遇到错误或无响应即停止；仅可用于已确认的隔离回环。`--termination` 仅供无外部终端的测试接线使用。该工具不属于自动 CTest，不打开 LIN 通道。
 
-程序运行目录固定为 `C:/Documents/0_Qt/build/Qt-SimpleCN-qt5`、`C:/Documents/0_Qt/build/Qt-SimpleCN-qt6`。
+程序运行目录固定为 `C:/Documents/0_Qt/build/Qt-GeneralController-qt5`、`C:/Documents/0_Qt/build/Qt-GeneralController-qt6`。
 
-CMake 缓存、测试和探测工具均保存在 `../build/qttemp/Qt-SimpleCN-qtN`，不进入程序运行目录。
+CMake 缓存、测试和探测工具均保存在 `../build/qttemp/Qt-GeneralController-qtN`，不进入程序运行目录。

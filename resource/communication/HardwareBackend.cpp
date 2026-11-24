@@ -12,11 +12,7 @@ bool PeakCanBackend::open(const HardwareChannel &h,const SoftwareChannelConfigur
     error=ok ? QString() : m_driver.lastErrorText(); return ok;
 }
 bool PeakCanBackend::close(QString &error) {
-    bool released=false;
-    const bool clean=m_driver.stopDevice(&released);
-    error=clean ? QString() : m_driver.lastErrorText();
-    // Once uninitialized, a queue clear/notification error cannot block reopening.
-    return released;
+    const bool ok=m_driver.stopDevice(); error=ok ? QString() : m_driver.lastErrorText(); return ok;
 }
 Health PeakCanBackend::health(QString &detail) {
     const auto h=m_driver.hardwareHealth();
