@@ -1,4 +1,5 @@
 #include <QtTest>
+#include "TestEventWait.h"
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QFile>
@@ -38,7 +39,8 @@ struct CanBench {
 };
 class CanProtocolTest : public QObject {
     Q_OBJECT
-    static FirmwareImage image(int n,quint32 address=0xff00){
+    static FirmwareImage image(int n,quint32 address=0x10000){
+        if(address<0x10000000)n=(n+4095)&~4095;
         FirmwareImage result;QByteArray bytes(n,0);for(int i=0;i<n;++i)bytes[i]=char(i*17+3);
         result.segments.append({address,bytes});result.size=n;return result;
     }
@@ -493,20 +495,20 @@ private slots:
     void fullUdsFlow_data(){QTest::addColumn<bool>("extended");QTest::newRow("11-bit")<<false;QTest::newRow("29-bit")<<true;}
     void fullUdsFlow(){
         QFETCH(bool,extended);CanOptions o;o.extended=extended;o.txId=extended?0x18da10f1:0x715;o.rxId=extended?0x18daf110:0x795;
-        FlashProfile profile;profile.applicationEraseBase=0xfe00;profile.applicationEraseLength=0x10205;CanBench b(o,profile);FlashJob job(b.session,profile,std::make_unique<SimulationKey>());
-        auto app=image(1024);app.segments.append({0x20000,hx("1234567890")});auto driver=image(64,0x10000000);
+        FlashProfile profile;profile.applicationEraseBase=0x10000;profile.applicationEraseLength=0x2000;CanBench b(o,profile);FlashJob job(b.session,profile,std::make_unique<SimulationKey>());
+        auto app=image(1024);app.segments.append({0x11000,QByteArray(4096,char(0x55))});auto driver=image(64,0x10000000);
         QJsonArray transcript,frames;QSignalSpy result(&job,&FlashJob::finished),progress(&job,&FlashJob::progress);
         connect(&b.session,&UdsSession::trace,&job,[&](bool tx,const QByteArray &pdu){transcript.append(QJsonObject{{"direction",tx?"TX":"RX"},{"uds",QString::fromLatin1(pdu.toHex(' '))}});});
         connect(&b.network,&CanTransport::trace,&job,[&](bool tx,const CanFrame &f){frames.append(QJsonObject{{"direction",tx?"TX":"RX"},{"id",QString::number(f.id,16)},{"extended",f.extended},{"bytes",QString::fromLatin1(f.data.toHex(' '))}});});
-        QString error;QVERIFY(job.start(app,driver,error));QVERIFY(until([&]{return result.size()==1;},10000));
+        QString error;QVERIFY(job.start(app,driver,error));QVERIFY(waitForTest([&]{return result.size()==1;},10000));
         QVERIFY2(result[0][0].toBool(),qPrintable(result[0][1].toString()));
-        for(const auto &s:app.segments)QCOMPARE(b.ecu.uds.memory(s.address),s.data);
+        QCOMPARE(b.ecu.uds.memory(0x10000),app.segments[0].data+app.segments[1].data);
         QCOMPARE(b.ecu.uds.memory(driver.segments[0].address),driver.segments[0].data);QCOMPARE(b.ecu.uds.resets,1);QCOMPARE(progress.last()[0].toInt(),100);
-        QList<int> expected={0x10,0x27,0x27,0x34,0x36,0x37,0x31,0x31,0x34,0x36,0x36,0x36,0x36,0x37,0x31,0x34,0x36,0x37,0x31,0x31,0x11,0x22};
+        QList<int> expected={0x10,0x27,0x27,0x34,0x36,0x37,0x31,0x31,0x34};for(int i=0;i<32;++i)expected.append(0x36);expected.append({0x37,0x31,0x31,0x11,0x22});
         QCOMPARE(b.ecu.uds.requests.size(),expected.size());
         for(int i=0;i<expected.size();++i)QCOMPARE(int(quint8(b.ecu.uds.requests[i][0])),expected[i]);
-        QCOMPARE(b.ecu.uds.requests[7],hx("3101ff00440000fe0000010205"));QCOMPARE(b.ecu.uds.requests.last(),hx("22f180"));
-        QVERIFY(job.start(app,driver,error));QVERIFY(until([&]{return result.size()==2;},10000));QVERIFY(result[1][0].toBool());QCOMPARE(b.ecu.uds.resets,2);
+        QCOMPARE(b.ecu.uds.requests[7],hx("3101ff00440001000000002000"));QCOMPARE(b.ecu.uds.requests[8],hx("3400440001000000002000"));QCOMPARE(b.ecu.uds.requests.last(),hx("22f180"));
+        QVERIFY(job.start(app,driver,error));QVERIFY(waitForTest([&]{return result.size()==2;},10000));QVERIFY(result[1][0].toBool());QCOMPARE(b.ecu.uds.resets,2);
         QDir().mkpath(QCoreApplication::applicationDirPath()+"/artifacts");
         QFile output(QCoreApplication::applicationDirPath()+QString("/artifacts/can-uds-%1.json").arg(extended?29:11));
         QVERIFY(output.open(QIODevice::WriteOnly));output.write(QJsonDocument(QJsonObject{{"completedRounds",2},{"memoryMatches",true},{"uds",transcript},{"canFrames",frames}}).toJson());
@@ -516,7 +518,7 @@ private slots:
         for(const char *s:{"NRC","pending","bad-echo","bad-crc","bad-length","timeout"})QTest::newRow(s)<<QString(s);
     }
     void udsFaults(){
-        QFETCH(QString,fault);CanBench b;FlashProfile p;
+        QFETCH(QString,fault);CanBench b;FlashProfile p;p.applicationEraseBase=0x10000;
         if(fault=="NRC")b.ecu.uds.faults.negativeService=0x34;
         if(fault=="pending"){b.ecu.uds.faults.pendingService=0x31;b.ecu.uds.faults.pendingCount=3;}
         if(fault=="bad-echo")b.ecu.uds.faults.badBlockEcho=true;
@@ -524,12 +526,12 @@ private slots:
         if(fault=="bad-length")b.ecu.uds.faults.badBlockLength=true;
         if(fault=="timeout")b.ecu.uds.faults.dropService=0x36;
         FlashJob job(b.session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished);QString e;
-        QVERIFY(job.start(image(64),{},e));QVERIFY(until([&]{return done.size()==1;},3000));QCOMPARE(done[0][0].toBool(),fault=="pending");
+        QVERIFY(job.start(image(64),{},e));QVERIFY(waitForTest([&]{return done.size()==1;},3000));QCOMPARE(done[0][0].toBool(),fault=="pending");
         if(fault!="pending")QCOMPARE(b.ecu.uds.resets,0);
         const int n=b.ecu.uds.requests.size();QTest::qWait(30);QCOMPARE(b.ecu.uds.requests.size(),n);
     }
     void cancellationAndIndependentCanLin(){
-        FlashProfile p,q;q.session=3;q.securityLevel=1;CanOptions a,c;c.txId=0x700;c.rxId=0x780;c.blockSize=1;c.stMin=2;
+        FlashProfile p,q;p.applicationEraseBase=q.applicationEraseBase=0x10000;q.session=3;q.securityLevel=1;CanOptions a,c;c.txId=0x700;c.rxId=0x780;c.blockSize=1;c.stMin=2;
         CanBench first(a,p),second(c,q);SimulatedLinEcu ecu(0x15,q);
         LinTransport lin(0x15,1,100,[&](quint8 id,const QByteArray &bytes,QString &error){
             if(!ecu.write(id,bytes,error))return false;
@@ -539,11 +541,11 @@ private slots:
         FlashJob x(first.session,p,std::make_unique<SimulationKey>()),y(second.session,q,std::make_unique<SimulationKey>()),z(linSession,q,std::make_unique<SimulationKey>());
         QSignalSpy xd(&x,&FlashJob::finished),yd(&y,&FlashJob::finished),zd(&z,&FlashJob::finished);QString e;
         QVERIFY(x.start(image(4096),{},e));QVERIFY(y.start(image(128),{},e));QVERIFY(z.start(image(64),{},e));
-        QVERIFY(until([&]{return first.ecu.uds.requests.size()>4;}));x.cancel();const int n=first.ecu.uds.requests.size();
-        QVERIFY(until([&]{return yd.size()==1&&zd.size()==1;},3000));
+        QVERIFY(waitForTest([&]{return first.ecu.uds.requests.size()>4;}));x.cancel();const int n=first.ecu.uds.requests.size();
+        QVERIFY(waitForTest([&]{return yd.size()==1&&zd.size()==1;},3000));
         QCOMPARE(first.ecu.uds.requests.size(),n);QCOMPARE(xd.size(),0);QVERIFY(yd[0][0].toBool());QVERIFY(zd[0][0].toBool());
         QCOMPARE(second.ecu.uds.requests.first(),hx("1003"));QCOMPARE(ecu.requests.first(),hx("1003"));
-        QVERIFY(x.start(image(32),{},e));QVERIFY(until([&]{return xd.size()==1;},3000));QVERIFY(xd[0][0].toBool());
+        QVERIFY(x.start(image(32),{},e));QVERIFY(waitForTest([&]{return xd.size()==1;},3000));QVERIFY(xd[0][0].toBool());
     }
 };
 QTEST_GUILESS_MAIN(CanProtocolTest)

@@ -9,6 +9,7 @@
 #include <cmath>
 namespace host {
 using namespace signal;
+static const FrameDefinition *uniqueDefinition(const Database &,quint32,bool);
 static QString validateEnabled(Schedule schedule,const QVector<FrameDefinition>&frames,const WorkingSet&work,int bitrate){
     const auto original=schedule.entries.size();for(int i=schedule.entries.size()-1;i>=0;--i)if(work.frames.contains(schedule.entries[i].frame)&&!work.frames.value(schedule.entries[i].frame).sendEnabled)schedule.entries.removeAt(i);
     auto effective=frames;for(auto&f:effective)if(work.frames.contains(f.key))f.length=work.frames.value(f.key).applied.bytes.size();
@@ -16,6 +17,13 @@ static QString validateEnabled(Schedule schedule,const QVector<FrameDefinition>&
 }
 SignalTransmitViewModel::SignalTransmitViewModel(Bus bus,QObject*parent):QObject(parent),m_bus(bus){
     auto empty=QSharedPointer<DatabaseDefinition>::create();empty->bus=bus;m_database=empty;if(bus==Bus::Lin)m_work.node="Master";
+    connect(this,&SignalTransmitViewModel::structureChanged,this,[this]{
+        m_rxCopies.clear();
+        for(const auto &f:m_work.customFrames){
+            const auto base=frameKey(m_bus,f.id,f.extended);
+            if(base!=f.key)m_rxCopies[base].append(f.key);
+        }
+    });
     connect(&m_replayLoad,&QFutureWatcher<TraceLog>::finished,this,[this]{m_importing=false;auto result=m_replayLoad.result();if(result.error.isEmpty()){remember();m_replayLog=std::move(result);m_work.replaySettings["path"]=m_replayPath;m_message=QString("已导入 %1 条回放记录，%2 个日志通道；跳过 %3 条非正常或不支持的记录").arg(m_replayLog.frames.size()).arg(m_replayLog.channels.size()).arg(m_replayLog.skipped);}else m_message=result.error;emit changed();emit notice(m_message);});
     connect(&m_import,&QFutureWatcher<ImportResult>::finished,this,[this]{
         m_importing=false;const auto result=m_import.result();QString error=result.error;
@@ -30,7 +38,36 @@ SignalTransmitViewModel::SignalTransmitViewModel(Bus bus,QObject*parent):QObject
 }
 QVector<FrameDefinition> SignalTransmitViewModel::definitions()const{auto list=m_database->frames;list+=m_work.customFrames;return list;}
 QVector<FrameDefinition> SignalTransmitViewModel::queuedDefinitions()const{
-    QVector<FrameDefinition> result;for(const auto&f:definitions())if(m_work.frames.value(f.key).enabled)result.append(f);std::stable_sort(result.begin(),result.end(),[](const auto&a,const auto&b){return a.id!=b.id?a.id<b.id:a.extended<b.extended;});return result;
+    auto all=definitions();
+    QHash<QString,int> rank;
+    for(const auto &key:m_work.canOrder)rank.insert(key,rank.size());
+    all.erase(std::remove_if(all.begin(),all.end(),[&](const auto &f){return !m_work.frames.value(f.key).enabled;}),all.end());
+    std::stable_sort(all.begin(),all.end(),[&](const auto &a,const auto &b){
+        const int left=rank.value(a.key,rank.size()), right=rank.value(b.key,rank.size());
+        if(left!=right)return left<right;
+        return a.id!=b.id?a.id<b.id:a.extended<b.extended;
+    });
+    return all;
+}
+QHash<quint64,QString> SignalTransmitViewModel::monitorCustomNames()const{
+    QHash<quint64,QString> names;
+    if(m_work.customFrames.isEmpty())return names;
+    const auto add=[&names](const FrameDefinition &frame,const QString &alias){
+        const auto key=frameIndexKey(frame.id,frame.extended);
+        if(!names.contains(key))names.insert(key,alias.isEmpty()?frame.name:alias);
+    };
+    if(m_bus==Bus::Can){
+        for(const auto &frame:queuedDefinitions())
+            if(frame.custom)add(frame,m_work.frames.value(frame.key).alias);
+    }else{
+        const auto current=scheduleIndex();
+        if(current<0)return names;
+        QHash<QString,const FrameDefinition*> custom;
+        for(const auto &frame:m_work.customFrames)custom.insert(frame.key,&frame);
+        for(const auto &slot:m_work.schedules[current].entries)
+            if(const auto *frame=custom.value(slot.frame))add(*frame,slot.alias);
+    }
+    return names;
 }
 bool SignalTransmitViewModel::selectCanNode(const QString&node,const QString&direction,QString&error){
     if(!canStructure()||m_bus!=Bus::Can||(!node.isEmpty()&&!m_database->nodes.contains(node))||
@@ -50,9 +87,14 @@ bool SignalTransmitViewModel::removeQueuedFrame(const QString&key,QString&error)
 const FrameDefinition* SignalTransmitViewModel::frame(const QString&key)const{for(const auto&f:m_database->frames)if(f.key==key)return &f;for(const auto&f:m_work.customFrames)if(f.key==key)return &f;return nullptr;}
 QString SignalTransmitViewModel::protocolInfo(const QString&key)const{const auto*f=frame(key);if(!f)return {};if(m_bus==Bus::Can)return f->extended?"经典 CAN · 扩展 29 bit":"经典 CAN · 标准 11 bit";
     return QString("PID 0x%1 · %2 checksum").arg(SignalCodec::linPid(quint8(f->id)),2,16,QChar('0')).arg(f->classicChecksum?"Classic":"Enhanced");}
+bool SignalTransmitViewModel::publishesLin(const QString&key)const{
+    const auto*f=frame(key);if(!f||m_bus!=Bus::Lin||m_work.role==LinRole::Monitor)return false;
+    if(m_work.role==LinRole::Master&&(f->id==0x3c||f->id==0x3d))return f->id==0x3c;
+    return (f->custom&&!f->databaseBound)||f->publisher==m_work.node||(f->id==0x3d&&m_work.role==LinRole::Slave);
+}
 QString SignalTransmitViewModel::publicationHint(const QString&key)const{const auto*f=frame(key);if(!f||m_bus!=Bus::Lin)return {};bool referenced=false;
     for(const auto&s:m_work.schedules)if(s.name==m_work.schedule)for(const auto&entry:s.entries)if(entry.frame==key)referenced=true;
-    return referenced&&f->publisher==m_work.node&&m_work.role!=LinRole::Monitor?"当前节点发布且在所选表中":"仅保存本地副本";}
+    return referenced&&publishesLin(key)?"当前节点发布且在所选表中":"仅保存本地副本";}
 void SignalTransmitViewModel::setAvailability(bool connected,bool other,int bitrate,quint64 connection){
     if(m_connected==connected&&m_externalBusy==other&&m_bitrate==bitrate&&m_connection==connection)return;
     m_connected=connected;m_externalBusy=other;m_bitrate=bitrate;m_connection=connection;emit changed();
@@ -170,6 +212,11 @@ bool SignalTransmitViewModel::putCustom(const QString&oldKey,const QString&name,
     remember();FrameDefinition f;f.key=newKey;f.id=id;f.extended=id>0x7ff;f.length=length;f.name=finalName;f.custom=true;f.cycleMs=cycle;f.classicChecksum=m_bus==Bus::Lin&&id>=60;f.publisher=m_work.node;
     TxDraft draft;if(!oldKey.isEmpty()){draft=m_work.frames.take(oldKey);for(int i=0;i<m_work.customFrames.size();++i)if(m_work.customFrames[i].key==oldKey){m_work.customFrames.removeAt(i);break;}}
     if(draft.applied.bytes.size()!=length){draft.applied.bytes=QByteArray(length,0);draft.frameError.clear();draft.frameInput.clear();}draft.cycleMs=cycle;++draft.applied.revision;
+    if(const auto *match=uniqueDefinition(m_database,id,f.extended)){
+        f.fields=match->fields;f.length=match->length;f.issue=match->issue;
+        if(!TransmitPayload::decode(f,draft.applied.bytes,draft.values,error))return false;
+        draft.appliedValues=draft.values;
+    }
     draft.enabled=true;m_work.customFrames.append(f);m_work.frames[f.key]=draft;
     if(m_bus==Bus::Lin)for(auto &s:m_work.schedules)if(s.name==m_work.schedule)s.entries.append({f.key,QString::number(cycle>0?cycle:100),{},0});emit structureChanged();emit changed();return true;
 }
@@ -195,8 +242,8 @@ bool SignalTransmitViewModel::duplicateFrame(const QString &sourceKey, QString &
     FrameDefinition copy=*source;
     copy.key=newKey;
     copy.name=newName;
-    copy.custom=true;
-    copy.publisher=m_work.node;
+    copy.custom=true;copy.databaseBound=!source->custom||source->databaseBound;
+    copy.publisher=source->publisher;
     TxDraft draft;
     if(m_work.frames.contains(sourceKey)){
         draft=m_work.frames.value(sourceKey);
@@ -228,7 +275,7 @@ bool SignalTransmitViewModel::selectSchedule(const QString&name,QString&error){
     if(it==m_work.schedules.end()||m_importing||m_externalBusy||m_status.state==RunState::Starting||m_status.state==RunState::Stopping||m_status.state==RunState::SwitchPending||m_status.state==RunState::Switching){error="调度表不存在或切换正在进行";return false;}
     if(running()){error=m_work.role==LinRole::Monitor?QString():validateEnabled(*it,definitions(),m_work,m_bitrate);if(!error.isEmpty())return false;
         m_status.state=RunState::SwitchPending;m_status.pending=name;emit scheduleRequested(m_status.run,name);
-    }else {remember();m_work.schedule=name;}emit changed();return true;
+    }else {remember();m_work.schedule=name;emit monitorNamesChanged();}emit changed();return true;
 }
 bool SignalTransmitViewModel::replaceSchedules(const QVector<Schedule>&schedules,const QString&selected,QString&error){
     if(!canStructure()||m_bus!=Bus::Lin){error="运行时调度结构冻结";return false;}QSet<QString> names;
@@ -249,11 +296,11 @@ void SignalTransmitViewModel::back(){if(canBack()){const auto snapshot=m_history
 void SignalTransmitViewModel::restore(){if(canRestore()){restoreSnapshot(m_baseline);m_history.clear();emit changed();}}
 bool SignalTransmitViewModel::hasInvalidDraft()const{for(const auto&d:m_work.frames)if(!d.errors.isEmpty()||!d.frameError.isEmpty())return true;return false;}
 bool SignalTransmitViewModel::start(bool periodic,QString&error){
-    if(replayConfigured()){if(!canStructure()){error="请先停止当前任务";return false;}emit replayRequested(periodic);return true;}
+    if(!canStart()){error="请连接通道，并停止其他任务";return false;}
+    if(replayConfigured()){m_periodic=periodic;emit replayRequested(periodic);return true;}
     const bool isCanRx=m_bus==Bus::Can&&m_work.canDirection=="Rx";
     if(!isCanRx&&!hasEnabled()){error="请使能至少一条待发送报文或帧";return false;}
     if(m_bus==Bus::Lin&&!periodic&&m_work.role!=LinRole::Master){error="从节点和观测节点不支持多次调度";return false;}
-    if(!canStart()){error="请连接通道，并停止其他任务";return false;}
     TxPlan plan;plan.bus=m_bus;plan.role=m_work.role;plan.node=m_work.node;plan.schedule=m_work.schedule;plan.schedules=m_work.schedules;
     plan.periodic=periodic;plan.repeatCount=m_work.repeatCount;plan.connection=m_connection;plan.databaseRevision=m_database->sha256;
     if(m_bus==Bus::Lin){
@@ -261,20 +308,44 @@ bool SignalTransmitViewModel::start(bool periodic,QString&error){
             error=validateEnabled(*it,definitions(),m_work,m_bitrate);if(!error.isEmpty())return false;}
         if(!m_database->path.isEmpty()&&((plan.role==LinRole::Master&&plan.node!=m_database->master)||(plan.role==LinRole::Slave&&(!m_database->nodes.contains(plan.node)||plan.node==m_database->master)))){error="请选择有效的实际节点";return false;}
     }
-    for(const auto&f:definitions()){const auto &draft=m_work.frames[f.key];if(m_bus==Bus::Can&&!draft.enabled)continue;
+    if(!isCanRx)for(const auto&f:(m_bus==Bus::Can?queuedDefinitions():definitions())){const auto &draft=m_work.frames[f.key];if(m_bus==Bus::Can&&!draft.enabled)continue;
         if(m_bus==Bus::Can&&draft.sendEnabled&&(!f.issue.isEmpty()||(periodic&&draft.cycleMs<1))){error=f.issue.isEmpty()?"周期发送的每一项必须设置至少 1 ms":f.issue;return false;}
         if(!f.issue.isEmpty())continue;
-        plan.items.append({f.key,f.id,f.extended,draft.applied.bytes,draft.cycleMs,draft.applied.revision,m_bus==Bus::Lin&&(f.custom||(f.id==61&&m_work.role==LinRole::Slave))?m_work.node:f.publisher,f.classicChecksum,draft.sendEnabled});
+        plan.items.append({f.key,f.id,f.extended,draft.applied.bytes,draft.cycleMs,draft.applied.revision,m_bus==Bus::Lin?(publishesLin(f.key)?m_work.node:QString()):f.publisher,f.classicChecksum,draft.sendEnabled});
     }
     if(m_bus==Bus::Can&&!isCanRx&&plan.items.isEmpty()){error="请先选择节点报文或右键自建报文";return false;}
     m_replaying=false;m_periodic=periodic;plan.run=++m_nextRun;m_status={};m_status.state=RunState::Starting;m_status.run=plan.run;m_status.detail="启动中";emit startRequested(plan);emit changed();return true;
 }
 void SignalTransmitViewModel::stop(){emit replayStopRequested();if(!signal::active(m_status.state)&&!m_status.cleanupPending)return;m_status.state=RunState::Stopping;emit stopRequested(m_status.run);emit changed();}
-void SignalTransmitViewModel::applyStatus(RunStatus status){if(status.run!=m_status.run)return;m_status=std::move(status);if(!m_status.current.isEmpty())m_work.schedule=m_status.current;emit changed();}
+void SignalTransmitViewModel::applyStatus(RunStatus status){
+    if(status.run!=m_status.run)return;
+    if(m_status.state==RunState::Stopping&&signal::active(status.state)&&status.state!=RunState::Stopping)return;
+    const bool countersOnly=(status.current.isEmpty()||status.current==m_work.schedule)&&
+        status.state==m_status.state&&status.cleanupPending==m_status.cleanupPending&&
+        status.current==m_status.current&&status.pending==m_status.pending&&status.detail==m_status.detail&&
+        status.failures==m_status.failures;
+    if(countersOnly){
+        if(status.sent==m_status.sent&&status.missed==m_status.missed)return;
+        m_status=std::move(status);
+        emit changed(true);
+        return;
+    }
+    m_status=std::move(status);
+    if(!m_status.current.isEmpty()&&m_status.current!=m_work.schedule)
+        for(const auto &s:m_work.schedules)if(s.name==m_status.current){m_work.schedule=s.name;emit monitorNamesChanged();break;}
+    emit changed();
+}
 void SignalTransmitViewModel::observeFrames(FrameBatch frames){
     for(auto &r:frames){if(m_traceOrigin<0)m_traceOrigin=r.captureUs;r.timeUs=r.captureUs-m_traceOrigin;}
-    m_traceHistory+=frames;if(m_traceHistory.size()>10000)m_traceHistory.remove(0,m_traceHistory.size()-10000);
+    // The plot backfill window is bounded, unlike the monitor's complete log.
+    // Removing a QVector prefix for every physical frame moved 10k records on
+    // the GUI thread. A deque expires only the oldest records in constant time.
+    for(const auto &frame:frames){m_traceHistory.push_back(frame);if(m_traceHistory.size()>10000)m_traceHistory.pop_front();}
     emit framesObserved(frames);
+}
+FrameBatch SignalTransmitViewModel::traceHistory()const{
+    FrameBatch frames;frames.reserve(int(m_traceHistory.size()));
+    for(const auto &frame:m_traceHistory)frames.append(frame);return frames;
 }
 void SignalTransmitViewModel::clearTrace(){m_traceHistory.clear();m_traceOrigin=-1;emit traceCleared();}
 void SignalTransmitViewModel::receive(BusFrameEvents events){
@@ -282,11 +353,8 @@ void SignalTransmitViewModel::receive(BusFrameEvents events){
     for(const auto&e:events){
         if(e.bus!=m_bus||e.source==EventSource::RequestAccepted||e.source==EventSource::HardwareEcho||e.source==EventSource::Simulated)continue;
         const auto baseKey=frameKey(e.bus,e.id,e.extended);
-        QStringList matchedKeys;
+        auto matchedKeys=m_rxCopies.value(baseKey);
         if(m_work.frames.contains(baseKey))matchedKeys.append(baseKey);
-        for(auto it=m_work.frames.constBegin();it!=m_work.frames.constEnd();++it){
-            if(it.key().startsWith(baseKey+"@"))matchedKeys.append(it.key());
-        }
         for(const auto &key:matchedKeys){
             auto &rx=m_work.frames[key].rx;
             rx.bytes=e.bytes;rx.hardwareUs=e.hardwareUs;rx.arrivalUs=e.arrivalUs;
@@ -295,9 +363,8 @@ void SignalTransmitViewModel::receive(BusFrameEvents events){
             if(f){
                 QString err;
                 QVector<RawValue> values;
-                if(SignalCodec::decode(*f,e.bytes,values,err)){
-                    rx.values=values;
-                }
+                if(e.valid&&TransmitPayload::decode(*f,e.bytes,values,err))rx.values=std::move(values);
+                else rx.values.clear();
             }
             updated.insert(key);
         }
@@ -347,50 +414,148 @@ bool SignalTransmitViewModel::setLinDelay(int row,const QString &value,QString &
     for(int n=0;n<m_work.schedules.size();++n)if(m_work.schedules.at(n).name==m_work.schedule&&row>=0&&row<m_work.schedules.at(n).entries.size()){remember();m_work.schedules[n].entries[row].delayMs=value;emit changed();return true;}
     error="调度槽不存在";return false;
 }
-bool SignalTransmitViewModel::changeId(const QString &oldKey,quint32 id,QString &error,bool allowSameId){
-    using namespace signal;
-    const auto *old=frame(oldKey);if(!canStructure()||!old||id>(m_bus==Bus::Can?0x1fffffff:61)){error="停止后才能修改有效 ID";return false;}
-    if(id==old->id)return true;
-    if(m_bus==Bus::Can){
-        if(!allowSameId){for(const auto &f:queuedDefinitions())if(f.id==id){error="待发送表已有目标 ID，已撤回变更";return false;}}
+int SignalTransmitViewModel::scheduleIndex() const{
+    for(int i=0;i<m_work.schedules.size();++i)if(m_work.schedules[i].name==m_work.schedule)return i;
+    return -1;
+}
+bool SignalTransmitViewModel::canEditList() const{
+    return canStructure()||(m_status.state==RunState::Running&&canData()&&!replayRunning());
+}
+void SignalTransmitViewModel::publishList(){
+    if(!running()||m_replaying||(m_bus==Bus::Can&&m_work.canDirection=="Rx"))return;
+    auto plan=QSharedPointer<TxPlan>::create();
+    plan->bus=m_bus;plan->role=m_work.role;plan->node=m_work.node;plan->schedule=m_work.schedule;
+    plan->run=m_status.run;plan->connection=m_connection;plan->periodic=m_periodic;
+    plan->repeatCount=m_work.repeatCount;plan->schedules=m_work.schedules;
+    for(const auto &f:(m_bus==Bus::Can?queuedDefinitions():definitions())){
+        if(!f.issue.isEmpty())continue;
+        const auto &d=m_work.frames.constFind(f.key).value();
+        plan->items.append({f.key,f.id,f.extended,d.applied.bytes,d.cycleMs,d.applied.revision,
+            m_bus==Bus::Lin?(publishesLin(f.key)?m_work.node:QString()):f.publisher,f.classicChecksum,d.sendEnabled});
     }
-    else for(const auto &s:m_work.schedules)if(s.name==m_work.schedule)for(const auto &slot:s.entries){const auto *f=frame(slot.frame);if(f&&f->id==id){error="本调度表已有目标 ID，已撤回变更";return false;}}
-    FrameDefinition replacement=*old;bool hit=false;
-    for(const auto &f:m_database->frames)if(f.id==id){replacement=f;hit=true;break;}
-    const QString databaseKey=frameKey(m_bus,id,hit?replacement.extended:id>0x7ff);
-    QString target;
-    if(m_bus==Bus::Lin){
-        target=databaseKey+"@"+QString::fromLatin1(m_work.schedule.toUtf8().toHex());
-    } else {
-        if(!allowSameId||(!m_work.frames.contains(databaseKey)&&!frame(databaseKey))){
-            target=databaseKey;
-        } else {
-            int counter=1;
-            while(m_work.frames.contains(QString("%1@%2").arg(databaseKey).arg(counter))||
-                  frame(QString("%1@%2").arg(databaseKey).arg(counter))){
-                ++counter;
-            }
-            target=QString("%1@%2").arg(databaseKey).arg(counter);
+    PayloadUpdate update;update.plan=plan;update.run=m_status.run;update.connection=m_connection;
+    emit payloadRequested(update);
+}
+bool SignalTransmitViewModel::addImported(const QStringList &keys,QString &error){
+    if(!canEditList()){error="当前不能编辑发送列表";return false;}
+    const bool can=m_bus==Bus::Can;
+    const int table=scheduleIndex();
+    if(!can&&table<0){error="请先选择调度表";return false;}
+    QStringList order;
+    QSet<QString> present;
+    if(can)for(const auto &f:queuedDefinitions()){order.append(f.key);present.insert(f.key);}
+    else for(const auto &slot:m_work.schedules[table].entries)present.insert(slot.frame);
+    QStringList add;
+    QSet<QString> imported;
+    for(const auto &f:m_database->frames)if(can||f.line>0)imported.insert(f.key);
+    for(const auto &key:keys){
+        if(!imported.contains(key)||present.contains(key))continue;
+        const auto &d=m_work.frames.value(key);
+        if(running()&&(!frame(key)->issue.isEmpty()||(can&&m_periodic&&d.sendEnabled&&d.cycleMs<1))){
+            error="报文不能加入当前运行计划";return false;
         }
+        present.insert(key);add.append(key);
     }
-    if(!hit){replacement.key=target;replacement.id=id;replacement.extended=id>0x7ff;replacement.custom=true;replacement.fields.clear();replacement.issue.clear();replacement.name=QString("Frame_%1").arg(id,0,16).toUpper();replacement.cycleMs=100;replacement.publisher=m_work.node;replacement.transmitters.clear();replacement.classicChecksum=m_bus==Bus::Lin&&id>=60;if(replacement.classicChecksum)replacement.length=8;}
-    replacement.key=target;
-    TxDraft draft;if(!SignalCodec::initialize(replacement,m_bus,draft,error))return false;
-    draft.enabled=true;draft.sendEnabled=m_work.frames.value(oldKey).sendEnabled;
-    if(!hit){draft.applied.bytes=m_work.frames.value(oldKey).applied.bytes.leftJustified(replacement.length,char(0),true);draft.appliedValues=draft.values;}
-    QString delay=QString::number(draft.cycleMs);if(hit&&m_bus==Bus::Lin){bool found=false;for(const auto &s:m_database->schedules){for(const auto &slot:s.entries)if(slot.frame==databaseKey){delay=slot.delayMs;found=true;break;}if(found)break;}}
+    if(add.isEmpty())return true;
+    if(can){remember();m_work.canOrder=order+add;for(const auto &key:add)m_work.frames[key].enabled=true;}
+    else{
+        auto next=m_work.schedules.at(table);
+        for(const auto &key:add)next.entries.append({key,"100",{},0});
+        if(running()){error=validateEnabled(next,definitions(),m_work,m_bitrate);if(!error.isEmpty())return false;}
+        remember();m_work.schedules[table]=next;
+    }
+    publishList();emit structureChanged();emit changed();return true;
+}
+bool SignalTransmitViewModel::deleteSchedule(QString &error){
+    const int i=scheduleIndex();
+    if(!canEditList()||m_bus!=Bus::Lin||i<0){error="请选择可删除的调度表";return false;}
+    remember();m_work.schedules.removeAt(i);
+    m_work.schedule=m_work.schedules.isEmpty()?QString():m_work.schedules[qMin(i,int(m_work.schedules.size())-1)].name;
+    publishList();emit structureChanged();emit changed();return true;
+}
+bool SignalTransmitViewModel::removeSlots(QVector<int> rows,QString &error){
+    int table=scheduleIndex();
+    if(!canEditList()||table<0||rows.isEmpty()){error="请选择调度槽";return false;}
+    std::sort(rows.begin(),rows.end());rows.erase(std::unique(rows.begin(),rows.end()),rows.end());
+    if(rows.first()<0||rows.last()>=m_work.schedules[table].entries.size())return false;
+    remember();auto &entries=m_work.schedules[table].entries;
+    for(auto i=rows.crbegin();i!=rows.crend();++i)entries.removeAt(*i);
+    publishList();emit structureChanged();emit changed();return true;
+}
+bool SignalTransmitViewModel::moveRows(QVector<int> rows,int destination,QString &error){
+    if(!canEditList()||rows.isEmpty()){error="请选择可移动的行";return false;}
+    const bool can=m_bus==Bus::Can;const int table=scheduleIndex();
+    if(!can&&table<0)return false;
+    QStringList order;if(can)for(const auto &f:queuedDefinitions())order.append(f.key);
+    const int count=can?order.size():m_work.schedules.at(table).entries.size();
+    std::sort(rows.begin(),rows.end());rows.erase(std::unique(rows.begin(),rows.end()),rows.end());
+    if(rows.first()<0||rows.last()>=count||destination<0||destination>count)return false;
+    QVector<int> indices;
+    for(int i=0;i<=count;++i){
+        if(i==destination)indices+=rows;
+        if(i<count&&!std::binary_search(rows.cbegin(),rows.cend(),i))indices.append(i);
+    }
     remember();
-    if(m_bus==Bus::Lin||!hit){bool replaced=false;for(auto &f:m_work.customFrames)if(f.key==target){f=replacement;replaced=true;break;}if(!replaced)m_work.customFrames.append(replacement);}
-    m_work.frames[target]=draft;
-    if(m_bus==Bus::Can){
-        if(old->custom){
-            for(int i=0;i<m_work.customFrames.size();++i)if(m_work.customFrames[i].key==oldKey){m_work.customFrames.removeAt(i);break;}
-            m_work.frames.remove(oldKey);
-        }else{
-            m_work.frames[oldKey].enabled=false;
+    if(can){m_work.canOrder.clear();for(int i:indices)m_work.canOrder.append(order[i]);}
+    else{const auto original=m_work.schedules.at(table).entries;auto &entries=m_work.schedules[table].entries;entries.clear();for(int i:indices)entries.append(original[i]);}
+    publishList();emit structureChanged();emit changed();return true;
+}
+bool SignalTransmitViewModel::renameRow(int row,const QString &alias){
+    if(!canEditList()||row<0)return false;
+    if(m_bus==Bus::Can){const auto items=queuedDefinitions();if(row>=items.size())return false;remember();m_work.frames[items[row].key].alias=alias.trimmed();}
+    else{const int table=scheduleIndex();if(table<0||row>=m_work.schedules.at(table).entries.size())return false;remember();m_work.schedules[table].entries[row].alias=alias.trimmed();}
+    emit monitorNamesChanged();emit changed();return true;
+}
+static const FrameDefinition *uniqueDefinition(const Database &db,quint32 id,bool extended){
+    const FrameDefinition *found=nullptr;
+    for(const auto &definition:db->frames){
+        if(definition.id!=id||definition.extended!=extended)continue;
+        if(found)return nullptr;
+        found=&definition;
+    }
+    return found;
+}
+bool SignalTransmitViewModel::changeId(const QString &oldKey,quint32 id,QString &error,bool allowSameId,int slotRow){
+    const auto *old=frame(oldKey);
+    if(!canStructure()||!old||id>(m_bus==Bus::Can?0x1fffffff:61)){error="无效 ID 或通道正在运行";return false;}
+    if(id==old->id)return true;
+    const bool extended=m_bus==Bus::Can&&(old->extended||id>0x7ff);
+    const bool can=m_bus==Bus::Can;
+    const int table=scheduleIndex();
+    if(!can){
+        if(table<0)return false;
+        const auto &entries=m_work.schedules.at(table).entries;
+        if(slotRow<0){for(int i=0;i<entries.size();++i)if(entries[i].frame==oldKey){slotRow=i;break;}}
+        if(slotRow<0||slotRow>=entries.size()||entries[slotRow].frame!=oldKey)return false;
+        for(const auto &slot:entries){
+            const auto *existing=frame(slot.frame);
+            if(existing&&existing->id==id){error="本调度表已有目标 ID";return false;}
         }
     }
-    else for(auto &s:m_work.schedules)if(s.name==m_work.schedule)for(auto &slot:s.entries)if(slot.frame==oldKey){slot.frame=target;slot.delayMs=delay;slot.issue.clear();}
+    auto draft=m_work.frames.value(oldKey);
+    if(!TransmitPayload::validLength(m_bus,id,draft.applied.bytes.size())){error="当前 DLC 与目标 ID 不兼容";return false;}
+    if(!allowSameId&&can)for(const auto &f:queuedDefinitions())if(f.id==id&&f.extended==extended){error="发送列表中已有相同 ID";return false;}
+    const auto *match=uniqueDefinition(m_database,id,extended);
+    FrameDefinition replacement=match?*match:FrameDefinition{};
+    replacement.databaseBound=bool(match);replacement.id=id;replacement.extended=extended;replacement.custom=true;
+    if(!match){replacement.length=draft.applied.bytes.size();replacement.publisher=m_work.node;replacement.name=QString("Frame_%1").arg(id,0,16);replacement.classicChecksum=!can&&id>=60;}
+    const QString base=frameKey(m_bus,id,extended);
+    int suffix=0;
+    do{replacement.key=base+"@"+QString::number(++suffix);}while(frame(replacement.key));
+    if(!TransmitPayload::decode(replacement,draft.applied.bytes,draft.values,error))return false;
+    draft.appliedValues=draft.values;draft.inputs.clear();draft.errors.clear();draft.warnings.clear();draft.rx={};
+    draft.frameInput.clear();draft.frameError.clear();++draft.applied.revision;
+    remember();
+    if(can){
+        QStringList order;
+        for(const auto &f:queuedDefinitions())order.append(f.key==oldKey?replacement.key:f.key);
+        m_work.canOrder=order;
+        m_work.frames[oldKey].enabled=false;
+        for(int i=0;i<m_work.customFrames.size();++i)if(m_work.customFrames[i].key==oldKey){
+            m_work.customFrames.removeAt(i);m_work.frames.remove(oldKey);break;
+        }
+    }else{auto &slot=m_work.schedules[table].entries[slotRow];slot.frame=replacement.key;slot.issue.clear();}
+    m_work.customFrames.append(replacement);m_work.frames.insert(replacement.key,draft);
     emit structureChanged();emit changed();return true;
 }
 }

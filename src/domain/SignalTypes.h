@@ -38,8 +38,9 @@ struct FrameDefinition {
     bool extended=false,custom=false,classicChecksum=false;
     QVector<SignalDefinition> fields;
     QMap<QString,QString> attributes;
+    bool databaseBound=false;
 };
-struct ScheduleSlot { QString frame,delayMs="100",issue;int line=0; };
+struct ScheduleSlot { QString frame,delayMs="100",issue;int line=0;QString alias; };
 struct Schedule { QString name,issue;QVector<ScheduleSlot> entries; };
 struct DatabaseDefinition {
     Bus bus=Bus::Can;
@@ -73,7 +74,7 @@ struct TxDraft {
     QVector<RawValue> values;
     QVector<RawValue> appliedValues;
     QMap<int,QString> inputs,errors,warnings;
-    QString frameInput,frameError;
+    QString frameInput,frameError,alias;
     AppliedPayload applied;
     LastRxState rx;
     bool enabled=false,sendEnabled=true;int cycleMs=0;
@@ -81,6 +82,7 @@ struct TxDraft {
 struct WorkingSet {
     int repeatCount=1;
     QJsonObject uiSettings,replaySettings;
+    QStringList canOrder;
     QString canNode,canDirection="Tx";
     QVector<FrameDefinition> customFrames;
     QMap<QString,TxDraft> frames;
@@ -102,7 +104,7 @@ struct TxPlan {
     quint64 run=0,connection=0;QString databaseRevision;
     QVector<TxItem> items;QVector<Schedule> schedules;
 };
-struct PayloadUpdate { QString key;AppliedPayload payload;quint64 run=0,connection=0;bool enabled=true,enableChanged=false; };
+struct PayloadUpdate { QString key;AppliedPayload payload;quint64 run=0,connection=0;bool enabled=true,enableChanged=false;QSharedPointer<const TxPlan> plan; };
 struct BusFrameEvent {
     Bus bus=Bus::Can;quint32 id=0;bool extended=false;
     QByteArray bytes;bool valid=true;
@@ -120,6 +122,7 @@ struct RunStatus {
     QMap<QString,quint64> sent,missed;QMap<QString,QString> failures;
 };
 inline bool active(RunState s){return s!=RunState::Stopped&&s!=RunState::Faulted;}
+inline quint64 frameIndexKey(quint32 id,bool extended){return quint64(id)|(extended?(quint64(1)<<32):0);}
 inline QString frameKey(Bus b,quint32 id,bool ext=false){return QString("%1:%2:%3").arg(b==Bus::Can?"CAN":"LIN",ext?"EXT":"STD").arg(id);}
 }
 Q_DECLARE_METATYPE(host::signal::TxPlan)

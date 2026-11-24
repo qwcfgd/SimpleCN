@@ -43,6 +43,21 @@ class SignalDriverTest:public QObject {
     void open(tstPeakLin&lin){QVERIFY(lin.setHardwareHandle(21));QVERIFY(lin.setDevMode(modMaster));QVERIFY(lin.setDevBaudrate(19200));QVERIFY(lin.startDevice());}
     TLINFrameEntry frame(int id){TLINFrameEntry f={};f.FrameId=BYTE(id);f.Length=2;f.Direction=dirPublisher;f.ChecksumType=cstClassic;f.Flags=FRAME_FLAG_RESPONSE_ENABLE;f.InitialData[0]=0x11;f.InitialData[1]=0x22;return f;}
 private slots:
+    void diagnosticSlaveOnlyInstallsResponses(){
+        SignalLinApi api;tstPeakLin lin(nullptr,&api);open(lin);QVERIFY(lin.signalConfigureMode(false));
+        auto request=frame(0x3c),response=frame(0x3d);request.Length=response.Length=8;
+        QVERIFY(lin.signalInstallFrames({request,response}));
+        QCOMPARE(api.mode,TLINHardwareMode(modSlave));QVERIFY(api.schedule.isEmpty());QCOMPARE(api.writes,0);
+        for(int id:{0x3c,0x3d}){
+            QCOMPARE(api.entries[id].Direction,TLINDirection(dirPublisher));
+            QVERIFY(api.entries[id].Flags&FRAME_FLAG_RESPONSE_ENABLE);
+            QCOMPARE(api.entries[id].ChecksumType,TLINChecksumType(cstClassic));
+            QVERIFY(lin.signalUpdateFrame(BYTE(id),QByteArray(8,char(id))));
+            QCOMPARE(api.entries[id].InitialData[7],BYTE(id));
+        }
+        QCOMPARE(api.writes,0);QVERIFY(api.schedule.isEmpty());
+        QVERIFY(lin.signalStop());for(int id:{0x3c,0x3d})QVERIFY(!(api.entries[id].Flags&FRAME_FLAG_RESPONSE_ENABLE));
+    }
     void diagnosticSlotsUseScheduleAndClassicChecksum(){
         SignalLinApi api;tstPeakLin lin(nullptr,&api);open(lin);auto request=frame(60),response=frame(61);request.Length=response.Length=8;response.Direction=dirSubscriber;response.Flags=0;
         QVERIFY(lin.signalInstallFrames({request,response}));TLINScheduleSlot a={},b={};a.Type=b.Type=sltUnconditional;a.FrameId[0]=60;b.FrameId[0]=61;a.Delay=15;b.Delay=20;

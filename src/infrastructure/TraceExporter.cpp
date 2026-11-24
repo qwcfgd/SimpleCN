@@ -17,7 +17,8 @@ QByteArray base(quint32 type,quint32 length,quint16 header=32){
 }
 QByteArray object(quint32 type,const QByteArray &body,qint64 us){
     QByteArray b=base(type,32+body.size());u32(b,2);u16(b,0);u16(b,0);u64(b,quint64(qMax(qint64(0),us))*1000);b+=body;
-    while(b.size()%4)b.append(char(0));return b;
+    // Vector BLF uses objectSize % 4 padding, not ordinary alignment to four bytes.
+    b+=QByteArray(b.size()%4,0);return b;
 }
 void systemTime(QByteArray &b,qint64 ms){
     const auto dt=QDateTime::fromMSecsSinceEpoch(ms);const auto d=dt.date();const auto t=dt.time();
@@ -41,7 +42,7 @@ QByteArray csv(const FrameBatch &rows){
     QByteArray b("\xEF\xBB\xBF");
     const auto escape=[](QString s){if(!s.isEmpty()&&QString("=+-@").contains(s.front()))s.prepend('\'');s.replace('"',"\"\"");return "\""+s+"\"";};
     auto line=[&](const QStringList &cells){QStringList out;for(auto s:cells)out<<escape(s);b+=(out.join(',')+"\r\n").toUtf8();};
-    line({"时间","时刻/s","绝对时间/s","软件通道","方向","ID","长度","数据","状态"});
+    line({"时间","时刻/s","间隔时间/s","软件通道","方向","ID","长度","数据","状态"});
     for(const auto &r:rows)line({r.timestamp,r.relativeTime,r.intervalSeconds,r.channel,r.direction,r.identifier,QString::number(r.length),r.data,r.status});
     return b;
 }
@@ -82,7 +83,12 @@ bool TraceExporter::write(const QString &path,const FrameBatch &input,QString &e
                 else if(r.error)line=QString("// %1 L%2 %3 %4 - error 0x%5").arg(t).arg(ch).arg(id,dir,hex(r.errorFlags));
                 else line=QString("%1 L%2 %3 %4 %5 %6 checksum = %7").arg(t).arg(ch).arg(id,dir).arg(r.length).arg(data,QString("%1").arg(checksum(r),2,16,QChar('0')).toUpper());
             }else if(r.error)line=QString("%1 %2 ErrorFrame").arg(t).arg(ch);
-            else if(r.fd)line=QString("%1 CANFD %2 %3 %4  %5 %6 %7 %8 %9 0 0 0 0 0 0 0 0").arg(t).arg(ch).arg(dir,id).arg(int(r.brs)).arg(int(r.esi)).arg(dlc(r.length),0,16).arg(r.length).arg(data);
+            else if(r.fd){
+                // CANoe requires the numeric ID / empty symbolic-name field widths and FD flags.
+                const auto flags=0x1000u|(r.brs?0x2000u:0)|(r.esi?0x4000u:0)|(dir=="Tx"?0x40u:0);
+                line=QString("%1 CANFD %2 %3 %4 %5 %6 %7 %8 %9 %10 0 0 %11 0 0 0 0 0")
+                    .arg(t).arg(ch,3).arg(dir).arg(id,10).arg(QString(32,' ')).arg(int(r.brs)).arg(int(r.esi)).arg(dlc(r.length),0,16).arg(r.length).arg(data).arg(hex(flags));
+            }
             else line=QString("%1 %2 %3 %4 %5 %6 %7").arg(t).arg(ch).arg(id,dir,r.rtr?"r":"d").arg(r.length).arg(r.rtr?QString():data);
             bytes+=(line+"\r\n").toUtf8();
             if(r.request||r.simulated||r.error||r.noResponse)bytes+=("// "+t+" "+source(r)+" "+clean(r.status)+"\r\n").toUtf8();

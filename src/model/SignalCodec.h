@@ -6,7 +6,7 @@ public:
     static quint64 mask(int width);
     static RawValue defaults(const SignalDefinition &);
     static QString rawText(const SignalDefinition &,const RawValue &);
-    static QString physicalText(const SignalDefinition &,const RawValue &);
+    static QString physicalText(const SignalDefinition &,const RawValue &,const QString &unavailable={});
     static QString differenceText(const QString &a,const QString &b);
     static ValueResult parseRaw(const SignalDefinition &,const QString &);
     // rangeIndex is required only when a segmented inverse has multiple candidates.

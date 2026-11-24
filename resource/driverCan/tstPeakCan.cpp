@@ -73,20 +73,20 @@ bool tstPeakCan::startDevice()
     return true;
 }
 
-bool tstPeakCan::stopDevice()
+bool tstPeakCan::stopDevice(bool *released)
 {
+    if(released)*released=true;
     t_open = false;
     if (!t_acquired) { t_PCANStatus = PCAN_ERROR_OK; return true; }
     HANDLE event=t_receiveEvent;t_receiveEvent=nullptr;TPCANStatus unregisterResult=PCAN_ERROR_OK;
     if(event){HANDLE disabled=nullptr;unregisterResult=t_pPCANBasic->SetValue(t_hHw,PCAN_RECEIVE_EVENT,&disabled,sizeof(disabled));}
     // Reset failure (including unplug) must never skip Uninitialize.
-    // A failed attempt to disarm hard reset must not cause another reset here.
-    const auto reset = t_hardResetArmed ? PCAN_ERROR_OK : t_pPCANBasic->Reset(t_hHw);
+    const auto reset = t_pPCANBasic->Reset(t_hHw);
     const auto release = t_pPCANBasic->Uninitialize(t_hHw);
+    if(released)*released=release==PCAN_ERROR_OK;
     // If neither unregister nor uninitialize succeeded, retain the OS handle:
     // the driver may still reference it. It is reclaimed when the process exits.
     if(event && (unregisterResult==PCAN_ERROR_OK || release==PCAN_ERROR_OK))CloseHandle(event);
-    if(release==PCAN_ERROR_OK)t_hardResetArmed=false;
     t_acquired = false;
     t_MsgRxArrSize = 0;
     t_PCANStatus = release != PCAN_ERROR_OK ? release : reset != PCAN_ERROR_OK ? reset : unregisterResult;

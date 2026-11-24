@@ -29,7 +29,7 @@ private slots:
         const auto windows=environment.value("SystemRoot","C:/Windows");
         environment.insert("PATH",windows+"/System32;"+windows);
         executable.setProcessEnvironment(environment);
-        executable.start(runtime()+"/QtBootloader.exe",{"--version"});
+        executable.start(runtime()+"/SimpleCN.exe",{"--version"});
         QVERIFY(executable.waitForStarted(5000));
         const bool completed=executable.waitForFinished(10000);
         if(!completed){executable.kill();executable.waitForFinished();}

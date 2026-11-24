@@ -26,7 +26,7 @@ QPointF mousePosition(QMouseEvent *e){
 }
 SignalPlotCanvas::SignalPlotCanvas(SignalPlotModel *model,QWidget *parent):QWidget(parent),m_model(model){
     setObjectName("signalPlotCanvas");setMinimumSize(400,1);setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);
-    setToolTip("滚轮：X 轴缩放时间，Y 轴缩放数值，绘图区同时缩放 XY；启用光标后拖动光标，关闭后拖动平移");
+    setToolTip("启用光标后拖动光标，关闭后拖动平移；滚轮不更改参数或图表范围");
 }
 QVector<SignalPlotCanvas::AxisTick> SignalPlotCanvas::enumTicks(const QMap<double,QString>&labels,double low,double high,double pixels){
     QVector<AxisTick> result;if(!std::isfinite(low)||!std::isfinite(high)||high<=low)return result;

@@ -56,17 +56,44 @@ private slots:
         QTRY_COMPARE(tabs.tabText(0),QString("Cancel"));
         Language::instance().setCode("zh_CN");QCOMPARE(tabs.tabText(0),QString("取消"));
     }
+    void signalTabLanguageRoundTrip_data(){
+        QTest::addColumn<bool>("startInEnglish");
+        QTest::newRow("initial-Chinese")<<false;
+        QTest::newRow("initial-English")<<true;
+    }
+    void signalTabLanguageRoundTrip(){
+        QFETCH(bool,startInEnglish);
+        auto &language=Language::instance();
+        language.setCode(startInEnglish?"en":"zh_CN");
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        MainWindow window(directory.filePath("settings.json"),true);
+        window.show();
+        auto *can=window.findChild<ChannelPage*>("canPage");
+        auto *lin=window.findChild<ChannelPage*>("linPage");
+        QVERIFY(can&&lin);
+        auto *canTabs=can->findChild<QTabWidget*>("taskPages");
+        auto *linTabs=lin->findChild<QTabWidget*>("taskPages");
+        QVERIFY(canTabs&&linTabs);
+        auto &controller=UiLanguageController::instance();
+        controller.refresh();
+        for(const auto &code:QStringList{"en","zh_CN","en","zh_CN"}){
+            language.setCode(code);
+            const QString expected=code=="en"?"Signal transmission":"信号发送";
+            QCOMPARE(canTabs->tabText(2),expected);
+            QCOMPARE(linTabs->tabText(2),expected);
+        }
+    }
     void downloadSettingsLanguageRoundTrip(){
         QTemporaryDir dir;MainWindow window(dir.filePath("settings.json"),true);window.show();
         auto page=window.findChild<ChannelPage*>("canPage");QVERIFY(page);auto button=page->findChild<QPushButton*>("downloadSettings");QVERIFY(button);
         QString enFlow,zhFlow,enDefault,enInput,zhInput,enHeader,zhHeader;QStringList untranslated;bool found=false;
         QTimer::singleShot(50,&window,[&]{
             auto d=page->findChild<QDialog*>("downloadSettingsDialog");if(!d)return;
-            auto flow=d->findChild<QLineEdit*>("download_default_flow");auto user=d->findChild<QLineEdit*>("applicationNote");
-            auto baseline=d->findChild<QLabel*>("download_default_enable_pre1001");
+            auto flow=d->findChild<QComboBox*>("downloadFlow");auto user=d->findChild<QLineEdit*>("keyLibrary");
+            auto baseline=d->findChild<QLineEdit*>("download_default_bootAddress");
             if(!flow||!user||!baseline){d->reject();return;}found=true;user->setText("用户内容");
             Language::instance().setCode("en");UiLanguageController::instance().refresh();
-            enFlow=flow->text();enInput=user->text();enDefault=baseline->text();
+            enFlow=flow->currentText();enInput=user->text();enDefault=baseline->text();
             enHeader=d->findChild<QGroupBox*>("downloadParametersGroup")->title();
             QRegularExpression chinese("[\\x{3400}-\\x{9fff}]");
             for(auto w:d->findChildren<QWidget*>()){
@@ -77,10 +104,10 @@ private slots:
                 if(text.contains(chinese))untranslated.append(w->objectName()+": "+text);
             }
             Language::instance().setCode("zh_CN");UiLanguageController::instance().refresh();
-            zhFlow=flow->text();zhInput=user->text();zhHeader=d->findChild<QGroupBox*>("downloadParametersGroup")->title();d->reject();
+            zhFlow=flow->currentText();zhInput=user->text();zhHeader=d->findChild<QGroupBox*>("downloadParametersGroup")->title();d->reject();
         });
-        button->click();QVERIFY(found);QCOMPARE(enFlow,QString("App download sequence"));QCOMPARE(zhFlow,QString("App下载流程"));
-        QCOMPARE(enDefault,QString("Yes"));QCOMPARE(enHeader,QString("Download parameters"));QCOMPARE(zhHeader,QString("下载参数"));
+        button->click();QVERIFY(found);QCOMPARE(enFlow,QString("App start sequence"));QCOMPARE(zhFlow,QString("App起始流程"));
+        QCOMPARE(enDefault,QString("00005000"));QCOMPARE(enHeader,QString("Download parameters"));QCOMPARE(zhHeader,QString("下载参数"));
         QCOMPARE(enInput,QString("用户内容"));QCOMPARE(zhInput,QString("用户内容"));QVERIFY2(untranslated.isEmpty(),qPrintable(untranslated.join("\n")));
     }
     void catalog(){
@@ -97,6 +124,31 @@ private slots:
             if(it.key()!="简中")QVERIFY2(!Language::text(expanded).contains(chinese),qPrintable(expanded));
         }
         QCOMPARE(Language::text("12:34:56.789  时间"),QString("12:34:56.789  Time"));
+    }
+    void actionWordingRoundTrip(){
+        auto &ui=UiLanguageController::instance();
+        Language::instance().setCode("en");
+        QCOMPARE(Language::text("下载控制台"),QString("Download console"));
+        for(bool lin:{false,true}){
+            SignalTransmitViewModel vm(lin?signal::Bus::Lin:signal::Bus::Can);
+            QString error;
+            if(lin)QVERIFY(vm.createSchedule(error));
+            QVERIFY2(vm.putCustom({},"frame",0x10,8,100,error),qPrintable(error));
+            vm.setAvailability(true,false,lin?19200:500000,1);
+            SignalTransmitPage page(&vm);
+            page.resize(1200,700);page.show();
+            auto *send=page.findChild<QPushButton*>("signalSendOnce");
+            QVERIFY(send&&send->isEnabled());
+            ui.refresh();
+            QCOMPARE(send->text(),QString(lin?"Schedule":"Transmit"));
+            send->click();
+            ui.refresh();
+            QCOMPARE(send->text(),QString(lin?"Scheduling...":"Sending..."));
+            Language::instance().setCode("zh_CN");
+            QCOMPARE(send->text(),QString(lin?"调度中...":"发送中..."));
+            Language::instance().setCode("en");
+            QCOMPARE(send->text(),QString(lin?"Scheduling...":"Sending..."));
+        }
     }
     void liveLanguage(){
         QTemporaryDir dir;MainWindow window(dir.filePath("settings.json"),true);window.show();

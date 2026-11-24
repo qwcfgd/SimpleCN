@@ -1,14 +1,21 @@
 #include "domain/TraceClock.h"
 #include "ChannelWorker.h"
 #include "model/FramePresentation.h"
+#include <QScopedValueRollback>
 #include <QThread>
 #ifdef Q_OS_WIN
 #include <QWinEventNotifier>
 #endif
+#include <algorithm>
 #include <cstring>
 #include "protocol/PluginKey.h"
 namespace host {
 using namespace communication;
+static CanBusState observedCanState(CanBusState readStatus,CanBusState liveStatus){
+    if(liveStatus==CanBusState::BusOff)return liveStatus;
+    return readStatus==CanBusState::BusOff||readStatus==CanBusState::Warning||readStatus==CanBusState::Fatal
+        ?readStatus:liveStatus;
+}
 static bool downloadInputsReady(const ChannelSettings &s){
     if(s.downloadFiles.isEmpty())return imageReady(s.applicationPath)&&imageReady(s.flashPath);
     QJsonArray files;if(!effectiveDownloadFiles(s.downloadFiles,files))return false;
@@ -16,7 +23,7 @@ static bool downloadInputsReady(const ChannelSettings &s){
     for(const auto &value:files){
         const auto row=value.toObject();const auto role=row.value("role").toString();
         if(!imageReady(row.value("path").toString()))return false;
-        driver|=role=="driver";program|=role=="boot"||role=="app";
+        driver|=role=="driver";program|=role=="boot"||role=="calib"||role=="app";
     }
     return program&&driver;
 }
@@ -92,13 +99,14 @@ void ChannelWorker::traceFailure(){
 }
 void ChannelWorker::createSession() {
     m_canBlocked=m_canHealthInitialized=false;
+    m_reportedCanState=CanBusState::Unsupported;
     stopReceiveNotifier();
     m_session.reset();m_can.reset();m_lin.reset();m_canEchoes.clear();
     SoftwareChannelConfiguration config;QString error;
     if(!m_settings.toConfiguration(config,error)){emit logMessage(error);return;}
     std::unique_ptr<HardwareBackend> backend;
     if(m_settings.simulation){backend.reset(new PreviewBackend(m_settings.bus));}
-    else if(m_settings.bus==Bus::Lin){m_lin=createLinHardware();backend=sessionBackend(*m_lin);}
+    else if(m_settings.bus==Bus::Lin){m_lin=m_linFactory?m_linFactory():createLinHardware();backend=sessionBackend(*m_lin);}
     else {m_can=m_canFactory?m_canFactory():createCanHardware();backend=sessionBackend(*m_can);}
     m_session.reset(new SoftwareChannel(config,std::move(backend)));
     connect(m_session.get(),&SoftwareChannel::enumerationMeasured,this,[this](qint64 elapsedUs){
@@ -111,20 +119,11 @@ void ChannelWorker::createSession() {
             const auto c=m_session->configuration();
             m_settings.hardwareKey=c.hardwareKey;m_settings.handle=c.preferredHandle;
             emit bindingChanged(c.hardwareKey,c.preferredHandle);
-#ifdef Q_OS_WIN
-            if(m_can && m_can->receiveEventHandle()){
-                auto *notifier=new QWinEventNotifier(static_cast<HANDLE>(m_can->receiveEventHandle()),this);
-                notifier->setEnabled(true);
-                if(notifier->isEnabled()){
-                    m_canNotifier=notifier;const auto generation=m_session->generation();
-                    connect(notifier,&QWinEventNotifier::activated,this,[this,generation]{
-                        if(m_session&&m_session->state()==ConnectionState::Connected&&m_session->generation()==generation)receive();
-                    });
-                    if(m_receivePump&&!m_receivePump->isActive())m_receivePump->start(0);
-                }else delete notifier;
-            }
-            if(m_can&&!m_canNotifier&&c.hardwareKey.startsWith("can:"))emit logMessage("PCAN receive event unavailable; using polling.");
-#endif
+            bindCanReceiveNotifier(!m_reconnectingCan);
+        }
+        if(m_reconnectingCan){
+            if(s==ConnectionState::Connected)emit stateChanged(s,detail,true);
+            return;
         }
         emit stateChanged(s,detail);
         emit logMessage(connectionText(s)+(detail.isEmpty()?QString():" · "+detail));
@@ -133,19 +132,36 @@ void ChannelWorker::createSession() {
         if(m_can){
             const auto observed=m_can->classifyStatus(m_can->lastErrorCode());const auto live=m_can->busState();
             if(live!=CanBusState::Unsupported){
-                const auto state=(observed==CanBusState::BusOff||observed==CanBusState::Warning||observed==CanBusState::Fatal)?observed:live;
+                const auto state=observedCanState(observed,live);
                 handleCanState(state,detail);return;
             }
         }
-        emit healthChanged(health,detail);
+        emit healthChanged(health,detail,m_reconnectingCan);
     });
     connect(m_session.get(),&SoftwareChannel::connectionClosing,this,[this](){
         stopReceiveNotifier();
         if(m_signal){m_signal->stop();m_signal->hardwareClosed();}
         m_canBlocked=m_canHealthInitialized=false;
+        m_reportedCanState=CanBusState::Unsupported;
         cancelTask();clearProtocol();m_diagnosticDids.clear();if(m_scanning)stopScan("扫描已停止：连接正在关闭");
     });
     m_session->startMonitoring();
+}
+void ChannelWorker::bindCanReceiveNotifier(bool pumpImmediately){
+#ifdef Q_OS_WIN
+    if(m_can && m_can->receiveEventHandle()){
+        auto *notifier=new QWinEventNotifier(static_cast<HANDLE>(m_can->receiveEventHandle()),this);
+        notifier->setEnabled(true);
+        if(notifier->isEnabled()){
+            m_canNotifier=notifier;const auto generation=m_session->generation();
+            connect(notifier,&QWinEventNotifier::activated,this,[this,generation]{
+                if(m_session&&m_session->state()==ConnectionState::Connected&&m_session->generation()==generation)receive();
+            });
+            if(pumpImmediately&&m_receivePump&&!m_receivePump->isActive())m_receivePump->start(0);
+        }else delete notifier;
+    }
+    if(!m_reconnectingCan&&m_can&&!m_canNotifier&&m_session->configuration().hardwareKey.startsWith("can:"))emit logMessage("PCAN receive event unavailable; using polling.");
+#endif
 }
 void ChannelWorker::stopReceiveNotifier(){
     if(m_receivePump)m_receivePump->stop();
@@ -153,22 +169,75 @@ void ChannelWorker::stopReceiveNotifier(){
 }
 bool ChannelWorker::handleCanState(CanBusState state,const QString &detail){
     if(state==CanBusState::Unsupported)return false;
+    // A warning alone does not invalidate an explicitly observed Bus-Off on
+    // this connection. Ready or closing the binding clears it.
+    if(state==CanBusState::Warning && m_reportedCanState==CanBusState::BusOff)state=CanBusState::BusOff;
+    const bool changed=!m_canHealthInitialized||m_reportedCanState!=state;
+    m_reportedCanState=state;
+    m_canHealthInitialized=true;
     if(state==CanBusState::Ready){
         const bool hadFault=m_canBlocked;m_canBlocked=false;
-        if(hadFault||!m_canHealthInitialized){emit healthChanged(Health::Ready,hadFault?"CAN recovered":"CAN ready");m_canHealthInitialized=true;}
+        if(changed)emit healthChanged(Health::Ready,hadFault
+            ?QStringLiteral("CAN controller ready; peer communication has not been verified")
+            :QStringLiteral("CAN ready"),m_reconnectingCan);
         return false;
     }
-    const bool firstWarning=!m_canBlocked;
-    m_canBlocked=true;
-    if(firstWarning){
-        if(!m_canEchoes.isEmpty()||(m_uds&&m_uds->hasActiveRequest()&&m_udsWriteAttempted)){m_canUnresolved=true;m_recoveryCloseSucceeded=false;}
-        const QString reason=detail.isEmpty()?QStringLiteral("CAN bus or adapter error; transmission stopped"):detail;
-        if(m_canTransport)m_canTransport->linkFailed(reason);
-        if(m_running)failPreview(reason);
-        if(m_signal)m_signal->linkFailed(reason);
-        emit healthChanged(Health::BusWarning,reason);m_canHealthInitialized=true;emit logMessage(reason);
+    const QString reason=state==CanBusState::BusOff?QStringLiteral("CAN controller is Bus-Off"):
+        detail.isEmpty()?QStringLiteral("CAN bus or adapter error; transmission stopped"):detail;
+    if(state==CanBusState::Fatal)m_canStartAfterReconnect=false;
+    if(!m_canStartAfterReconnect){
+        const bool firstWarning=!m_canBlocked;
+        m_canBlocked=true;
+        if(firstWarning){
+            if(!m_canEchoes.isEmpty()||(m_uds&&m_uds->hasActiveRequest()&&m_udsWriteAttempted)){m_canUnresolved=true;m_recoveryCloseSucceeded=false;}
+            if(m_canTransport)m_canTransport->linkFailed(reason);
+            if(m_running)failPreview(reason);
+            if(m_signal)m_signal->linkFailed(reason);
+        }
+    }
+    if(changed){
+        emit healthChanged(state==CanBusState::BusOff?Health::BusOff:state==CanBusState::Fatal?Health::Error:Health::BusWarning,reason,m_reconnectingCan);
+        if(!m_reconnectingCan)emit logMessage(reason);
     }
     return true;
+}
+void ChannelWorker::withCanStartPermission(bool manualStart,std::function<void()> start,
+                                          std::function<void(const QString&)> reject){
+    m_canStartAfterReconnect=false;
+    if(!m_can){start();return;}
+    if(!m_canEchoes.isEmpty()){
+        reject("An earlier CAN request is unresolved; no frame submitted");return;
+    }
+    const auto state=m_can->busState();
+    if(state==CanBusState::Ready||(state==CanBusState::Unsupported&&!m_canBlocked)){
+        handleCanState(state,{});
+        start();
+        return;
+    }
+    if(!manualStart){
+        handleCanState(state,m_can->lastErrorText());
+        if(state==CanBusState::Fatal)m_session->poll();
+        reject("CAN controller or adapter is not ready; no frame submitted");
+        return;
+    }
+
+    bool connected;
+    {
+        QScopedValueRollback<bool> quiet(m_reconnectingCan,true);
+        // Use the same channel ownership, device close/open and notifier setup
+        // as the Connection button. Keep this command on its existing binding.
+        connected=m_session->disconnectChannel() && m_session->connectChannel(false);
+    }
+    if(!connected){
+        emit stateChanged(m_session->state(),m_session->error(),true);
+        reject("CAN controller or adapter is not ready; no frame submitted");
+        return;
+    }
+    // A queued diagnostic can be preceded by a receive notification. Let its
+    // first write reach the driver, even if that notification reports Bus-Off.
+    m_canBlocked=false;
+    m_canStartAfterReconnect=true;
+    start();
 }
 bool ChannelWorker::apply(const ChannelSettings &settings) {
     SoftwareChannelConfiguration c;QString error;
@@ -211,19 +280,23 @@ void ChannelWorker::disconnectChannel(){
 void ChannelWorker::refresh(){if(m_session)m_session->poll();emit commandFinished();}
 void ChannelWorker::startPreview(ChannelSettings s) {
     SoftwareChannelConfiguration config;QString error;
-    if(s.bus==Bus::Can&&(m_canBlocked||m_canUnresolved||!m_canEchoes.isEmpty()||(m_signal&&m_signal->hasUnconfirmedCanFrame()))){emit logMessage("CAN fault or an earlier transaction is unresolved; inspect the ECU before starting another download");emit commandFinished();return;}
+    if(s.bus==Bus::Can&&(m_canUnresolved||!m_canEchoes.isEmpty()||(m_signal&&m_signal->hasUnconfirmedCanFrame()))){
+        emit logMessage("An earlier CAN transaction is unresolved; inspect the ECU before starting another download");emit commandFinished();return;
+    }
     if(m_traceEnabled&&(m_traceFailed||s.bus!=Bus::Can||s.simulation)){emit logMessage("Trace mode unavailable: evidence incomplete or not physical CAN.");emit commandFinished();return;}
     if(!s.toConfiguration(config,error)){emit logMessage(error);emit commandFinished();return;}
-    if(!m_operations.permits(OperationCoordinator::Task::Download) || m_running || m_scanning || m_manualBusy || (m_manualMode && m_uds && m_uds->busy()) || s.simulation!=m_settings.simulation || !m_session ||
+    if(!m_operations.permits(OperationCoordinator::Task::Download) || m_running || m_scanning || m_manualBusy || (m_manualMode && m_uds && m_uds->busy()) || s.bus!=m_settings.bus || s.simulation!=m_settings.simulation || !m_session ||
        m_session->state()!=ConnectionState::Connected || !downloadInputsReady(s)) {
         emit logMessage("无法开始下载：请检查连接和镜像。");emit commandFinished();return;
     }
     if(!diagnosticMaster(error)){emit logMessage(error);emit commandFinished();return;}
+    withCanStartPermission(true,[this,s]{
     m_operations.acquire(OperationCoordinator::Task::Download);
     m_settings=s;m_progress=0;m_round=0;m_totalRounds=s.repeatDownloadEnabled?s.repeatDownloadCount:1;m_running=true;
     if(s.bus==Bus::Can&&!s.simulation)m_receive->setInterval(m_canNotifier?20:1);
     emit logMessage(s.simulation?QString("开始模拟下载，共 %1 次；不访问物理总线。").arg(m_totalRounds):QString("开始真实 %1 下载，共 %2 次。").arg(s.bus==Bus::Can?"CAN":"LIN").arg(m_totalRounds));
     beginPreviewRound();emit commandFinished();
+    },[this](const QString &error){emit logMessage(error);emit commandFinished();});
 }
 void ChannelWorker::beginPreviewRound() {
     if(!m_running)return;
@@ -237,11 +310,11 @@ void ChannelWorker::beginPreviewRound() {
     beginDownload();
 }
 void ChannelWorker::failPreview(const QString &reason) {
-    ++m_confirmationId;m_confirmationPending=false;m_stagedApp={};m_stagedDriver={};
+    ++m_confirmationId;m_confirmationPending=false;m_stagedApp={};m_stagedDriver={};m_stagedBoot={};m_stagedCalib={};
     m_operations.release(OperationCoordinator::Task::Download);
     if(m_job)m_job->cancel();
     m_repeat->stop();m_running=m_waiting=false;m_receive->setInterval(20);
-    emit taskChanged(TaskState::Failed,m_progress,"下载停止 · "+reason);emit logMessage("重复下载已停止："+reason);
+    emit taskChanged(TaskState::Failed,m_progress,"下载停止 · "+reason);emit logMessage((m_totalRounds>1?QString("\u91cd\u590d\u4e0b\u8f7d\u5df2\u505c\u6b62\uff1a"):QString("\u4e0b\u8f7d\u5df2\u505c\u6b62\uff1a"))+reason);
 }
 void ChannelWorker::completeRound(const QString &result) {
     if(!m_running)return;
@@ -266,54 +339,85 @@ void ChannelWorker::clearProtocol(){
 }
 void ChannelWorker::beginDownload(bool confirmed){
     clearProtocol();
-    boot::FirmwareImage application,driver,bootBundle;QString error;
-    if(confirmed){application=std::move(m_stagedApp);driver=std::move(m_stagedDriver);bootBundle=std::move(m_stagedBoot);}
+    boot::FirmwareImage application,driver,bootBundle,calibration;QString error;
+    boot::FlashProfile profile;
+    if(!boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error)){failPreview(error);return;}
+    auto loadApp=[&](const QString &path,quint32 base,quint32 b,bool hasB,quint32 length,boot::FirmwareImage &image){
+        return profile.isS32kV2()||hasB?boot::FirmwareImage::loadTarget(path,base,b,hasB,length,image,error):boot::FirmwareImage::load(path,base,image,error);
+    };
+    if(confirmed){application=std::move(m_stagedApp);driver=std::move(m_stagedDriver);bootBundle=std::move(m_stagedBoot);calibration=std::move(m_stagedCalib);}
     else if(!m_settings.downloadFiles.isEmpty()){
         QJsonArray files;if(!effectiveDownloadFiles(m_settings.downloadFiles,files)){failPreview("Invalid download file list");return;}
         for(const auto &value:files){
             const auto row=value.toObject();const auto role=row.value("role").toString(),path=row.value("path").toString();
-            auto *image=role=="driver"?&driver:role=="boot"?&bootBundle:&application;
-            const quint32 base=role=="driver"?m_settings.flashAddress.toUInt(nullptr,16):role=="boot"?0x5000u:m_settings.applicationAddress.toUInt(nullptr,16);
-            const bool loaded=role=="boot"?boot::FirmwareImage::loadBootBundle(path,*image,error):boot::FirmwareImage::load(path,base,*image,error);
+            auto *image=role=="driver"?&driver:role=="boot"?&bootBundle:role=="calib"?&calibration:&application;
+            const quint32 base=role=="driver"?m_settings.flashAddress.toUInt(nullptr,16):role=="boot"?m_settings.bootAddress.toUInt(nullptr,16):m_settings.applicationAddress.toUInt(nullptr,16);
+            const bool isBoot=role=="boot";
+            const auto b=(isBoot?m_settings.bootBAddress:m_settings.applicationBAddress);
+            const auto length=(isBoot?m_settings.bootEraseLength:m_settings.applicationLength).toUInt(nullptr,16);
+            const bool loaded=role=="calib"?boot::FirmwareImage::loadCalibration(path,m_settings.calibAddress.toUInt(nullptr,16),m_settings.calibLength.toUInt(nullptr,16),*image,error):role=="driver"?boot::FirmwareImage::load(path,base,*image,error):isBoot?boot::FirmwareImage::loadTarget(path,base,b.toUInt(nullptr,16),!b.isEmpty(),length,*image,error):loadApp(path,base,b.toUInt(nullptr,16),!b.isEmpty(),length,*image);
             if(!loaded){failPreview(error);return;}
         }
-    }else if(!boot::FirmwareImage::load(m_settings.applicationPath,m_settings.applicationAddress.toUInt(nullptr,16),application,error)||
+    }else if(!loadApp(m_settings.applicationPath,m_settings.applicationAddress.toUInt(nullptr,16),m_settings.applicationBAddress.toUInt(nullptr,16),!m_settings.applicationBAddress.isEmpty(),m_settings.applicationLength.toUInt(nullptr,16),application)||
        !boot::FirmwareImage::load(m_settings.flashPath,m_settings.flashAddress.toUInt(nullptr,16),driver,error)){failPreview(error);return;}
-    boot::FlashProfile profile;
-    if(!boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error)){failPreview(error);return;}
-    if(!confirmed&&(profile.isT008()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))&&
+    if(!confirmed&&(profile.isT008()||profile.isS32kV2()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))&&
        ((profile.enabled("driver36")&&!profile.enabled("driver34"))||(profile.enabled("app36")&&!profile.enabled("app34")))){failPreview("TransferData requires RequestDownload");return;}
-    if(!confirmed&&(m_settings.checkDriverAbi||m_settings.checkAppVersion||m_settings.checkMinimumBoot)){
-        boot::t008::Plan plan;
-        if(!application.segments.isEmpty()){
-            if(!boot::t008::images(application,driver,plan,error)){failPreview(error);return;}
-        }else if(driver.segments.size()==1){
-            const auto &data=driver.segments.first().data;
-            if(data.size()>=14&&data.startsWith("T008DRV1")){plan.driverMajor=quint16(quint8(data[10])|(quint16(quint8(data[11]))<<8));plan.driverMinor=quint16(quint8(data[12])|(quint16(quint8(data[13]))<<8));plan.hasDriverAbi=true;}
-        }
+    if(!confirmed&&(!profile.isT010V2())&&(profile.isS32kV2()||boot::FirmwareImage::hasCurrentMarker(driver)||boot::FirmwareImage::hasCurrentMarker(application)||boot::FirmwareImage::hasCurrentMarker(bootBundle)||boot::FirmwareImage::hasCurrentMarker(calibration))){
+        QVector<QPair<boot::Segment,quint32>> selected;
+        for(const auto &part:driver.segments)selected.append({part,ROM_MARKER_DRIVER});
+        for(const auto &part:calibration.segments)selected.append({part,ROM_MARKER_CAL});
+        auto collect=[&](const boot::FirmwareImage &image,quint32 kind,const QString &base,const QString &b,const QString &capacity){
+            if(image.segments.isEmpty())return true;
+            QVector<boot::Segment> primary,alternate;
+            if(!boot::FirmwareImage::planSlots(image,base.toUInt(nullptr,16),b.toUInt(nullptr,16),!b.isEmpty(),capacity.toUInt(nullptr,16),primary,alternate,error))return false;
+            for(const auto &part:primary)selected.append({part,kind});for(const auto &part:alternate)selected.append({part,kind});return true;
+        };
+        if(!collect(bootBundle,ROM_MARKER_BOOT,m_settings.bootAddress,m_settings.bootBAddress,m_settings.bootEraseLength)||
+           !collect(application,ROM_MARKER_APP,m_settings.applicationAddress,m_settings.applicationBAddress,m_settings.applicationLength)||
+           !boot::FirmwareImage::validateMarkerSet(selected,error,application.binary)){failPreview(error);return;}
+    }
+    if(!confirmed&&m_settings.checkAppVersion){
         QMap<QString,QString> expected;
-        if(m_settings.checkDriverAbi)expected["driverAbi"]=m_settings.expectedDriverAbi;
         if(m_settings.checkAppVersion)expected["appVersion"]=m_settings.expectedAppVersion;
-        if(m_settings.checkMinimumBoot)expected["minimumBoot"]=m_settings.expectedMinimumBoot;
-        QStringList mismatches;if(!boot::t008::compareFileVersions(plan,expected,mismatches,error)){failPreview(error);return;}
+        QStringList mismatches;
+        if(!application.segments.isEmpty()){
+            QVector<boot::Segment> primary,alternate;
+            const auto base=m_settings.applicationAddress.toUInt(nullptr,16),b=m_settings.applicationBAddress.toUInt(nullptr,16),length=m_settings.applicationLength.toUInt(nullptr,16);
+            if(profile.isS32kV2()||!m_settings.applicationBAddress.isEmpty()){
+                if(!boot::FirmwareImage::planSlots(application,base,b,!m_settings.applicationBAddress.isEmpty(),length,primary,alternate,error)){failPreview(error);return;}
+            }else primary=application.segments;
+            for(const auto &candidate:{primary,alternate}){
+                if(candidate.isEmpty())continue;
+                boot::FirmwareImage selected=application;selected.segments=candidate;boot::t008::Plan plan;
+                if(!boot::t008::images(selected,driver,plan,error)){failPreview(error);return;}
+                QStringList differences;if(!boot::t008::compareFileVersions(plan,expected,differences,error)){failPreview(error);return;}
+                const QString slot=!m_settings.applicationBAddress.isEmpty()&&candidate.first().address>=b&&quint64(candidate.first().address)<quint64(b)+length?"App B":"App A";
+                for(const auto &difference:differences)mismatches.append(slot+" · "+difference);
+            }
+        }else{
+            boot::t008::Plan plan;
+            if(!boot::t008::compareFileVersions(plan,expected,mismatches,error)){failPreview(error);return;}
+        }
         if(!mismatches.isEmpty()){
-            m_stagedApp=application;m_stagedDriver=driver;m_stagedBoot=bootBundle;m_confirmationPending=true;const auto id=++m_confirmationId;
+            m_stagedApp=application;m_stagedDriver=driver;m_stagedBoot=bootBundle;m_stagedCalib=calibration;m_confirmationPending=true;const auto id=++m_confirmationId;
             emit packageConfirmationRequested(id,QString("版本不一致或无法解析，请确认是否继续：\n")+mismatches.join("\n"));return;
         }
     }
-    if(profile.isT008()&&(m_settings.simulation||m_settings.bus!=Bus::Can||m_settings.bitrate!=500000||m_settings.repeatDownloadEnabled||m_settings.autoReconnect)){
-        failPreview("T008 requires physical CAN at 500000 bit/s, native driver, one attempt and auto reconnect disabled");return;
-    }
-    if(profile.isT008()){
+    // The front-panel transport, bitrate, repeat and reconnect settings are
+    // authoritative. Image/range and actual transport checks remain below.
+    if(!m_settings.simulation&&!profile.keyLibrary.trimmed().isEmpty()){
         const QDir runtime(QCoreApplication::applicationDirPath());
         const QFileInfo dll(QDir::isRelativePath(profile.keyLibrary)?runtime.absoluteFilePath(profile.keyLibrary):profile.keyLibrary);
         const QFileInfo bridge(runtime.absoluteFilePath("seedkey/SeedkeyBridge32.exe"));
-        if(!dll.isFile()||dll.size()==0||!bridge.isFile()||bridge.size()==0){failPreview("T008 requires a non-empty external GenerateKeyEx DLL and SeedkeyBridge32.exe");return;}
+        if(!dll.isFile()||dll.size()==0||!bridge.isFile()||bridge.size()==0){failPreview("Configured 27 DLL or SeedkeyBridge32.exe is missing or empty");return;}
     }
     profile.applicationEraseBase=m_settings.applicationAddress.toUInt(nullptr,16);
     profile.applicationEraseLength=m_settings.applicationLength.toUInt(nullptr,16);
     profile.bootEraseBase=m_settings.bootAddress.toUInt(nullptr,16);
     profile.bootEraseLength=m_settings.bootEraseLength.toUInt(nullptr,16);
+    profile.bootBBase=m_settings.bootBAddress.toUInt(nullptr,16);profile.bootHasB=!m_settings.bootBAddress.isEmpty();
+    profile.applicationBBase=m_settings.applicationBAddress.toUInt(nullptr,16);profile.applicationHasB=!m_settings.applicationBAddress.isEmpty();
+    profile.calibBase=m_settings.calibAddress.toUInt(nullptr,16);profile.calibLength=m_settings.calibLength.toUInt(nullptr,16);
     profile.fingerprintData=QByteArray::fromHex(m_settings.fingerprintHex.toLatin1());
     profile.name=m_settings.profileId;profile.session=quint8(m_settings.programmingSession);
     if(profile.flow=="legacy")profile.securityLevel=quint8(m_settings.securityLevel);
@@ -321,7 +425,7 @@ void ChannelWorker::beginDownload(bool confirmed){
     if(!m_settings.simulation)emit logMessage(profile.keyLibrary.trimmed().isEmpty()
         ?"未配置 27 DLL：收到的 seed 原样作为 key 发送":"安全访问使用已配置的 27 DLL");
     if(!createProtocol(profile,error,false)){failPreview(error);return;}
-    if(m_settings.simulation&&(profile.isT008()||!bootBundle.segments.isEmpty()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))){
+    if(m_settings.simulation&&(profile.isT008()||profile.isS32kV2()||!bootBundle.segments.isEmpty()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))){
         if(m_canEcu){m_canEcu->uds.maxBlockLength=1026;m_canEcu->uds.t008VerifySkipped=true;m_canEcu->uds.t008BootSelection=!bootBundle.segments.isEmpty();}
         if(m_ecu){m_ecu->maxBlockLength=1026;m_ecu->t008VerifySkipped=true;m_ecu->t008BootSelection=!bootBundle.segments.isEmpty();}
     }
@@ -333,12 +437,32 @@ void ChannelWorker::beginDownload(bool confirmed){
         if(!m_running)return;m_progress=value;emit taskChanged(TaskState::Running,value,QString("第 %1/%2 次 · %3").arg(m_round).arg(m_totalRounds).arg(step));
     });
     connect(m_job.get(),&boot::FlashJob::finished,this,[this](bool ok,const QString &why){if(ok)completeRound(why);else failPreview(why);});
-    if(!m_job->start(application,driver,bootBundle,error))failPreview(error);
+    // Keep the first business request out of the wake-up interval. The job
+    // identity also invalidates this continuation after cancel/restart/close.
+    const QPointer<boot::FlashJob> job(m_job.get());
+    auto start=[this,job,application=std::move(application),driver=std::move(driver),bootBundle=std::move(bootBundle),calibration=std::move(calibration)]{
+        if(!m_running||!job||job.data()!=m_job.get()||!m_session||m_session->state()!=ConnectionState::Connected)return;
+        QString why;if(!job->start(application,driver,bootBundle,calibration,why))failPreview(why);
+    };
+    if(m_settings.bus==Bus::Lin&&!m_settings.simulation){
+        const auto wake=m_lin->wakeUp();
+        if(wake==LinWakeResult::Failed){failPreview("LIN 唤醒失败："+m_lin->lastErrorText());return;}
+        if(wake==LinWakeResult::Sent){
+            emit logMessage("已请求 LIN 唤醒；等待节点准备后开始下载。");
+            // API success is not a physical end-of-pulse confirmation. Qualify
+            // pulse-end -> first header on hardware before accepting this path.
+            // PreciseTimer cannot expire early; N_As and P2 start in the
+            // unchanged transport only after this preparation has completed.
+            QTimer::singleShot(120,Qt::PreciseTimer,this,std::move(start));return;
+        }
+        emit logMessage("当前适配器尚未确认自动唤醒能力；沿用原下载流程，节点需处于唤醒状态。");
+    }
+    start();
 }
 void ChannelWorker::confirmPackage(quint64 id,bool accepted){
     if(!m_running||!m_confirmationPending||id!=m_confirmationId)return;
     m_confirmationPending=false;
-    if(!accepted){m_stagedApp={};m_stagedDriver={};m_stagedBoot={};cancelTask();return;}
+    if(!accepted){m_stagedApp={};m_stagedDriver={};m_stagedBoot={};m_stagedCalib={};cancelTask();return;}
     beginDownload(true);
 }
 
@@ -348,7 +472,7 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
     if(m_settings.bus==Bus::Lin){
         const auto nad=quint8(m_settings.nad.toUInt(nullptr,16));
         if(m_settings.simulation)m_ecu.reset(new boot::SimulatedLinEcu(nad,profile));
-        const int slotMs=m_settings.simulation?qMax(1,m_settings.linSlotMs):qMax(m_settings.linSlotMs,qMax(20,(150000+m_settings.bitrate-1)/m_settings.bitrate));
+        const int slotMs=m_settings.linSlotMs>0?m_settings.linSlotMs:(m_settings.simulation?1:qMax(20,(150000+m_settings.bitrate-1)/m_settings.bitrate));
         m_transport.reset(new boot::LinTransport(nad,slotMs,m_settings.linCrMs,[this](quint8 id,const QByteArray &data,QString &error){
             if(m_ecu){
                 if(!m_ecu->write(id,data,error))return false;
@@ -395,11 +519,6 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
         options.bitrate=m_settings.bitrate;
         // Download CFs may use a bounded window only after peer CTS with STmin=0.
         options.boundedFastSend=!manual;
-        if(profile.isT008()){
-            if(m_settings.simulation||options.extended||options.txId!=0x715||options.rxId!=0x795||options.functionalTxId!=0x7df){error="T008 requires physical 11-bit CAN IDs 715/795/7DF";return false;}
-            options.strictClassicCc=true;options.padding=0xcc;options.functionalRx=false;
-            if(!options.valid(error))return false;
-        }
         m_traceDiagnosticIds={options.txId,options.rxId,options.functionalTxId};
         if(!m_settings.simulation){
             if(!m_can||!m_can->enableEcho()){
@@ -409,6 +528,7 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
         }else m_canEcu.reset(new boot::SimulatedCanEcu(options,profile));
         m_canTransport.reset(new boot::CanTransport(options,[this,manual](const boot::CanFrame &frame,quint64 token,QString &error){
             if(m_traceEnabled&&m_traceFailed){error="Trace failed: evidence incomplete";return false;}
+            m_canStartAfterReconnect=false;
             if(m_canBlocked){error="CAN bus fault: diagnostic request was not queued";return false;}
             if(m_canEcu)return m_canEcu->writeFromHost(frame,token,error);
             const bool downloadCf=!manual&&!frame.data.isEmpty()&&(quint8(frame.data[0])>>4)==2;
@@ -418,15 +538,20 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
             TPCANMsg message={};message.ID=frame.id;message.MSGTYPE=frame.extended?PCAN_MESSAGE_EXTENDED:PCAN_MESSAGE_STANDARD;
             message.LEN=BYTE(frame.data.size());for(int i=0;i<frame.data.size();++i)message.DATA[i]=BYTE(frame.data[i]);
             const qint64 sendStart=m_traceEnabled?captureTimeUs():-1;
+            const bool earlierWrite=m_udsWriteAttempted;
             m_udsWriteAttempted=true;
             const bool sent=m_traceEnabled?m_safeTrace.sendIfHealthy([&]{return m_can->sendRaw(message);}):m_can->sendRaw(message);
             const qint64 sendCallUs=m_traceEnabled?captureTimeUs()-sendStart:-1;
             if(!sent){
-                m_canUnresolved=true;m_recoveryCloseSucceeded=false;
                 error=m_traceFailed?"Trace failed: evidence incomplete":m_can->lastErrorText();
                 const auto writeStatus=m_can->lastErrorCode();
+                const auto state=m_can->classifyStatus(writeStatus);
+                // A first Write rejected with Bus-Off did not queue a frame.
+                // Preserve the unresolved guard if any earlier frame was submitted.
+                if(state==CanBusState::BusOff&&!earlierWrite&&m_canEchoes.isEmpty())m_udsWriteAttempted=false;
+                else{m_canUnresolved=true;m_recoveryCloseSucceeded=false;}
                 if(m_traceEnabled){TraceTiming timing;timing.hardwareOperation=QString("CAN_WRITE_STATUS_0x%1").arg(writeStatus,0,16);timing.hardwareDurationUs=sendCallUs;if(!traceRecord("PROFILE",0,0,{},false,timing)){error="Trace failed: evidence incomplete";return false;}}
-                const auto state=m_can->classifyStatus(writeStatus);const auto generation=m_session?m_session->generation():0;
+                const auto generation=m_session?m_session->generation():0;
                 if(state!=CanBusState::Ready&&state!=CanBusState::Unsupported)QTimer::singleShot(0,this,[this,state,generation,error]{
                     if(m_session&&m_session->state()==ConnectionState::Connected&&m_session->generation()==generation)handleCanState(state,error);
                 });
@@ -460,7 +585,13 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
     timing.p2MarginMs=m_settings.p2ServerMs>0?qMax(0,m_settings.p2Ms-m_settings.p2ServerMs):0;
     timing.p2StarMarginMs=m_settings.p2StarServerMs>0?qMax(0,m_settings.p2StarMs-m_settings.p2StarServerMs):0;
     m_uds.reset(new boot::UdsSession(*network,timing));
-    connect(m_uds.get(),&boot::UdsSession::trace,this,[this](bool tx,const QByteArray &){if(tx)m_udsWriteAttempted=false;});
+    connect(m_uds.get(),&boot::UdsSession::trace,this,[this](bool tx,const QByteArray &pdu){
+        if(tx)m_udsWriteAttempted=false;
+        else if(m_traceEnabled){
+            const auto observation=SafeTraceRecorder::securitySeedObservation(pdu);
+            if(!observation.isEmpty()){TraceTiming timing;timing.hardwareOperation=observation;traceRecord("PROFILE",0,0,{},false,timing);}
+        }
+    });
     connect(m_uds.get(),&boot::UdsSession::deadlineObserved,this,&ChannelWorker::traceDeadline);
     if(manual)connect(m_uds.get(),&boot::UdsSession::activityChanged,this,[this](bool active){
         if(active)m_operations.acquire(OperationCoordinator::Task::Diagnostic);else m_operations.release(OperationCoordinator::Task::Diagnostic);
@@ -507,9 +638,15 @@ void ChannelWorker::startSignals(signal::TxPlan plan){
        !m_operations.permits(OperationCoordinator::Task::Signal)||(m_signal&&m_signal->running())){
         reject("信号任务被拒绝：通道未连接、代次已变化或任务冲突");return;
     }
-    if(m_canBlocked||!m_canEchoes.isEmpty()){reject("CAN fault or an earlier diagnostic frame is unresolved; no frame submitted");return;}
+    const bool manualTransmit=!plan.replay&&std::any_of(plan.items.cbegin(),plan.items.cend(),[](const auto &item){return item.enabled;});
+    withCanStartPermission(manualTransmit,[this,plan]{beginSignalRun(plan);},reject);
+}
+void ChannelWorker::beginSignalRun(const signal::TxPlan &input){
+    auto plan=input;
+    m_canStartAfterReconnect=false;
+    plan.connection=m_session->generation();
     clearProtocol(); // Also destroys idle TesterPresent timers; outstanding frames must be confirmed first.
-    if(!m_operations.acquire(OperationCoordinator::Task::Signal)){reject("通道正在执行其他任务");return;}
+    if(!m_operations.acquire(OperationCoordinator::Task::Signal)){signal::RunStatus status;status.run=plan.run;status.state=signal::RunState::Faulted;emit signalStatus(status);emit logMessage("通道正在执行其他任务");return;}
     if(plan.replay)plan.replayStampOffsetUs=m_traceOffsetUs;
     m_signal->guardedCanSend={};
     if(m_traceEnabled)m_signal->guardedCanSend=[this](const signal::TxItem &item,QString &error){
@@ -544,13 +681,20 @@ void ChannelWorker::projectSignalEvents(const signal::BusFrameEvents &events){
         f.data=QString::fromLatin1(e.bytes.toHex(' ')).toUpper();f.length=e.length<0?e.bytes.size():e.length;f.status=e.detail;f.error=!e.valid&&e.source!=signal::EventSource::NoResponse;f.warning=e.source==signal::EventSource::NoResponse;batch.append(f);
     }if(!batch.isEmpty())publishFrames(batch);
 }
-void ChannelWorker::sendDiagnostic(ChannelSettings settings,diag::Request request){
+void ChannelWorker::sendDiagnostic(ChannelSettings settings,diag::Request request,bool manualStart){
     auto reject=[this](const QString &error){emit diagnosticFinished(false,{},error);};
-    if(settings.bus==Bus::Can&&(m_canBlocked||m_canUnresolved||!m_canEchoes.isEmpty()||(m_signal&&m_signal->hasUnconfirmedCanFrame()))){reject("CAN fault or an earlier transaction is unresolved; diagnostic not submitted");return;}
+    if(settings.bus==Bus::Can&&(m_canUnresolved||!m_canEchoes.isEmpty()||(m_signal&&m_signal->hasUnconfirmedCanFrame()))){
+        reject("An earlier CAN transaction is unresolved; diagnostic not submitted");return;
+    }
     QString error;
     if(m_traceEnabled&&(m_traceFailed||settings.bus!=Bus::Can||settings.simulation)){reject("Trace mode unavailable: evidence incomplete or not physical CAN.");return;}
     if(!m_operations.permits(OperationCoordinator::Task::Diagnostic)||m_running||m_scanning||m_manualBusy||!m_session||m_session->state()!=ConnectionState::Connected){reject("通道未连接或正在执行操作");return;}
     if(settings.bus!=m_settings.bus||settings.simulation!=m_settings.simulation||(!request.raw&&!diag::Codec::validate(request.service,request.bytes,error))){reject(error.isEmpty()?"通道设置已变化":error);return;}
+    withCanStartPermission(manualStart,[this,settings,request]{beginManualDiagnostic(settings,request);},reject);
+}
+void ChannelWorker::beginManualDiagnostic(ChannelSettings settings,diag::Request request){
+    auto reject=[this](const QString &error){emit diagnosticFinished(false,{},error);};
+    QString error;
     m_settings=settings;
     if(!m_manualMode){
         clearProtocol();boot::FlashProfile profile;
@@ -570,13 +714,14 @@ void ChannelWorker::sendDiagnostic(ChannelSettings settings,diag::Request reques
 }
 
 void ChannelWorker::cancelTask() {
+    m_canStartAfterReconnect=false;
     if(m_settings.bus==Bus::Can&&(!m_canEchoes.isEmpty()||(m_uds&&m_uds->hasActiveRequest()&&m_udsWriteAttempted))){m_canUnresolved=true;m_recoveryCloseSucceeded=false;}
     if(m_signal)m_signal->stop();
     if(m_manualMode&&!m_manualBusy&&m_uds)m_uds->cancel();
     if(m_manualBusy){if(m_uds)m_uds->cancel();m_manualBusy=false;emit diagnosticFinished(false,{},"诊断请求已取消或连接关闭");}
     if(m_scanning)stopScan("扫描已取消");
     if(!m_running)return;
-    ++m_confirmationId;m_confirmationPending=false;m_stagedApp={};m_stagedDriver={};
+    ++m_confirmationId;m_confirmationPending=false;m_stagedApp={};m_stagedDriver={};m_stagedBoot={};m_stagedCalib={};
     if(m_job)m_job->cancel();
     m_repeat->stop();m_running=m_waiting=false;m_receive->setInterval(20);
     m_operations.release(OperationCoordinator::Task::Download);
@@ -600,29 +745,44 @@ void ChannelWorker::receive() {
             const auto &m=messages[i];if(m.Type!=mstStandard){
                 if(m.Type>=mstOverrun){++m_scanErrors;emit logMessage("LIN 接收队列溢出。");if(m_signal)m_signal->linkFailed("LIN 接收队列溢出");if(m_running)failPreview("LIN 接收队列溢出");}continue;
             }
-            const auto noResponseFlags=MSG_ERR_SLAVE_NOT_RESPONDING|MSG_ERR_TIMEOUT;
-            const bool absent=(m.ErrorFlags&noResponseFlags) && !(m.ErrorFlags&~noResponseFlags);
-            const bool bad=(m.ErrorFlags!=0 && !absent) || (m.ErrorFlags==0 && (m.Length<1 || m.Length>8));
-            const bool valid=!m.ErrorFlags && m.Length>=1 && m.Length<=8;
-            if(m_transport&&(m.FrameId&0x3f)==0x3c)m_transport->confirmTransmitted(QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8)),valid);
-            if(m_transport)m_transport->receiveFrame(m.FrameId&0x3f,QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8)),absent,bad);
+            const bool timeout=m.ErrorFlags&MSG_ERR_TIMEOUT;
+            const bool noData=m.ErrorFlags&MSG_ERR_SLAVE_NOT_RESPONDING;
+            const bool subscriber=m.Direction==dirSubscriber||m.Direction==dirSubscriberAutoLength;
+            const bool absent=subscriber&&m.ErrorFlags==MSG_ERR_SLAVE_NOT_RESPONDING;
+            // PLIN TIMEOUT means incomplete data/checksum; Checksum is a byte
+            // count, while Length remains the expected response length.
+            const int dataLength=timeout?qMin(int(m.Checksum),8):noData?0:qMin(int(m.Length),8);
+            const auto frameId=quint8(m.FrameId&0x3f);
+            const bool malformedLength=m.Length<1||m.Length>8||(frameId==0x3c&&m.Length!=8);
+            const bool bad=(m.ErrorFlags!=0&&!absent)||(!m.ErrorFlags&&malformedLength);
+            const bool valid=!m.ErrorFlags&&!malformedLength;
+            // Only a publisher's full diagnostic frame can confirm our write.
+            // Matching payload errors still fail the existing pending request.
+            if(m_transport&&frameId==0x3c&&m.Direction==dirPublisher&&m.Length==8)
+                m_transport->confirmTransmitted(QByteArray(reinterpret_cast<const char*>(m.Data),8),valid);
+            if(m_transport)m_transport->receiveFrame(m.FrameId&0x3f,QByteArray(reinterpret_cast<const char*>(m.Data),dataLength),absent,bad);
             FrameRecord record;stampFrame(record);record.channel=m_settings.softwareId;
             record.bus=signal::Bus::Lin;record.id=m.FrameId&0x3f;record.typed=true;
-            record.payload=QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8));
-            record.hardwareUs=m.TimeStamp;record.checksum=m.Checksum;record.classicChecksum=m.ChecksumType==cstClassic;
+            record.payload=QByteArray(reinterpret_cast<const char*>(m.Data),dataLength);
+            record.hardwareUs=m.TimeStamp;record.checksum=(timeout||noData)?-1:m.Checksum;record.classicChecksum=m.ChecksumType==cstClassic;
             record.errorFlags=m.ErrorFlags;record.noResponse=absent;
-            const auto frameId=quint8(m.FrameId&0x3f);const bool transmitReadback=(m_signal&&m_signal->running())?(m.Direction==dirPublisher&&m_signal->publishesLin(frameId)):frameId==0x3c;
-            signal::BusFrameEvent event;event.bus=signal::Bus::Lin;event.id=frameId;event.bytes=QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8));
+            const bool diagnosticTransmitFrame=frameId==0x3c&&!(m_signal&&m_signal->running());
+            const bool transmitReadback=valid&&m.Direction==dirPublisher&&((m_signal&&m_signal->running())?m_signal->publishesLin(frameId):frameId==0x3c);
+            signal::BusFrameEvent event;event.bus=signal::Bus::Lin;event.id=frameId;event.bytes=QByteArray(reinterpret_cast<const char*>(m.Data),dataLength);
             event.hardwareUs=m.TimeStamp;event.arrivalUs=captureTimeUs();event.valid=valid;
             event.source=absent?signal::EventSource::NoResponse:transmitReadback?signal::EventSource::HardwareEcho:signal::EventSource::Received;
             event.detail=absent?"无从节点响应":bad?QString("LIN 错误 0x%1").arg(m.ErrorFlags,0,16):"有效总线帧";events.append(event);
             record.direction="RX";record.identifier=QString("0x%1").arg(frameId,2,16,QChar('0')).toUpper();
             record.echo=transmitReadback;
-            record.length=m.Length;
-            if(valid)record.data=QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(m.Data),qMin(int(m.Length),8)).toHex(' ')).toUpper();
+            record.length=dataLength;
+            if(valid||timeout)record.data=QString::fromLatin1(record.payload.toHex(' ')).toUpper();
             record.status=transmitReadback&&valid?"发送回读":(absent?"无从节点响应":(bad?QString("LIN 错误 0x%1").arg(m.ErrorFlags,0,16):"有效响应"));
             record.error=bad;record.warning=absent;
-            record.monitorHidden=transmitReadback&&!m_settings.rxdEnabled;batch.append(record);
+            // A scheduled publisher has no separate software TX record. Its
+            // hardware echo is the transmission record, not a duplicate RxD.
+            // Diagnostic requests remain TxPending events; the actual valid bus
+            // readback must remain visible as Tx even with optional RxD off.
+            record.monitorHidden=transmitReadback&&!diagnosticTransmitFrame&&!m_settings.rxdEnabled&&!(m_signal&&m_signal->linScheduleRunning());batch.append(record);
             if(m_scanning){++m_scanEvents;if(valid)++m_scanResponses;if(bad)++m_scanErrors;}
         }
         m_receiveDrained=n<64;if(m_receiveDrained)break;
@@ -644,7 +804,7 @@ void ChannelWorker::receive() {
         const bool supported=polled!=CanBusState::Unsupported;
         bool batchFault=false;
         if(supported){
-            const auto state=(observed==CanBusState::BusOff||observed==CanBusState::Fatal||observed==CanBusState::Warning)?observed:polled;
+            const auto state=observedCanState(observed,polled);
             if(state!=CanBusState::Ready&&!m_canBlocked&&m_traceEnabled){
                 TraceTiming readTiming;readTiming.hardwareOperation=QString("CAN_READ_STATUS_0x%1").arg(status,0,16);readTiming.hardwareDurationUs=readDurationUs;
                 TraceTiming liveTiming;liveTiming.hardwareOperation=QString("CAN_GET_STATUS_0x%1").arg(liveStatus,0,16);liveTiming.hardwareDurationUs=statusDurationUs;
