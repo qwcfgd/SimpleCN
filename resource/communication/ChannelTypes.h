@@ -6,7 +6,7 @@
 namespace communication {
 enum class Bus { Can, Lin };
 enum class ConnectionState { Missing, Available, Connecting, Connected, Disconnecting, Fault };
-enum class Health { Ready, BusWarning, Sleeping, Removed, Error };
+enum class Health { Ready, BusWarning, Sleeping, Removed, Error, BusOff };
 struct HardwareChannel {
     Bus bus = Bus::Can;
     quint32 handle = 0;

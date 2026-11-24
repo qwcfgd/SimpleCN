@@ -49,10 +49,24 @@ CanTransport::CanTransport(CanOptions options,Write write,QObject *parent)
     for(auto timer:{&m_as,&m_bs,&m_cr,&m_cf}){timer->setSingleShot(true);timer->setTimerType(Qt::PreciseTimer);}
     connect(&m_as,&QTimer::timeout,this,[this]{
         if(!m_fastPending.isEmpty()&&m_fastClock.nsecsElapsed()/1000-m_fastPending.head().queuedUs<qint64(m_options.nAsMs)*1000){armFastDeadline();return;}
+        // QTimer delivery and QElapsedTimer's integer-ms clock can differ by
+        // one tick. Expire only after the configured elapsed deadline.
+        if(m_fastPending.isEmpty()&&m_pending!=None){
+            const auto elapsed=m_transmitElapsed.elapsed();
+            if(elapsed<m_transmitDeadlineMs){m_as.start(m_transmitDeadlineMs-int(elapsed));return;}
+        }
         fail("CAN N_As/N_Ar transmit confirmation timeout");
     });
-    connect(&m_bs,&QTimer::timeout,this,[this]{fail("CAN N_Bs flow control timeout");});
-    connect(&m_cr,&QTimer::timeout,this,[this]{fail("CAN N_Cr consecutive frame timeout");});
+    connect(&m_bs,&QTimer::timeout,this,[this]{
+        const auto elapsed=m_bsElapsed.elapsed();
+        if(elapsed<m_options.nBsMs){m_bs.start(m_options.nBsMs-int(elapsed));return;}
+        fail("CAN N_Bs flow control timeout");
+    });
+    connect(&m_cr,&QTimer::timeout,this,[this]{
+        const auto elapsed=m_crElapsed.elapsed();
+        if(elapsed<m_options.nCrMs){m_cr.start(m_options.nCrMs-int(elapsed));return;}
+        fail("CAN N_Cr consecutive frame timeout");
+    });
     connect(&m_cf,&QTimer::timeout,this,&CanTransport::sendCf);
 }
 bool CanTransport::send(const QByteArray &pdu,QString &error){

@@ -79,7 +79,15 @@ void FrameFilterProxy::syncDisplayFilter(){
         const bool defaultDirection=column==4&&f.valuesEnabled&&f.values==QSet<QString>({"Tx","Rx"})&&f.conditions.isEmpty();
         if(f.active()&&!defaultDirection){active=true;break;}
     }
-    if(!active){if(model->hasDisplayFilter())model->setDisplayFilter({});return;}
+    if(!active){
+        if(m_filters[4].valuesEnabled){
+            // Apply the default direction selection before merging rows or assigning stripes.
+            model->setDisplayFilter([](const FrameRecord &r){return r.direction!="TxPending";},true);
+        }else if(model->hasDisplayFilter()){
+            model->setDisplayFilter({});
+        }
+        return;
+    }
     const auto filters=m_filters;const auto labels=m_labels;
     model->setDisplayFilter([filters,labels](const FrameRecord &r){return acceptsRecord(r,filters,labels,-1);});
 }
@@ -113,7 +121,12 @@ bool FrameFilterProxy::lessThan(const QModelIndex&a,const QModelIndex&b)const{
     if(a.parent().isValid()||b.parent().isValid())return stable();
     const auto*model=static_cast<const FrameTableModel*>(sourceModel());const auto*x=model->frameAt(a),*y=model->frameAt(b);if(!x||!y)return stable();
     const int column=a.column();int cmp=0;
-    if(column<=2||column==5||column==6){
+    // A merged row shows the newest frame, but its time-sort position belongs
+    // to the first occurrence. History/pause still sort individual events.
+    if(column<=2&&model->rolling()&&!model->paused()){x=model->firstFrameAt(a);y=model->firstFrameAt(b);}
+    if(column==FrameTableModel::NameColumn){
+        cmp=m_collator.compare(a.data().toString(),b.data().toString());
+    }else if(column<=2||column==5||column==6){
         auto number=[column](const FrameRecord&r)->double{if(column==0)return r.captureUs;if(column==1)return std::isfinite(r.relativeSeconds)?r.relativeSeconds:-1;if(column==2)return r.intervalSeconds.toDouble();return column==5?r.id:r.length;};
         const auto l=number(*x),r=number(*y);cmp=l<r?-1:l>r?1:0;
     }else cmp=m_collator.compare(displayValue(frameColumnKey(*x,column),column,m_labels),displayValue(frameColumnKey(*y,column),column,m_labels));

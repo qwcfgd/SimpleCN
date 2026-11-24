@@ -31,6 +31,52 @@ class TosunTest:public QObject {
         }
     };
 private slots:
+    void linReceiveDirectionUsesTransmitProperty(){
+        Fake f;QString error;auto lin=createTosunLin(f.runtime);communication::SoftwareChannelConfiguration cfg;cfg.bus=communication::Bus::Lin;cfg.bitrate=19200;
+        QVERIFY(lin->open(lin->scan(error).first(),cfg,error));
+        tosun::Lin event{};event.id=0x3c;event.length=8;event.checksum=0xff;
+        f.linReads.enqueue(event);event.properties=1;f.linReads.enqueue(event);event.properties=129;f.linReads.enqueue(event);
+        TLINRcvMsg frames[3]={};QCOMPARE(lin->recvRaw(3,frames),DWORD(3));
+        QCOMPARE(frames[0].Direction,BYTE(dirSubscriber));QCOMPARE(frames[1].Direction,BYTE(dirPublisher));QCOMPARE(frames[2].Direction,BYTE(dirPublisher));
+        QCOMPARE(frames[0].ErrorFlags,TLINMsgErrors(0));QCOMPARE(frames[1].ErrorFlags,TLINMsgErrors(0));QVERIFY(frames[2].ErrorFlags!=0);
+        QVERIFY(lin->close(error));
+    }
+    void diagnosticSignalRoles_data(){
+        QTest::addColumn<bool>("master");QTest::newRow("master")<<true;QTest::newRow("slave")<<false;
+    }
+    void diagnosticSignalRoles(){
+        using namespace signal;QFETCH(bool,master);Fake sdk;QString error;
+        auto lin=createTosunLin(sdk.runtime);QCOMPARE(lin->wakeUp(),LinWakeResult::Unsupported);const auto ports=lin->scan(error);
+        communication::SoftwareChannelConfiguration c;c.bus=communication::Bus::Lin;c.bitrate=19200;
+        QVERIFY(lin->open(ports[0],c,error));SignalTransmitViewModel vm(Bus::Lin);
+        QVERIFY(vm.setRole(master?LinRole::Master:LinRole::Slave,{},error));
+        Schedule schedule;schedule.name="Diagnostic";QVERIFY(vm.replaceSchedules({schedule},schedule.name,error));
+        const auto bytes=QByteArray::fromHex("0102030405060708");
+        for(int id:{0x3c,0x3d}){
+            QVERIFY(vm.putCustom({},QString::number(id),quint32(id),8,20,error));
+            QVERIFY(vm.editPayload(frameKey(Bus::Lin,id),QString::fromLatin1(bytes.toHex(' ')),error));
+        }
+        vm.setAvailability(true,false,19200,1);QSignalSpy starts(&vm,&SignalTransmitViewModel::startRequested);
+        QVERIFY(vm.start(true,error));auto plan=qvariant_cast<TxPlan>(starts.first().first());
+        if(master)plan.periodic=false;
+        SignalTransmitter tx;RunStatus status;
+        connect(&tx,&SignalTransmitter::statusChanged,&tx,[&](const RunStatus&s){status=s;});
+        tx.start(plan,19200,false,nullptr,lin.get());
+        if(master)QTRY_COMPARE_WITH_TIMEOUT(status.state,RunState::Stopped,1000);
+        else{QCOMPARE(status.state,RunState::Running);QTest::qWait(60);}
+        QCOMPARE(sdk.linWrites.size(),2);
+        for(int n=0;n<2;++n){const auto &out=sdk.linWrites[n];QCOMPARE(out.id,quint8(0x3c+n));QCOMPARE(out.length,quint8(8));
+            QCOMPARE(out.properties,quint8(!master||n==0?1:0));
+            if(!master||n==0){QCOMPARE(QByteArray(reinterpret_cast<const char*>(out.data),8),bytes);QCOMPARE(out.checksum,quint8(0xdb));}
+        }
+        if(!master){QCOMPARE(sdk.role,1);tx.update({frameKey(Bus::Lin,0x3c),{QByteArray(8,char(0x55)),100},plan.run,plan.connection});
+            QCOMPARE(sdk.linWrites.size(),2);
+            BusFrameEvent observed;observed.bus=Bus::Lin;observed.id=0x3c;tx.observe({observed});
+            QTest::qWait(3);QCOMPARE(sdk.linWrites.size(),2);
+            observed.id=0x3d;tx.observe({observed});QTRY_COMPARE_WITH_TIMEOUT(sdk.linWrites.size(),3,500);
+            QCOMPARE(sdk.linWrites.last().data[7],quint8(0x55));QCOMPARE(sdk.role,1);tx.stop();}
+        QCOMPARE(sdk.role,2);
+    }
     void enumerateAndSharedConnection(){
         Fake sdk;QString error;const auto can=sdk.runtime->scan(communication::Bus::Can,error),lin=sdk.runtime->scan(communication::Bus::Lin,error);
         QCOMPARE(can.size(),4);QCOMPARE(lin.size(),2);QVERIFY(can[0].persistentIdentity);QVERIFY(can[0].key!=lin[0].key);

@@ -10,11 +10,14 @@
 namespace host {
 struct ChannelSettings : ChannelPageInitialValues {
     ChannelSettings();
+    bool defaultMemoryLayout=true; // Transient provenance; restored or edited ranges are never inferred.
     QJsonObject signalConfiguration;
     QJsonArray downloadFiles;
-    QString bootAddress="00005000",bootEraseLength="0000F000";
-    bool checkDriverAbi=false,checkAppVersion=false,checkMinimumBoot=false;
-    QString expectedDriverAbi="1.4",expectedAppVersion="T008A0001",expectedMinimumBoot="001";
+    QString bootAddress="00005000",bootEraseLength="00014000";
+    QString calibAddress="0007E000",calibLength="00001000";
+    QString bootBAddress="00068000",applicationBAddress; // Empty B disables an unconfigured alternate slot.
+    bool checkAppVersion=false;
+    QString expectedAppVersion="";
     QString cddPath,cddEcu,cddVariant;
     int udsRepeatCount=1,udsRepeatDelayMs=1000;
     bool udsRepeatEnabled=false;
@@ -47,9 +50,9 @@ struct FrameRecord {
 };
 using FrameBatch=QVector<FrameRecord>;
 enum class TaskState {Idle,Running,Completed,Cancelled,Failed};
-// Resolve legacy duplicate file roles to the most recently listed file without
-// changing the stored channel configuration.
-bool effectiveDownloadFiles(const QJsonArray &files,QJsonArray &result);
+// Validate unique file roles and return their canonical transfer order.
+// Invalid legacy lists are never silently deduplicated or rewritten.
+bool effectiveDownloadFiles(const QJsonArray &files,QJsonArray &result,QString *error=nullptr);
 QString hardwareDeviceKey(const communication::HardwareChannel &);
 QString connectionText(communication::ConnectionState);
 QString imageDescription(const QString &path);
