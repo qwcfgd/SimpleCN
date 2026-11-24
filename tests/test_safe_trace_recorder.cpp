@@ -15,6 +15,11 @@ protected: qint64 readData(char *,qint64) override {return -1;}
 };
 int main(int argc,char **argv){
  QCoreApplication app(argc,argv); QTemporaryDir dir(qEnvironmentVariable("QT_TRACE_TEST_ROOT",QDir::tempPath())+"/trace-XXXXXX"); assert(dir.isValid());
+ const auto seed=QByteArray::fromHex("000102030405060708090a0b0c0d0e0f");
+ assert(host::SafeTraceRecorder::securitySeedObservation(QByteArray::fromHex("6701")+seed)=="SECURITY_SEED_27_01_SHA256_be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991");
+ assert(host::SafeTraceRecorder::securitySeedObservation(QByteArray::fromHex("6711")+seed).endsWith("be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"));
+ assert(host::SafeTraceRecorder::securitySeedObservation(QByteArray::fromHex("6701")+QByteArray(16,'\0'))=="SECURITY_ALREADY_UNLOCKED_27_01");
+ for(const auto &pdu:{QByteArray(),QByteArray::fromHex("6701"),QByteArray::fromHex("6702"),QByteArray::fromHex("7f2735"),QByteArray::fromHex("2701")})assert(host::SafeTraceRecorder::securitySeedObservation(pdu).isEmpty());
  host::SafeTraceRecorder r; assert(r.open(dir.path()));
  assert(r.append("TX request",0x715,8,QByteArray::fromHex("042712aabbcccccc"),1,2));
  assert(r.append("TX echo",0x715,8,QByteArray::fromHex("100a2712aabbccdd"),3,4));

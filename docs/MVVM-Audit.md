@@ -107,3 +107,11 @@ FrameTableModel 保留完整会话缓存，同时管理最多 10,000 条的显�
 ## 2026-10-10 seed 原样回传
 
 SeedAsKey 位于协议层，提供者工厂按模拟模式及 DLL 路径选择模拟算法、seed 原样回传或 PluginKey；worker 组织下载。ViewModel 仅对已配置 DLL 的文件和桥接程序做预检查，空路径可直接提交下载命令。View 仍负责文件选择、提示和草稿收集，未直接生成安全访问请求或调用硬件。此修订替代之前空 DLL 路径必须拒绝的行为，不改变上文记录的其他职责耦合。
+
+## 2026-11-12 当前复核
+
+结论延续 2026-10-09：主链路保持 MVVM 分层，但尚非完全严格的 MVVM。ChannelModel 桥接 worker；接收、传输及协议在 worker/协议层；界面读取 ViewModel 状态并提交命令。新历史缓存和显示批量逻辑位于 ViewModel；计数刷新留在 View，均不改变协议执行顺序。
+
+ChannelPage::editDownload 仍组装下载草稿并转换 FlashProfile；addDownloadFiles 仍同步调用 FirmwareImage::load/identify 做文件角色建议。MainWindow 仍包含跨通道协调，既有项目级 ViewModel 边界未完全收拢。本次未扩大为整体架构重构，不能以静态依赖检查或测试通过声称严格 MVVM 已完成。
+
+Qt5/Qt6 的实际 Ninja 编译源列表核对一致（src 与 resource/communication 共 60 个源文件）。Qt 版本分支仅出现在 SignalPlotCanvas、SignalPlotDialog、UiLanguageController 的界面兼容代码；两版配置文件独立，配置差异不属于功能源码分叉。源清单和哈希保存在 qttemp 的本次复核目录。

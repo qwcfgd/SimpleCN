@@ -886,6 +886,23 @@ QString tstPeakLin::lastErrorText() const
     }
     return QString("PLIN %1: %2").arg(t_LastLinErr).arg(QString::fromLocal8Bit(text));
 }
+bool tstPeakLin::wakeUp()
+{
+    if (!t_open || t_HwMode != modMaster) { t_LastLinErr=errIllegalHardwareState; return false; }
+    if (t_SimTxLIN) { t_LastLinErr=errOK; return true; }
+    if (t_baudrate==19200) {
+        // A LIN master header can wake the bus (PLIN manual 3.2.2).
+        // Use the standard response header, without a UDS request payload.
+        // Native XmtWakeUp alone did not establish this target's first reply.
+        TLINMsg header={};header.FrameId=0x3d;header.Length=8;
+        header.Direction=dirSubscriber;header.ChecksumType=cstClassic;
+        return sendRaw(header);
+    }
+    // Preserve the existing primitive for other, unqualified bitrates.
+    t_LastLinErr=t_pPLinApi->XmtWakeUp(t_hClient,t_hHw);
+    return t_LastLinErr==errOK;
+}
+
 bool tstPeakLin::sendRaw(TLINMsg message)
 {
     if (!t_open) { t_LastLinErr=errIllegalHardwareState; return false; }

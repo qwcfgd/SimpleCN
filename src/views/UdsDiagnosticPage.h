@@ -18,7 +18,7 @@ private:
     diag::Values values()const;
     ChannelViewModel *m_vm;
     QLabel *m_validation;
-    QPushButton *m_settings,*m_send,*m_copy,*m_revert;
+    QPushButton *m_settings,*m_send,*m_copy,*m_stop;
     QLabel *m_repeatStatus;
     QTableView *m_services;
     QTableWidget *m_parameters;

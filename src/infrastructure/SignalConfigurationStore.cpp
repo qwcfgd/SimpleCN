@@ -14,11 +14,11 @@ QJsonObject SignalConfigurationStore::serialize(const Database&db,const WorkingS
     auto path=db->path;if(!directory.isEmpty()&&!path.isEmpty())path=QDir(directory).relativeFilePath(path);root["source"]=path;root["sha256"]=db->sha256;
     root["repeatCount"]=work.repeatCount;root["uiSettings"]=work.uiSettings;root["replaySettings"]=work.replaySettings;
     root["role"]=int(work.role);root["node"]=work.node;root["schedule"]=work.schedule;
-    if(db->bus==Bus::Can){root["canNode"]=work.canNode;root["canDirection"]=work.canDirection;}
-    QJsonArray custom;for(const auto&f:work.customFrames)custom.append(QJsonObject{{"name",f.name},{"id",QString::number(f.id)},{"length",f.length},{"publisher",f.publisher},{"classicChecksum",f.classicChecksum},{"key",f.key},{"source",f.custom?QString():frameKey(db->bus,f.id,f.extended)}});root["custom"]=custom;
+    if(db->bus==Bus::Can){root["canOrder"]=QJsonArray::fromStringList(work.canOrder);root["canNode"]=work.canNode;root["canDirection"]=work.canDirection;}
+    QJsonArray custom;for(const auto&f:work.customFrames)custom.append(QJsonObject{{"name",f.name},{"extended",f.extended},{"databaseBound",f.databaseBound},{"id",QString::number(f.id)},{"length",f.length},{"publisher",f.publisher},{"classicChecksum",f.classicChecksum},{"key",f.key},{"source",f.custom?QString():frameKey(db->bus,f.id,f.extended)}});root["custom"]=custom;
     QJsonArray frames;for(const auto&f:definitions(db,work)){const auto d=work.frames.value(f.key);QJsonArray values;for(int i=0;i<f.fields.size();++i)values.append(SignalCodec::rawText(f.fields[i],d.appliedValues.value(i)));
-        frames.append(QJsonObject{{"key",f.key},{"dlc",int(d.applied.bytes.size())},{"payload",QString::fromLatin1(d.applied.bytes.toHex())},{"values",values},{"enabled",d.enabled},{"sendEnabled",d.sendEnabled},{"cycleMs",d.cycleMs}});}root["frames"]=frames;
-    QJsonArray schedules;for(const auto&s:work.schedules){QJsonArray entries;for(const auto&slot:s.entries)entries.append(QJsonObject{{"frame",slot.frame},{"delayMs",slot.delayMs},{"issue",slot.issue}});schedules.append(QJsonObject{{"name",s.name},{"issue",s.issue},{"slots",entries}});}root["schedules"]=schedules;return root;
+        frames.append(QJsonObject{{"key",f.key},{"alias",d.alias},{"dlc",int(d.applied.bytes.size())},{"payload",QString::fromLatin1(d.applied.bytes.toHex())},{"values",values},{"enabled",d.enabled},{"sendEnabled",d.sendEnabled},{"cycleMs",d.cycleMs}});}root["frames"]=frames;
+    QJsonArray schedules;for(const auto&s:work.schedules){QJsonArray entries;for(const auto&slot:s.entries)entries.append(QJsonObject{{"frame",slot.frame},{"alias",slot.alias},{"delayMs",slot.delayMs},{"issue",slot.issue}});schedules.append(QJsonObject{{"name",s.name},{"issue",s.issue},{"slots",entries}});}root["schedules"]=schedules;return root;
 }
 bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QString&directory,ConfigurationSnapshot&snapshot,QString&error){
     auto reject=[&](const QString&why){error=why;return false;};
@@ -31,16 +31,23 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
         if(!loaded.database)return reject(loaded.error);next.database=loaded.database;
         if(loaded.database->sha256!=root["sha256"].toString())return reject("源数据库摘要已变化；未应用配置。原摘要 "+root["sha256"].toString()+"；当前 "+loaded.database->sha256+"。请重新导入并核对布局差异。");
     }else if(!root["sha256"].toString().isEmpty())return reject("配置缺少关联数据库路径");
-    auto&work=next.working;work.repeatCount=root.value("repeatCount").toInt(1);if(work.repeatCount<1||work.repeatCount>1000000)return reject("无效发送次数");work.uiSettings=root.value("uiSettings").toObject();work.replaySettings=root.value("replaySettings").toObject();QSet<QString> keys,names;QSet<quint32> ids;
-    for(const auto&f:next.database->frames){TxDraft d;if(!SignalCodec::initialize(f,bus,d,error))return false;work.frames[f.key]=d;keys.insert(f.key);names.insert(f.name);ids.insert(f.id);}
+    auto&work=next.working;work.repeatCount=root.value("repeatCount").toInt(1);if(work.repeatCount<1||work.repeatCount>1000000)return reject("无效发送次数");work.uiSettings=root.value("uiSettings").toObject();work.replaySettings=root.value("replaySettings").toObject();QSet<QString> keys,names;
+    for(const auto&f:next.database->frames){TxDraft d;if(!SignalCodec::initialize(f,bus,d,error))return false;work.frames[f.key]=d;keys.insert(f.key);names.insert(f.name);}
     for(const auto&value:root["custom"].toArray()){
         const auto o=value.toObject();bool ok=false;const auto id=o["id"].toString().toULongLong(&ok);const auto name=o["name"].toString();
-        const auto length=o["length"];const QString savedKey=o["key"].toString(frameKey(bus,quint32(id),id>0x7ff));
-        const bool scoped=(bus==Bus::Lin&&savedKey.startsWith(frameKey(bus,quint32(id))+"@"))||(bus==Bus::Can&&savedKey.startsWith(frameKey(bus,quint32(id),id>0x7ff)+"@"));
-        if(!ok||id>(bus==Bus::Can?0x1fffffff:61)||!length.isDouble()||length.toDouble()!=length.toInt(-1)||length.toInt(-1)<0||length.toInt()>8||name.trimmed().isEmpty()||(!scoped&&(ids.contains(quint32(id))||names.contains(name)))||keys.contains(savedKey))return reject("自建帧 ID/名称重复或结构无效");
-        FrameDefinition f;f.custom=true;f.id=quint32(id);f.extended=id>0x7ff;f.key=frameKey(bus,f.id,f.extended);f.name=name;f.length=length.toInt();f.publisher=o["publisher"].toString();f.classicChecksum=o["classicChecksum"].toBool(bus==Bus::Lin&&id>=60);if(bus==Bus::Lin&&(f.length<1||(id>=60&&(f.length!=8||!f.classicChecksum))))return reject("LIN 帧长度或校验无效");
-        if(!o["source"].toString().isEmpty()){bool found=false;for(const auto &definition:next.database->frames)if(definition.key==o["source"].toString()&&definition.id==f.id){f=definition;found=true;break;}if(!found)return reject("调度帧的源定义不存在");}f.key=savedKey;
-        TxDraft d;if(!SignalCodec::initialize(f,bus,d,error))return false;work.customFrames.append(f);work.frames[f.key]=d;keys.insert(f.key);ids.insert(f.id);names.insert(name);
+        const bool extended=bus==Bus::Can&&o["extended"].toBool(id>0x7ff||o["key"].toString().startsWith("CAN:EXT:"));
+        const auto length=o["length"];const QString savedKey=o["key"].toString(frameKey(bus,quint32(id),extended));
+        const bool scoped=(bus==Bus::Lin&&savedKey.startsWith(frameKey(bus,quint32(id))+"@"))||(bus==Bus::Can&&savedKey.startsWith(frameKey(bus,quint32(id),extended)+"@"));
+        if(!ok||id>(bus==Bus::Can?0x1fffffff:61)||!length.isDouble()||length.toDouble()!=length.toInt(-1)||length.toInt(-1)<0||length.toInt()>8||name.trimmed().isEmpty()||(!scoped&&(savedKey!=frameKey(bus,quint32(id),extended)||names.contains(name)))||keys.contains(savedKey))return reject("自建帧 ID/名称重复或结构无效");
+        FrameDefinition f;f.custom=true;f.id=quint32(id);f.extended=extended;f.key=frameKey(bus,f.id,f.extended);f.name=name;f.length=length.toInt();f.publisher=o["publisher"].toString();f.classicChecksum=o["classicChecksum"].toBool(bus==Bus::Lin&&id>=60);if(bus==Bus::Lin&&(f.length<1||(id>=60&&(f.length!=8||!f.classicChecksum))))return reject("LIN 帧长度或校验无效");
+        if(!o["source"].toString().isEmpty()){bool found=false;for(const auto &definition:next.database->frames)if(definition.key==o["source"].toString()&&definition.id==f.id&&definition.extended==f.extended){f=definition;found=true;break;}if(!found)return reject("调度帧的源定义不存在");}else{
+            const FrameDefinition *match=nullptr;
+            for(const auto &candidate:next.database->frames)if(candidate.id==id&&candidate.extended==extended){
+                if(match){match=nullptr;break;}match=&candidate;
+            }
+            if(match){f.databaseBound=o["databaseBound"].toBool();f.fields=match->fields;f.length=match->length;if(f.databaseBound)f.publisher=match->publisher;f.issue=match->issue;}
+        }f.key=savedKey;
+        TxDraft d;if(!SignalCodec::initialize(f,bus,d,error))return false;work.customFrames.append(f);work.frames[f.key]=d;keys.insert(f.key);names.insert(name);
     }
     const auto all=definitions(next.database,work);QMap<QString,FrameDefinition> byKey;for(const auto&f:all)byKey[f.key]=f;
     QSet<QString> seen;for(const auto&value:root["frames"].toArray()){
@@ -48,12 +55,13 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
         const int length=o.contains("dlc")?o["dlc"].toInt(-1):f.length;
         if((o.contains("dlc")&&(!o["dlc"].isDouble()||o["dlc"].toDouble()!=length))||(!TransmitPayload::validLength(bus,f.id,length)&&!(length==f.length&&!f.issue.isEmpty())))return reject("无效 DLC");
         if(!o["payload"].isString()||!SignalCodec::parseBytes(o["payload"].toString(),length,bytes,error))return reject(error.isEmpty()?"缺少帧 payload":error);
-        if(!o["values"].isArray())return reject("缺少信号使用值数组");const auto values=o["values"].toArray();if(values.size()!=f.fields.size())return reject("配置信号数量不一致");
+        if(!o["values"].isArray())return reject("缺少信号使用值数组");const auto values=o["values"].toArray();const bool legacyCustom=values.isEmpty()&&f.custom&&!f.fields.isEmpty();if(!legacyCustom&&values.size()!=f.fields.size())return reject("配置信号数量不一致");
         QVector<RawValue> raw;for(int i=0;i<values.size();++i){if(!values[i].isString())return reject("64 位/raw 值必须使用字符串");const auto r=SignalCodec::parseRaw(f.fields[i],values[i].toString());if(!r.ok())return reject(r.error);raw.append(r.raw);d.warnings[i]=r.warning;}
+        if(legacyCustom&&!TransmitPayload::decode(f,bytes,raw,error))return false;
         if(f.issue.isEmpty()){auto check=bytes;if(!TransmitPayload::encode(f,raw,check,error))return false;if(check!=bytes)return reject("配置 payload 与信号使用值不一致");}
         const auto cycle=o["cycleMs"];if(!cycle.isDouble()||cycle.toDouble()!=cycle.toInt(-1)||cycle.toInt(-1)<0||!o["enabled"].isBool())return reject("无效周期/启用字段");
         if(o.contains("sendEnabled")&&!o["sendEnabled"].isBool())return reject("无效发送使能");d.sendEnabled=o.value("sendEnabled").toBool(true);
-        d.values=d.appliedValues=raw;d.applied.bytes=bytes;d.enabled=o["enabled"].toBool();d.cycleMs=cycle.toInt();
+        d.alias=o["alias"].toString();d.values=d.appliedValues=raw;d.applied.bytes=bytes;d.enabled=o["enabled"].toBool();d.cycleMs=cycle.toInt();
         // For CAN, enabled is persisted queue membership; unsupported entries remain visible, but start rejects them.
         if(bus==Bus::Lin&&d.enabled&&!f.issue.isEmpty())return reject("不支持的帧不能启用发送");
     }
@@ -61,7 +69,7 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
     if(bus==Bus::Lin){
         QSet<QString> scheduleNames;for(const auto&v:root["schedules"].toArray()){
             const auto o=v.toObject();Schedule s;s.name=o["name"].toString();s.issue=o["issue"].toString();if(legacyDiagnosticIssue(s.issue))s.issue.clear();if(s.name.trimmed().isEmpty()||scheduleNames.contains(s.name)||!o["slots"].isArray())return reject("调度表名称为空、重复或缺少槽数组");scheduleNames.insert(s.name);
-            for(const auto&sv:o["slots"].toArray()){const auto so=sv.toObject();ScheduleSlot entry{so["frame"].toString(),so["delayMs"].toString(),so["issue"].toString(),0};bool ok=false;const auto delay=entry.delayMs.toDouble(&ok);
+            for(const auto&sv:o["slots"].toArray()){const auto so=sv.toObject();ScheduleSlot entry{so["frame"].toString(),so["delayMs"].toString(),so["issue"].toString(),0,so["alias"].toString()};bool ok=false;const auto delay=entry.delayMs.toDouble(&ok);
                 if(!ok||!std::isfinite(delay)||delay<=0)return reject("无效 delay");
                 if(legacyDiagnosticIssue(entry.issue)){
                     for(const auto&f:all)if(f.id>=60&&(f.key==entry.frame||f.name==entry.frame)&&f.issue.isEmpty()){entry.frame=f.key;entry.issue.clear();break;}
@@ -82,6 +90,7 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
     }else if(!root["schedules"].toArray().isEmpty())return reject("CAN 配置不能包含 LIN 调度表");
     if(bus==Bus::Can){
         if(root.contains("canNode")&&!root["canNode"].isString())return reject("无效 DBC 节点");
+        for(const auto &v:root["canOrder"].toArray()){const auto key=v.toString();if(byKey.contains(key)&&!work.canOrder.contains(key))work.canOrder.append(key);}
         work.canNode=root["canNode"].toString();work.canDirection=root.value("canDirection").toString("Tx");
         if((!work.canNode.isEmpty()&&!next.database->nodes.contains(work.canNode))||
            (root.contains("canDirection")&&!root["canDirection"].isString())||

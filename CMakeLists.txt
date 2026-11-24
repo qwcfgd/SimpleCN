@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(QtController VERSION 1.48 LANGUAGES CXX)
+project(Qt-SimpleCN VERSION 1.60 LANGUAGES CXX)
 if(MINGW)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
 endif()
@@ -15,9 +15,10 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets Concurrent)
 if(BUILD_TESTING)
     find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
 endif()
-set(HOST_RUNTIME_OUTPUT_DIR "C:/Documents/0_Qt/build/Qt-GeneralController-qt${QT_VERSION_MAJOR}"
+set(HOST_RUNTIME_OUTPUT_DIR "C:/Documents/0_Qt/build/Qt-SimpleCN-qt${QT_VERSION_MAJOR}"
     CACHE PATH "Application and required runtime files only")
 include(cmake/SignalDependencies.cmake)
+include(cmake/DriverRuntime.cmake)
 add_library(signal_database STATIC
     src/domain/SignalTypes.h src/model/SignalCodec.h src/model/SignalCodec.cpp
     src/model/TransmitPayload.h src/model/TransmitPayload.cpp
@@ -61,6 +62,8 @@ add_library(bootloader_ui STATIC
     src/infrastructure/BusHardware.h src/infrastructure/BusHardware.cpp
     src/infrastructure/TosunRuntime.h src/infrastructure/TosunRuntime.cpp
     src/infrastructure/TosunHardware.h src/infrastructure/TosunHardware.cpp
+    src/infrastructure/VectorRuntime.h src/infrastructure/VectorRuntime.cpp
+    src/infrastructure/VectorHardware.h src/infrastructure/VectorHardware.cpp
     src/infrastructure/TraceExporter.h src/infrastructure/TraceExporter.cpp
     src/infrastructure/TraceReader.h src/infrastructure/TraceReader.cpp
     src/views/FrameDataDelegate.h
@@ -136,7 +139,7 @@ if(WIN32)
     enable_language(RC)
 endif()
 add_executable(QtBootloader WIN32 src/main.cpp)
-set_target_properties(QtBootloader PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${HOST_RUNTIME_OUTPUT_DIR}")
+set_target_properties(QtBootloader PROPERTIES OUTPUT_NAME "SimpleCN" RUNTIME_OUTPUT_DIRECTORY "${HOST_RUNTIME_OUTPUT_DIR}")
 if(WIN32)
     target_sources(QtBootloader PRIVATE resources/app.rc)
 endif()
@@ -149,11 +152,14 @@ endif()
 # Publish runtime files only; the build tree also contains sources and test binaries.
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
-    set(HOST_RELEASE_OUTPUT "${CMAKE_BINARY_DIR}/release/QtBootloader-${PROJECT_VERSION}-qt${QT_VERSION_MAJOR}"
+    if(BUILD_TESTING)
+        add_test(NAME driver_packaging COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_driver_packaging.py")
+    endif()
+    set(HOST_RELEASE_OUTPUT "${CMAKE_BINARY_DIR}/release/SimpleCN-${PROJECT_VERSION}-qt${QT_VERSION_MAJOR}"
         CACHE PATH "New directory for the distributable release (existing output is never overwritten)")
     add_custom_target(package_release
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/package_release.py"
-            --build "${HOST_RUNTIME_OUTPUT_DIR}" --output "${HOST_RELEASE_OUTPUT}" --qt-major "${QT_VERSION_MAJOR}"
+            --build "${HOST_RUNTIME_OUTPUT_DIR}" --output "${HOST_RELEASE_OUTPUT}" --qt-major "${QT_VERSION_MAJOR}" --local-use-only
         DEPENDS QtBootloader
         COMMENT "Packaging runtime files without build caches or regression binaries"
         VERBATIM)

@@ -39,6 +39,9 @@ SignalTransmitter::SignalTransmitter(QObject*parent):QObject(parent){m_clock.sta
 SignalTransmitter::~SignalTransmitter(){stop();}
 void SignalTransmitter::start(const TxPlan&plan,int bitrate,bool simulation,CanHardware*can,LinHardware*lin){
     if(running())return;if(m_can!=can)m_canOutstanding=false;m_canPaused=false;m_replayResumeUs=0;m_plan=plan;m_status={};m_status.run=plan.run;m_status.state=RunState::Starting;m_can=can;m_simulation=simulation;m_once=0;m_events.clear();m_remaining.fill(qBound(1,plan.repeatCount,1000000),plan.items.size());m_due.fill(captureTimeUs(),plan.items.size());m_lin.reset();m_device.reset();
+    m_finiteRound.clear();m_nextFinite.clear();m_editFinite=false;m_finiteBoundary=true;m_completedRounds=0;
+    if(!plan.periodic&&!plan.replay&&plan.bus==Bus::Can)
+        for(const auto &item:plan.items)if(item.enabled)m_finiteRound.insert(item.key);
     m_replayResponses.clear();m_replayLin=lin;m_replayIndex=0;m_replayRound=0;m_loggedKeys.clear();m_itemIndex.clear();m_extraDue.fill(0,plan.items.size());
     for(int n=0;n<plan.items.size();++n)m_itemIndex[plan.items[n].key]=n;
     // PEAK disables self-sent frames by default. Enable their hardware readback
@@ -99,6 +102,22 @@ bool SignalTransmitter::send(const TxItem&i,QString&error){
     BusFrameEvent event;event.bus=Bus::Can;event.id=i.id;event.extended=i.extended;event.bytes=i.payload;event.arrivalUs=captureTimeUs();
     event.source=m_simulation?EventSource::Simulated:EventSource::RequestAccepted;event.detail=m_simulation?"SIM TX（无 ECU 响应）":"驱动已接受发送请求（非 ECU 确认）";m_events.append(event);return true;
 }
+void SignalTransmitter::applyFiniteChanges(qint64 now){
+    if(m_editFinite){
+        QVector<int> remaining;QVector<qint64> due;
+        for(const auto &item:m_nextFinite){
+            const int old=m_itemIndex.value(item.key,-1);
+            remaining.append(old<0||!m_plan.items[old].enabled?qMax(0,m_plan.repeatCount-m_completedRounds):m_remaining[old]);
+            due.append(old<0?now:m_due[old]);
+        }
+        m_plan.items=std::move(m_nextFinite);m_itemIndex.clear();
+        for(int i=0;i<m_plan.items.size();++i)m_itemIndex[m_plan.items[i].key]=i;
+        m_remaining=std::move(remaining);m_due=std::move(due);m_editFinite=false;
+    }
+    m_finiteRound.clear();
+    for(int i=0;i<m_plan.items.size();++i)if(m_plan.items[i].enabled&&m_remaining[i]>0)m_finiteRound.insert(m_plan.items[i].key);
+    m_finiteBoundary=true;
+}
 void SignalTransmitter::tick(){if(!running())return;const auto now=captureTimeUs();QString error;
     if(m_plan.bus==Bus::Can&&!m_simulation){
         if(m_canPaused){if(now-m_lastFlush>=20000)flush();return;}
@@ -113,11 +132,15 @@ void SignalTransmitter::tick(){if(!running())return;const auto now=captureTimeUs
         m_status.sent=stats.sent;m_status.missed=stats.missed;m_status.failures=stats.failures;
         if(!m_scheduler.running()){fail("全部 CAN 周期发送项已停止：驱动写入失败");return;}
     }else{int budget=256;bool pending=false;
+        if(m_finiteBoundary&&m_editFinite)applyFiniteChanges(now);
         for(int n=0;n<m_plan.items.size();++n){const auto &i=m_plan.items[n];if(!i.enabled){m_remaining[n]=0;continue;}
             if(m_remaining[n]>0&&now>=m_due[n]&&budget>0){--budget;
+                m_finiteBoundary=false;
                 if(send(i,error)){++m_status.sent[i.key];--m_remaining[n];m_due[n]=now+qMax(1,i.periodMs)*1000LL;}
                 else if(m_canPaused){m_due[n]=now+qMax(1,i.periodMs)*1000LL;break;}
                 else{m_status.failures[i.key]=error;m_remaining[n]=0;}
+                m_finiteRound.remove(i.key);
+                if(m_finiteRound.isEmpty()){++m_completedRounds;applyFiniteChanges(now);break;}
                 if(m_canOutstanding)break;
             }
             pending|=m_remaining[n]>0;}
@@ -158,7 +181,31 @@ void SignalTransmitter::fail(const QString&why){
 }
 void SignalTransmitter::linkFailed(const QString&why){if(signal::active(m_status.state))fail(why);}
 void SignalTransmitter::update(const PayloadUpdate&u){if(!running()||u.run!=m_plan.run||u.connection!=m_plan.connection)return;
-    QString error;if(m_plan.replay){for(auto &i:m_plan.items)if(i.key==u.key){if(u.enableChanged)i.enabled=u.enabled;else if(u.payload.revision>i.revision){i.payload=u.payload.bytes;i.revision=u.payload.revision;}}return;}if(u.enableChanged){if(m_lin){if(!m_lin->setEnabled(u.key,u.enabled,captureTimeUs(),error))fail(error);}else{m_scheduler.setEnabled(u.key,u.enabled);for(auto &i:m_plan.items)if(i.key==u.key)i.enabled=u.enabled;}return;}if(m_lin){if(!m_lin->update(u.key,u.payload,error))fail(error);}else{m_scheduler.update(u.key,u.payload);for(auto&i:m_plan.items)if(i.key==u.key&&u.payload.revision>i.revision&&u.payload.bytes.size()==i.payload.size()){i.payload=u.payload.bytes;i.revision=u.payload.revision;}}}
+    QString error;if(m_plan.replay){for(auto &i:m_plan.items)if(i.key==u.key){if(u.enableChanged)i.enabled=u.enabled;else if(u.payload.revision>i.revision){i.payload=u.payload.bytes;i.revision=u.payload.revision;}}return;}
+    if(u.plan){
+        if(m_lin){if(!m_lin->replacePlan(*u.plan,error))fail(error);}
+        else if(m_plan.periodic)m_scheduler.replaceItems(u.plan->items);
+        else{m_nextFinite=u.plan->items;m_editFinite=true;}
+        return;
+    }
+    if(m_lin){
+        const bool ok=u.enableChanged?m_lin->setEnabled(u.key,u.enabled,captureTimeUs(),error):m_lin->update(u.key,u.payload,error);
+        if(!ok)fail(error);return;
+    }
+    if(m_plan.periodic){
+        if(u.enableChanged)m_scheduler.setEnabled(u.key,u.enabled);else m_scheduler.update(u.key,u.payload);
+    }else{
+        if(!m_editFinite){m_nextFinite=m_plan.items;m_editFinite=true;}
+        for(auto &item:m_nextFinite)if(item.key==u.key){
+            if(u.enableChanged)item.enabled=u.enabled;
+            else if(u.payload.revision>item.revision&&u.payload.bytes.size()==item.payload.size()){
+                item.payload=u.payload.bytes;item.revision=u.payload.revision;
+            }
+            break;
+        }
+    }
+}
+
 void SignalTransmitter::switchSchedule(quint64 run,const QString&name){if(!running()||run!=m_plan.run||!m_lin)return;QString error;
     if(!m_lin->switchTo(name,captureTimeUs(),error)){fail(error);return;}m_status=m_lin->status();flush();}
 bool SignalTransmitter::publishesLin(quint32 id)const{if(m_plan.replay&&running()){for(const auto&r:m_plan.replayFrames)if(r.id==id&&r.publish)return true;}return m_lin&&running()&&m_lin->publishes(id);}

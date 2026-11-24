@@ -17,6 +17,7 @@ public:
     bool running()const{return signal::active(m_status.state)||m_status.cleanupPending;}
     quint64 run()const{return m_status.run;}
     bool publishesLin(quint32 id)const;
+    bool linScheduleRunning()const{return m_lin&&running();}
     void observe(const signal::BusFrameEvents&);
     std::function<bool()> drainReceived;
     std::function<bool(const signal::TxItem &,QString &)> guardedCanSend;
@@ -53,6 +54,11 @@ private:
     signal::BusFrameEvents m_events;int m_once=0;
     QMap<quint32,signal::ReplayRecord>m_replayResponses;
     LinHardware*m_replayLin=nullptr;int m_replayIndex=0,m_replayRound=0;QVector<qint64> m_extraDue;QSet<QString>m_loggedKeys;QHash<QString,int>m_itemIndex;
+    void applyFiniteChanges(qint64);
+    QVector<signal::TxItem> m_nextFinite;
+    bool m_editFinite=false,m_finiteBoundary=true;
+    QSet<QString> m_finiteRound;
+    int m_completedRounds=0;
     QVector<int> m_remaining;QVector<qint64> m_due;
 };
 }

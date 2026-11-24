@@ -33,7 +33,7 @@ for folder, directory in folders.items():
         if path.suffix not in (".h", ".cpp"):
             continue
         for line, text in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if folder == "views" and re.search(r'\b(?:diag::Codec|diag::Database|SignalCodec|DatabaseImporter|SettingsStore)::|\bapplyCddCommunication\s*\(', text):
+            if folder == "views" and re.search(r'\b(?:diag::Codec|diag::Database|SignalCodec|DatabaseImporter|SettingsStore)::|\bapplyCddCommunication\s*\(|\bFirmwareImage::(?:load\w*|identify|planSlots|validateCalibration)\s*\(', text):
                 errors.append(f"{path.relative_to(project)}:{line}: view must delegate parsing/encoding/persistence to a ViewModel")
             match = re.match(r'\s*#include\s+[<"]([^>"]+)', text)
             if not match:

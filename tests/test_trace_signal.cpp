@@ -61,7 +61,7 @@ private slots:
  }
  void workerPeerBlockAndSeparation(){
   QFETCH(int,bs);QFETCH(int,st);QTemporaryDir temp;QVERIFY(temp.isValid());QFile image(temp.filePath("app.bin"));QVERIFY(image.open(QIODevice::WriteOnly));QCOMPARE(image.write(QByteArray(100,'b')),qint64(100));image.close();
-  auto settings=ChannelSettings::defaults(communication::Bus::Can);settings.simulation=false;settings.hardwareKey="can:pipeline:1";settings.handle=0x51;settings.flashRequired=false;settings.applicationPath=image.fileName();
+  auto settings=ChannelSettings::defaults(communication::Bus::Can);settings.simulation=false;settings.hardwareKey="can:pipeline:1";settings.handle=0x51;settings.flashRequired=false;settings.applicationPath=image.fileName();settings.flashPath=image.fileName(); /* Readable dummy Driver; all Driver services are disabled. */
   boot::FlashProfile profile;profile.flow="boot";profile.keyProvider="seed-as-key";profile.simulationOnly=false;for(const auto &step:boot::downloadSteps())profile.stepEnabled[step.id]=false;
   profile.stepEnabled["app34"]=true;profile.stepEnabled["app36"]=true;settings.downloadProfile=profile.toJson();
   PipelineCanFake *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<PipelineCanFake>();fake=p.get();return p;});
@@ -79,7 +79,7 @@ private slots:
  void workerAndTransportBoundDownloadWindow(){
   QFETCH(int,failAt);
   QTemporaryDir temp;QVERIFY(temp.isValid());QFile image(temp.filePath("app.bin"));QVERIFY(image.open(QIODevice::WriteOnly));QCOMPARE(image.write(QByteArray(100,'a')),qint64(100));image.close();
-  auto settings=ChannelSettings::defaults(communication::Bus::Can);settings.simulation=false;settings.hardwareKey="can:pipeline:1";settings.handle=0x51;settings.flashRequired=false;settings.applicationPath=image.fileName();if(failAt==-3)settings.canNetwork["nAsMs"]=300;
+  auto settings=ChannelSettings::defaults(communication::Bus::Can);settings.simulation=false;settings.hardwareKey="can:pipeline:1";settings.handle=0x51;settings.flashRequired=false;settings.applicationPath=image.fileName();settings.flashPath=image.fileName(); /* Readable dummy Driver; all Driver services are disabled. */if(failAt==-3)settings.canNetwork["nAsMs"]=300;
   boot::FlashProfile profile;profile.flow="boot";profile.keyProvider="seed-as-key";profile.simulationOnly=false;for(const auto &step:boot::downloadSteps())profile.stepEnabled[step.id]=false;
   profile.stepEnabled["app34"]=true;profile.stepEnabled["app36"]=true;settings.downloadProfile=profile.toJson();
   PipelineCanFake *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<PipelineCanFake>();fake=p.get();return p;});

@@ -63,7 +63,7 @@ private slots:
     }
     void enabledControls(){
         SignalTransmitViewModel model(Bus::Lin);SignalTransmitPage page(&model);auto *vm=&model;QString error;QVERIFY(vm->createSchedule(error));QVERIFY(vm->putCustom({},"frame",0x10,8,100,error));
-        vm->setAvailability(true,false,19200,1);auto *count=page.findChild<QSpinBox*>("signalRepeatCount");auto *once=page.findChild<QPushButton*>("signalSendOnce");auto *period=page.findChild<QPushButton*>("signalStart");QVERIFY(count&&once&&period);QVERIFY(once->isEnabled());QCOMPARE(once->text(),QString("多次调度"));QCOMPARE(period->text(),QString("周期调度"));
+        vm->setAvailability(true,false,19200,1);auto *count=page.findChild<QSpinBox*>("signalRepeatCount");auto *once=page.findChild<QPushButton*>("signalSendOnce");auto *period=page.findChild<QPushButton*>("signalStart");QVERIFY(count&&once&&period);QVERIFY(once->isEnabled());QCOMPARE(once->text(),QString("调度"));QCOMPARE(period->text(),QString("周期调度"));
         QVERIFY(vm->setFrameEnabled(frameKey(Bus::Lin,0x10),false,error));QVERIFY(!count->isEnabled());QVERIFY(!once->isEnabled());QVERIFY(!period->isEnabled());QVERIFY(vm->setFrameEnabled(frameKey(Bus::Lin,0x10),true,error));QVERIFY(vm->setRole(LinRole::Slave,{},error));QVERIFY(!once->isEnabled());QVERIFY(!count->isEnabled());QVERIFY(period->isEnabled());
     }
     void nativeLogRoundTrip(){

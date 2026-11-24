@@ -1,28 +1,27 @@
 #include "T008Target.h"
+#include "S32kLayout.h"
 #include <algorithm>
 namespace boot::t008 {
 static quint32 le(const QByteArray &b,int at,int count=4){
     quint32 v=0;for(int i=0;i<count;++i)v|=quint32(quint8(b[at+i]))<<(8*i);return v;
 }
 bool validateBlockLimit(int pduLimit,QString &error){
-    if(pduLimit<1026){error="T008 TransferData PDU limit must allow SID, BSC and 1024 App bytes";return false;}
+    if(pduLimit<1026){error="TransferData PDU limit must allow SID, BSC and 1024 ROM bytes";return false;}
     error.clear();return true;
 }
 bool compatibility(const Plan &p,QString &error){
-    auto bad=[&](const char *why){error=QString::fromLatin1(why);return false;};
-    if(!((p.driverMinor==1&&p.driverCapabilities==15)||(p.driverMinor==2&&p.driverCapabilities==31)||(p.driverMinor==4&&p.driverCapabilities==64)))
-        return bad("T008 profile v1: unsupported Driver ABI/capabilities");
+    if(p.driverCapabilities!=15&&p.driverCapabilities!=31&&p.driverCapabilities!=64&&p.driverCapabilities!=192){error="Unsupported Driver operations";return false;}
     error.clear();return true;
 }
 bool looksLikeImage(const FirmwareImage &image){
     for(const auto &s:image.segments){
-        if(s.data.startsWith("T008"))return true;
-        if(s.address<=0x20000&&quint64(s.address)+quint64(s.data.size())>=0x20004&&s.data.mid(int(0x20000-s.address),4)=="T008")return true;
+        if(s.data.startsWith("S32K144T")||s.data.startsWith("T008")||s.data.startsWith("T010"))return true;
     }return false;
 }
 bool looksLikeDriver(const FirmwareImage &image){
-    for(const auto &s:image.segments)if(s.address==0x20001400&&s.data.startsWith("T008DRV1"))return true;
-    return false;
+    if(image.segments.size()!=1)return false;
+    return image.segments.first().address==0x20001400&&
+        (image.segments.first().data.startsWith("S32K144T")||image.segments.first().data.startsWith("T008DRV1"));
 }
 static bool asciiField(const QByteArray &field,QByteArray &value){
     const int zero=field.indexOf('\0');value=zero<0?field:field.left(zero);
@@ -31,33 +30,100 @@ static bool asciiField(const QByteArray &field,QByteArray &value){
     return true;
 }
 bool images(const FirmwareImage &app,const FirmwareImage &driver,Plan &out,QString &error){
-    if(app.segments.isEmpty()){error="无法构造下载数据：App 文件为空";return false;}
-    Plan p;p.application=app.segments;
-    const auto first=app.segments.first();
-    if(first.data.size()>4096){p.application.removeFirst();p.application.prepend({first.address+4096,first.data.mid(4096)});p.application.prepend({first.address,first.data.left(4096)});}
-    if(first.data.size()>=87&&first.data.startsWith("T008APP2")){
-        const auto h=first.data.left(87);p.minBoot=quint16(le(h,12,2));p.hasMinimumBoot=true;
-        asciiField(h.mid(14,16),p.project);asciiField(h.mid(30,16),p.hardware);
-        p.hasAppVersion=asciiField(h.mid(46,9),p.version)&&!p.version.isEmpty();
-        p.configuration=h.mid(55,16);p.calibration=h.mid(71,16);
+    if(app.segments.isEmpty()){error="App image is empty";return false;}
+    Plan p;p.application=app.segments;const auto &first=app.segments.first();
+    RomMarker marker;QString markerError;
+    if(FirmwareImage::validateMarker(first,ROM_MARKER_APP,marker,markerError)){
+        p.project=QByteArray(reinterpret_cast<const char *>(marker.project),8);
+        p.hardware=QByteArray(reinterpret_cast<const char *>(marker.version),1);
+        // F189 is the existing App descriptor version, independent of the ROM marker.
+        p.hasAppVersion=asciiField(first.data.mid(46,9),p.version)&&!p.version.isEmpty();
+    }else if(first.data.size()>=88&&(first.data.startsWith("T008APP2")||first.data.startsWith("T010APP1"))){
+        asciiField(first.data.mid(14,16),p.project);asciiField(first.data.mid(30,16),p.hardware);
+        p.hasAppVersion=asciiField(first.data.mid(46,9),p.version)&&!p.version.isEmpty();
     }
-    if(driver.segments.size()==1){p.driver=driver.segments.first();const auto &d=p.driver.data;
-        if(d.size()>=14&&d.startsWith("T008DRV1")){p.driverMajor=quint16(le(d,10,2));p.driverMinor=quint16(le(d,12,2));p.hasDriverAbi=true;}
-        if(d.size()>=56)p.driverCapabilities=le(d,52);
+    if(driver.segments.size()==1){p.driver=driver.segments.first();const auto &d=p.driver.data;const int offset=d.startsWith("S32K144T")?64:0;
+        if(d.size()>=offset+56)p.driverCapabilities=le(d,offset+52);
     }
     out=p;error.clear();return true;
+}
+bool validateCurrentDriver(const FirmwareImage &image,bool t010,QString &error,quint16 t010Minor){
+    auto bad=[&]{error="Invalid Driver marker, entry table, operations or RAM range";return false;};
+    if(image.segments.size()!=1||image.segments[0].address!=0x20001400)return bad();
+    const auto &d=image.segments[0].data;const auto bytes=quint32(d.size());
+    const bool marked=d.startsWith("S32K144T");const int offset=marked?64:0;const quint32 headerBytes=marked?192u:128u;
+    if(!marked&&!t010)return bad();
+    if(marked){RomMarker marker;if(!FirmwareImage::validateMarker(image.segments[0],ROM_MARKER_DRIVER,marker,error))return false;}
+    if(bytes<headerBytes||bytes>0x2000||d.mid(offset,8)!="T008DRV1"||le(d,offset+8,2)!=headerBytes||le(d,offset+14,2)!=0)return bad();
+    // Marked Drivers use the frozen 192-byte control format: these fields
+    // are reserved zero, not the old 128-byte Driver ABI version.
+    if(marked){
+        if(le(d,offset+10,2)!=0u||le(d,offset+12,2)!=0u)return bad();
+        if(t010&&t010Minor!=11u)return bad(); // Current T010 192 KiB profile only.
+    }else if(t010&&(le(d,offset+10,2)!=1u||le(d,offset+12,2)!=t010Minor))return bad();
+    const auto codeEnd=le(d,offset+24);
+    if(le(d,offset+16)!=bytes||le(d,offset+20)!=0x20001400||codeEnd>bytes||le(d,offset+28)!=256||le(d,offset+52)!=192||le(d,offset+56)!=4096||le(d,offset+60)!=1024||le(d,offset+64)!=0||le(d,offset+68)!=20000000)return bad();
+    const auto build=d.mid(offset+72,16);if(build==QByteArray(16,char(0))||build==QByteArray(16,char(0xff)))return bad();
+    for(int i=0;i<5;++i){const auto entry=le(d,offset+32+i*4);if((entry&1)||entry<headerBytes||entry>=codeEnd)return bad();for(int j=0;j<i;++j)if(entry==le(d,offset+32+j*4))return bad();}
+    const auto section=le(d,offset+88);if((section&1)||section<headerBytes||section>=codeEnd)return bad();
+    for(int i=0;i<5;++i)if(section==le(d,offset+32+i*4))return bad();
+    for(int i=92;i<128;++i)if(d[offset+i]!=0)return bad();
+    error.clear();return true;
+}
+bool completeApplication(const FirmwareImage &app,quint32 base,quint32 capacity,bool t010,int slot,Plan &out,QString &error,bool slotContainer){
+    auto bad=[&](const char *why){error=QString::fromUtf8(why);return false;};
+    if(app.segments.isEmpty()||app.segments.first().address!=base)return bad("App must start at its selected slot base");
+    QByteArray complete;quint64 cursor=base;
+    for(const auto &segment:app.segments){
+        if(segment.data.isEmpty()||segment.address!=cursor)return bad("App has a hole or overlap; bytes are never supplied by the host");
+        cursor+=quint64(segment.data.size());if(cursor>0x100000000ULL||cursor-quint64(base)>capacity)return bad("App write range exceeds its erase capacity");complete+=segment.data;
+    }
+    if(complete.size()<4096||complete.left(8)!=(t010?QByteArray("T010APP1"):QByteArray("T008APP2")))return bad("App structural header does not match the target layout");
+    const auto *layout=s32kApplicationLayout(t010,base,capacity);
+    if(!layout)return bad("App address and erase capacity do not match a supported layout");
+    const auto codeBytes=le(complete,8),maximum=(t010?layout->t010AppBytes:layout->appBytes)-4096u;
+    if(!codeBytes||(codeBytes&0xfff)||codeBytes>maximum)return bad("Compiler-provided codeBytes must be 4 KiB aligned and fit the App region");
+    const quint64 effectiveLength=4096ULL+codeBytes;
+    const bool marked=complete.mid(ROM_MARKER_APP_OFFSET,8)=="S32K144T";
+    quint64 transferLength=effectiveLength;
+    if(marked){
+        RomMarker marker;
+        if(RomMarker_Decode(reinterpret_cast<const uint8_t *>(complete.constData()+ROM_MARKER_APP_OFFSET),&marker)!=0||marker.kind!=ROM_MARKER_APP)
+            return bad("Invalid App length marker");
+        transferLength=marker.imageBytes;
+        if(transferLength<effectiveLength||transferLength>capacity||(transferLength&4095u))return bad("App marker length does not cover its code within the slot");
+    }
+    if(quint64(complete.size())!=transferLength){
+        if(!slotContainer||transferLength>quint64(complete.size()))return bad("App coverage does not match its declared package length");
+        for(quint64 i=transferLength;i<quint64(complete.size());++i)if(quint8(complete[int(i)])!=0xff)return bad("App explicit container tail must be FF");
+    }
+    for(quint64 i=effectiveLength;i<transferLength;++i)if(quint8(complete[int(i)])!=0xff)return bad("App bytes beyond code extent must be FF");
+    if((t010&&(slot<0||slot>1||s32kT010Slot(base)!=slot||quint8(complete[87])!=slot))||(!t010&&quint8(complete[87])!=0xff))return bad("App slot marker does not match its linked address");
+    if(t010&&!s32kAppVectors(le(complete,4096),le(complete,4100),base,quint32(effectiveLength)))
+        return bad("App vectors do not match the selected slot and effective image range");
+    if(!marked&&!t010)return bad("App 64-byte marker missing");
+    if(marked){
+        RomMarker marker;
+        // Validate exactly the bytes returned below; a container CRC cannot
+        // authorize trimming a marker that still declares the whole container.
+        if(!FirmwareImage::validateMarker({base,complete.left(int(transferLength))},ROM_MARKER_APP,marker,error))return false;
+    }
+    const int reservedEnd=marked?int(ROM_MARKER_APP_OFFSET):4096;
+    for(int i=88;i<reservedEnd;++i)if(quint8(complete[i])!=0xff)return bad("App descriptor reserved bytes must be FF");
+    // 31 still erases the exact slot. Only a validated BIN FF container tail
+    // is omitted from 34; the caller's original file and HEX bytes stay intact.
+    if(slotContainer)complete.truncate(int(transferLength));
+    FirmwareImage selected;selected.segments={{base,complete}};Plan parsed;
+    if(!images(selected,{},parsed,error))return false;
+    parsed.application=selected.segments;out=std::move(parsed);error.clear();return true;
 }
 bool compareFileVersions(const Plan &p,const QMap<QString,QString> &expected,QStringList &mismatches,QString &error){
     mismatches.clear();error.clear();
     for(auto it=expected.cbegin();it!=expected.cend();++it){
-        QString label,actual;bool available=false;
-        if(it.key()=="driverAbi"){label="Driver ABI";available=p.hasDriverAbi;actual=QString("%1.%2").arg(p.driverMajor).arg(p.driverMinor);}
-        else if(it.key()=="appVersion"){label="App 版本";available=p.hasAppVersion;actual=QString::fromLatin1(p.version);}
-        else if(it.key()=="minimumBoot"){label="包内最低 Boot 版本";available=p.hasMinimumBoot;actual=QString::number(p.minBoot).rightJustified(3,'0');}
-        else{error="未知版本字段";return false;}
-        if(!available){mismatches.append(label+"：文件值无法解析，填写="+it.value().trimmed());continue;}
-        if(it.value().trimmed().isEmpty()){mismatches.append(label+"：文件="+actual+"，填写值为空");continue;}
-        if(actual!=it.value().trimmed())mismatches.append(QString("%1：文件=%2，填写=%3").arg(label,actual,it.value().trimmed()));
+        if(it.key()!="appVersion"){error="Unknown version field";return false;}
+        const auto actual=QString::fromLatin1(p.version);
+        if(!p.hasAppVersion)mismatches.append("App version is unavailable");
+        else if(actual!=it.value().trimmed())mismatches.append(QString("App version: file=%1, expected=%2").arg(actual,it.value().trimmed()));
     }
     return true;
 }
@@ -68,13 +134,14 @@ bool response(const QByteArray &request,const QByteArray &pdu,bool suppressed,QS
     switch(sid){
     case 0x10:case 0x11:case 0x85:requestValid=request.size()==2;break;
     case 0x14:requestValid=request==QByteArray::fromHex("14ffffff");break;
-    case 0x22:requestValid=request==QByteArray::fromHex("22f180")||request==QByteArray::fromHex("22f189");break;
+    case 0x22:requestValid=request.size()==3;break;
     case 0x27:requestValid=(request.size()==2&&(quint8(request[1])&1))||(request.size()==18&&!(quint8(request[1])&1));break;
     case 0x28:requestValid=request.size()==3;break;
     case 0x2e:requestValid=request.size()==22&&request.left(3)==QByteArray::fromHex("2ef184");break;
     case 0x31:
-        requestValid=request==QByteArray::fromHex("31010203")||request==QByteArray::fromHex("3101ff02")||(request.size()==16&&request.left(4)==QByteArray::fromHex("3101ff01"));
-        if(request.size()==13&&request.left(5)==QByteArray::fromHex("3101ff0044"))requestValid=true;
+        // The RID is selected in download settings, not by this response check.
+        requestValid=request.startsWith(QByteArray::fromHex("3101"))&&
+            (request.size()==4||request.size()==16||(request.size()==13&&quint8(request[4])==0x44));
         break;
     case 0x34:requestValid=request.size()==11&&request.left(3)==QByteArray::fromHex("340044");break;
     case 0x36:requestValid=request.size()>=3&&request.size()<=1026;break;
@@ -88,7 +155,7 @@ bool response(const QByteArray &request,const QByteArray &pdu,bool suppressed,QS
     case 0x10:length=6;prefix=QByteArray(1,char(0x50))+char(quint8(request[1])&0x7f);break;
     case 0x11:length=2;prefix=QByteArray::fromHex("5101");break;
     case 0x14:length=1;prefix=QByteArray::fromHex("54");break;
-    case 0x22:length=request.mid(1)==QByteArray::fromHex("f180")?17:12;prefix=QByteArray(1,char(0x62))+request.mid(1);break;
+    case 0x22:length=request.mid(1)==QByteArray::fromHex("f180")?17:request.mid(1)==QByteArray::fromHex("f189")?12:pdu.size()>3?pdu.size():-1;prefix=QByteArray(1,char(0x62))+request.mid(1);break;
     case 0x27:length=(quint8(request[1])&1)?18:2;prefix=QByteArray(1,char(0x67))+request[1];break;
     case 0x28:case 0x85:length=2;prefix=QByteArray(1,char(sid+0x40))+char(quint8(request[1])&0x7f);break;
     case 0x2e:length=3;prefix=QByteArray::fromHex("6ef184");break;

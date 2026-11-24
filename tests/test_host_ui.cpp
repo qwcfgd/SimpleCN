@@ -29,7 +29,9 @@
 #include <QPointer>
 #include <QLabel>
 #include <QStatusBar>
+#include <QPlainTextEdit>
 #include "views/MainWindow.h"
+#include "views/ChannelPage.h"
 #include "views/ChannelHardwareEditor.h"
 #include "views/ChannelTabs.h"
 #include "views/UiLanguageController.h"
@@ -48,20 +50,58 @@ public:
     explicit ReceiveEventFakeCan(bool eventSupported):event(eventSupported?CreateEvent(nullptr,FALSE,FALSE,nullptr):nullptr){}
     ~ReceiveEventFakeCan()override{if(event)CloseHandle(event);}
     HANDLE event=nullptr;QQueue<TPCANMsg> frames;int reads=0,delayMs=0,writes=0,scans=0;TPCANMsg lastWrite={};bool opened=false;bool warning=false,failClose=false,failOpen=false,failWrite=false;
-    communication::HardwareChannels scan(QString &error)override{++scans;error.clear();communication::HardwareChannel h;h.bus=Bus::Can;h.handle=0x51;h.key="can:fake:1";h.available=true;h.persistentIdentity=true;return {h};}
-    bool open(const communication::HardwareChannel&,const communication::SoftwareChannelConfiguration&,QString &error)override{if(failOpen){error="fake open failure";return false;}opened=true;error.clear();return true;}
-    bool close(QString &error)override{opened=false;frames.clear();if(event)ResetEvent(event);if(failClose){error="fake close failure";return false;}error.clear();return true;}
-    communication::Health health(QString &detail)override{detail.clear();return opened?communication::Health::Ready:communication::Health::Removed;}
+    bool busOff=false,present=true,reconnectOk=true,becomesReady=true,autoEcho=false,rejectWhenOff=false;
+    QStringList operations;
+    int opens=0,bitrate=0;
+    quint32 openedHandle=0;
+    bool warningAfterBusOffWrite=false;
+    CanBusState liveOverride=CanBusState::Unsupported;
+    communication::HardwareChannels scan(QString &error)override{++scans;error.clear();if(!present)return {};communication::HardwareChannel h;h.bus=Bus::Can;h.handle=0x51;h.key="can:fake:1";h.available=true;h.persistentIdentity=true;return {h};}
+    bool open(const communication::HardwareChannel&channel,const communication::SoftwareChannelConfiguration&config,QString &error)override{
+        operations.append("connect");
+        if(failOpen||(opens>0&&!reconnectOk)){error="fake open failure";return false;}
+        if(opens>0&&becomesReady){busOff=false;warning=false;liveOverride=CanBusState::Unsupported;}
+        ++opens;openedHandle=channel.handle;bitrate=config.bitrate;opened=true;error.clear();return true;
+    }
+    bool close(QString &error)override{if(opened)operations.append("disconnect");opened=false;frames.clear();if(event)ResetEvent(event);if(failClose){error="fake close failure";return false;}error.clear();return true;}
+    communication::Health health(QString &detail)override{detail.clear();return opened&&present?communication::Health::Ready:communication::Health::Removed;}
     bool enableEcho()override{return true;}
     void *receiveEventHandle()const override{return event;}
-    bool sendRaw(TPCANMsg m)override{++writes;lastWrite=m;return !failWrite;}
+    bool sendRaw(TPCANMsg m)override{operations.append("write");++writes;lastWrite=m;
+        if(rejectWhenOff&&busOff){if(warningAfterBusOffWrite)liveOverride=CanBusState::Warning;return false;}if(autoEcho&&!failWrite){m.MSGTYPE=TPCANMessageType(m.MSGTYPE|PCAN_MESSAGE_ECHO);frames.enqueue(m);}return !failWrite;}
     DWORD recvRaw(DWORD count,TPCANMsg *out,TPCANTimestamp *time)override{++reads;if(delayMs)QThread::msleep(unsigned(delayMs));DWORD n=0;while(n<count&&!frames.isEmpty()){out[n]=frames.dequeue();if(time)time[n]={};++n;}return n;}
-    unsigned long lastErrorCode()const override{return warning?PCAN_ERROR_BUSHEAVY:PCAN_ERROR_OK;}
+    unsigned long lastErrorCode()const override{return busOff?PCAN_ERROR_BUSOFF:warning?PCAN_ERROR_BUSHEAVY:PCAN_ERROR_OK;}
     QString lastErrorText()const override{return {};}
-    CanBusState classifyStatus(unsigned long status)const override{return status&PCAN_ERROR_BUSHEAVY?CanBusState::Warning:CanBusState::Ready;}
-    CanBusState busState()override{return warning?CanBusState::Warning:CanBusState::Ready;}
+    CanBusState classifyStatus(unsigned long status)const override{return status&PCAN_ERROR_BUSOFF?CanBusState::BusOff:status&PCAN_ERROR_BUSHEAVY?CanBusState::Warning:CanBusState::Ready;}
+    CanBusState busState()override{return opened&&present?(liveOverride==CanBusState::Unsupported?classifyStatus(lastErrorCode()):liveOverride):CanBusState::Fatal;}
     CanBusState statusFrame(const TPCANMsg &frame)const override{return frame.MSGTYPE&PCAN_MESSAGE_STATUS?CanBusState::Warning:CanBusState::Unsupported;}
     void enqueue(int count){for(int n=0;n<count;++n){TPCANMsg f={};f.ID=0x123;f.LEN=1;f.DATA[0]=BYTE(n);frames.enqueue(f);}}
+};
+// No vendor runtime or physical adapter is used by the wake-up tests.
+class WakeFakeLin final:public LinHardware {
+public:
+    bool opened=false;int role=modMaster,wakes=0;LinWakeResult wakeResult=LinWakeResult::Sent;
+    QElapsedTimer sinceWake;QList<TLINMsg>writes;QList<qint64>writeMs;QQueue<TLINRcvMsg> frames;
+    communication::HardwareChannels scan(QString &e)override{e.clear();communication::HardwareChannel h;h.bus=Bus::Lin;h.handle=0x31;h.key="lin:fake:1";h.available=true;h.persistentIdentity=true;return {h};}
+    bool open(const communication::HardwareChannel&,const communication::SoftwareChannelConfiguration&,QString&e)override{opened=true;e.clear();return true;}
+    bool close(QString&e)override{opened=false;e.clear();return true;}
+    communication::Health health(QString&e)override{e.clear();return opened?communication::Health::Ready:communication::Health::Removed;}
+    LinWakeResult wakeUp()override{++wakes;sinceWake.start();return wakeResult;}
+    bool sendRaw(TLINMsg m)override{writes.append(m);writeMs.append(sinceWake.isValid()?sinceWake.elapsed():-1);return opened;}
+    DWORD recvRaw(DWORD count,TLINRcvMsg*out)override{DWORD n=0;while(n<count&&!frames.isEmpty())out[n++]=frames.dequeue();return n;}
+    unsigned long lastErrorCode()const override{return errOK;}
+    QString lastErrorText()const override{return "fake wake failure";}
+    bool clearMsg()override{return true;}
+    int getDevMode()const override{return role;}
+    bool signalConfigureMode(bool master)override{role=master?modMaster:modSlave;return true;}
+    bool signalStop()override{return true;}
+    bool signalInstallFrames(const QVector<TLINFrameEntry>&)override{return false;}
+    bool signalStartSchedule(QVector<TLINScheduleSlot>)override{return false;}
+    bool signalRequestFrameBoundary()override{return false;}
+    bool signalFrameBoundaryReached(bool&)override{return false;}
+    bool signalRequestRoundBoundary()override{return false;}
+    bool signalRoundBoundaryReached(bool&)override{return false;}
+    bool signalUpdateFrame(BYTE,const QByteArray&)override{return false;}
 };
 class StartupWindowEvents : public QObject {
 public:
@@ -157,7 +197,481 @@ class HostUiTest : public QObject {
         s.p2Ms=30;s.p2StarMs=60;
         return s;
     }
+    ChannelSettings realWakeSettings(){
+        auto s=preview(Bus::Lin);s.simulation=false;s.hardwareKey="lin:fake:1";s.handle=0x31;
+        s.applicationPath=fixture("wake-app.bin",16);s.applicationBAddress.clear();s.bootBAddress.clear();s.downloadFiles={};
+        s.downloadProfile=boot::FlashProfile().toJson();s.linSlotMs=1;s.linAsMs=30;s.p2Ms=10;s.checkAppVersion=false;return s;
+    }
 private slots:
+    void periodicButtonReconnect_data(){
+        QTest::addColumn<bool>("busOff");
+        QTest::newRow("warning-read-with-live-bus-off")<<true;
+        QTest::newRow("four-warning-clicks")<<false;
+    }
+    void periodicButtonReconnect(){
+        QFETCH(bool,busOff);
+        auto settings=ChannelSettings::defaults(Bus::Can);
+        settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;
+        auto *worker=new ChannelWorker(settings,[&]{
+            auto adapter=std::make_unique<ReceiveEventFakeCan>(true);
+            fake=adapter.get();return adapter;
+        });
+        ChannelViewModel vm(settings,nullptr,new ChannelModel(settings,nullptr,worker));
+        ChannelPage page(&vm);
+        auto *connection=page.findChild<QPushButton *>("channelConnectButton");
+        auto *periodic=page.findChild<QPushButton *>("signalStart");
+        QVERIFY(connection&&periodic);
+        QVERIFY(!page.findChild<QPushButton *>("signalStop"));
+        QString error;
+        auto *tx=vm.signalTransmission();
+        QVERIFY2(tx->putCustom({},"Periodic recovery",0x123,1,200,error),qPrintable(error));
+        QTRY_VERIFY_WITH_TIMEOUT(connection->isEnabled(),2500);
+        connection->click();
+        QTRY_VERIFY_WITH_TIMEOUT(vm.connected()&&!vm.pending(),2500);
+        auto readOperations=[&]{
+            QStringList operations;
+            QMetaObject::invokeMethod(worker,[&]{operations=fake->operations;},Qt::BlockingQueuedConnection);
+            return operations;
+        };
+        QVERIFY(QMetaObject::invokeMethod(worker,[&]{
+            fake->operations.clear();fake->warning=true;fake->rejectWhenOff=true;fake->autoEcho=true;
+            fake->liveOverride=busOff?CanBusState::BusOff:CanBusState::Warning;
+            SetEvent(fake->event);
+        },Qt::BlockingQueuedConnection));
+        const auto expectedHealth=busOff?communication::Health::BusOff:communication::Health::BusWarning;
+        QTRY_COMPARE_WITH_TIMEOUT(vm.health(),expectedHealth,2500);
+        const int attempts=busOff?1:4;
+        const QStringList expected={"disconnect","connect","write"};
+        for(int attempt=0;attempt<attempts;++attempt){
+            if(attempt){
+                QVERIFY(QMetaObject::invokeMethod(worker,[&]{
+                    fake->warning=true;
+                    fake->liveOverride=CanBusState::Warning;
+                },Qt::BlockingQueuedConnection));
+            }
+            QVERIFY(periodic->isEnabled());
+            const int firstOperation=readOperations().size();
+            periodic->click();
+            QTRY_COMPARE_WITH_TIMEOUT(readOperations().mid(firstOperation,expected.size()),expected,2500);
+            QTRY_VERIFY_WITH_TIMEOUT(periodic->isEnabled()&&periodic->text()=="发送中...",2500);
+            periodic->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!tx->running(),2500);
+        }
+        const auto operations=readOperations();
+        QCOMPARE(operations.count("disconnect"),attempts);
+        QCOMPARE(operations.count("connect"),attempts);
+    }
+    void canFaultSendButtons_data(){
+        QTest::addColumn<bool>("download");
+        QTest::addColumn<bool>("warning");
+        QTest::newRow("warning-download")<<true<<true;
+        QTest::newRow("warning-uds")<<false<<true;
+        QTest::newRow("adapter-error-download")<<true<<false;
+        QTest::newRow("adapter-error-uds")<<false<<false;
+    }
+    void canFaultSendButtons(){
+        QFETCH(bool,download);
+        QFETCH(bool,warning);
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        auto settings=ChannelSettings::defaults(Bus::Can);
+        settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        settings.downloadProfile["target"]="generic";
+        settings.applicationBAddress.clear();settings.bootBAddress.clear();
+        settings.applicationPath=directory.filePath("app.bin");settings.flashPath=directory.filePath("driver.bin");
+        for(const auto &name:{settings.applicationPath,settings.flashPath}){
+            QFile file(name);QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(QByteArray(64,'A')),qint64(64));
+        }
+        ReceiveEventFakeCan *fake=nullptr;
+        auto *worker=new ChannelWorker(settings,[&]{
+            auto adapter=std::make_unique<ReceiveEventFakeCan>(true);
+            fake=adapter.get();return adapter;
+        });
+        ChannelViewModel vm(settings,nullptr,new ChannelModel(settings,nullptr,worker));
+        ChannelPage page(&vm);
+        auto *connection=page.findChild<QPushButton *>("channelConnectButton");
+        auto *action=page.findChild<QPushButton *>(download?"startButton":"sendUdsRequest");
+        QVERIFY(connection&&action);
+        if(!download){
+            auto *request=page.findChild<QPlainTextEdit *>("udsCommand");
+            QVERIFY(request);request->setPlainText("22 F1 89");
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(connection->isEnabled(),2500);
+        connection->click();
+        QTRY_VERIFY_WITH_TIMEOUT(vm.connected()&&!vm.pending(),2500);
+        QVERIFY(QMetaObject::invokeMethod(worker,[&]{
+            fake->operations.clear();fake->warning=warning;
+            fake->liveOverride=warning?CanBusState::Warning:CanBusState::Fatal;
+            SetEvent(fake->event);
+        },Qt::BlockingQueuedConnection));
+        QTRY_COMPARE_WITH_TIMEOUT(vm.health(),warning?communication::Health::BusWarning:communication::Health::Error,2500);
+        QCOMPARE(vm.communicationIndicator(),3);
+        QVERIFY(action->isEnabled());
+        action->click();
+        auto readOperations=[&]{
+            QStringList operations;
+            QMetaObject::invokeMethod(worker,[&]{operations=fake->operations;},Qt::BlockingQueuedConnection);
+            return operations;
+        };
+        const QStringList expected={"disconnect","connect","write"};
+        QTRY_COMPARE_WITH_TIMEOUT(readOperations(),expected,2500);
+    }
+    void deviceButtonRecovery_data(){
+        QTest::addColumn<bool>("failReconnect");
+        QTest::newRow("two-manual-sends")<<false;
+        QTest::newRow("reconnect-fails")<<true;
+    }
+    void deviceButtonRecovery(){
+        QFETCH(bool,failReconnect);
+        auto settings=ChannelSettings::defaults(Bus::Can);
+        settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        settings.bitrate=250000;
+        settings.autoReconnect=true; // A failed click still must not schedule a retry.
+        ReceiveEventFakeCan *fake=nullptr;
+        auto *worker=new ChannelWorker(settings,[&]{
+            auto adapter=std::make_unique<ReceiveEventFakeCan>(true);
+            fake=adapter.get();
+            return adapter;
+        });
+        ChannelViewModel vm(settings,nullptr,new ChannelModel(settings,nullptr,worker));
+        ChannelPage page(&vm);
+        auto *connection=page.findChild<QPushButton *>("channelConnectButton");
+        auto *send=page.findChild<QPushButton *>("sendUdsRequest");
+        auto *request=page.findChild<QPlainTextEdit *>("udsCommand");
+        QVERIFY(connection&&send&&request);
+        QTRY_VERIFY_WITH_TIMEOUT(connection->isEnabled(),2500);
+        connection->click();
+        QTRY_VERIFY_WITH_TIMEOUT(vm.connected()&&!vm.pending(),2500);
+        request->setPlainText("3E 00");
+        QVERIFY(send->isEnabled());
+        QStringList operations;
+        auto readOperations=[&]{
+            QMetaObject::invokeMethod(worker,[&]{operations=fake->operations;},Qt::BlockingQueuedConnection);
+            return operations;
+        };
+        QVERIFY(QMetaObject::invokeMethod(worker,[&]{
+            fake->operations.clear();
+            fake->busOff=true;fake->rejectWhenOff=true;fake->becomesReady=false;
+            fake->warningAfterBusOffWrite=true;fake->reconnectOk=!failReconnect;
+            SetEvent(fake->event);
+        },Qt::BlockingQueuedConnection));
+        QTRY_COMPARE_WITH_TIMEOUT(vm.health(),communication::Health::BusOff,2500);
+        vm.clearLogs();
+        QSignalSpy finished(&vm,&ChannelViewModel::diagnosticFinished);
+        send->click();
+        QTRY_COMPARE_WITH_TIMEOUT(finished.count(),1,2500);
+        QVERIFY(!finished.first().first().toBool());
+        const auto actionLogs=[&]{
+            QStringList entries;
+            // Fault notification delivery may race the click. The assertion
+            // checks the send and reconnect logs, not that notification.
+            for(const auto &line:vm.logs())
+                if(!line.endsWith("CAN controller is Bus-Off"))entries.append(line);
+            return entries;
+        };
+        const auto firstLogs=actionLogs();
+        QVERIFY2(firstLogs.size()==(failReconnect?1:2),qPrintable(firstLogs.join('\n')));
+        if(!failReconnect)QVERIFY2(firstLogs.first().contains("UDS TX  3E 00"),qPrintable(firstLogs.join('\n')));
+        QVERIFY(firstLogs.last().contains(vm.diagnosticResult()));
+        if(failReconnect){
+            QVERIFY(!vm.connected());
+            QTest::qWait(1150); // Longer than the normal loss-recovery cooldown.
+            QCOMPARE(readOperations(),QStringList({"disconnect","connect"}));
+            return;
+        }
+        QCOMPARE(readOperations(),QStringList({"disconnect","connect","write"}));
+        QTRY_VERIFY_WITH_TIMEOUT(vm.health()==communication::Health::BusOff,2500);
+        QVERIFY(QMetaObject::invokeMethod(worker,[&]{
+            // GetStatus can present a warning after the Bus-Off write result.
+            fake->busOff=false;fake->warning=true;fake->becomesReady=true;
+        },Qt::BlockingQueuedConnection));
+        QVERIFY(send->isEnabled());
+        send->click();
+        const QStringList expected={"disconnect","connect","write","disconnect","connect","write"};
+        QTRY_COMPARE_WITH_TIMEOUT(readOperations(),expected,2500);
+        quint32 handle=0;
+        int bitrate=0;
+        QVERIFY(QMetaObject::invokeMethod(worker,[&]{
+            handle=fake->openedHandle;bitrate=fake->bitrate;
+        },Qt::BlockingQueuedConnection));
+        QCOMPARE(handle,quint32(0x51));
+        QCOMPARE(bitrate,250000);
+        QTRY_COMPARE_WITH_TIMEOUT(actionLogs().size(),3,2500);
+        QVERIFY(actionLogs().last().contains("UDS TX  3E 00"));
+        QVERIFY(vm.connected());
+    }
+    void manualCanFaultAdmission_data(){
+        QTest::addColumn<QString>("action");
+        QTest::addColumn<QString>("condition");
+        QTest::addColumn<int>("reconnects");
+        QTest::addColumn<int>("writes");
+        QTest::newRow("raw")<<QString("raw")<<QString("busoff")<<1<<1;
+        QTest::newRow("download")<<QString("download")<<QString("busoff")<<1<<1;
+        QTest::newRow("finite")<<QString("finite")<<QString("busoff")<<1<<2;
+        QTest::newRow("periodic")<<QString("periodic")<<QString("busoff")<<1<<1;
+        QTest::newRow("healthy")<<QString("raw")<<QString("ready")<<0<<1;
+        QTest::newRow("warning-raw")<<QString("raw")<<QString("warning")<<1<<1;
+        QTest::newRow("warning-download")<<QString("download")<<QString("warning")<<1<<1;
+        QTest::newRow("warning-finite")<<QString("finite")<<QString("warning")<<1<<2;
+        QTest::newRow("warning-periodic")<<QString("periodic")<<QString("warning")<<1<<1;
+        QTest::newRow("driver-error")<<QString("raw")<<QString("fatal")<<1<<1;
+        QTest::newRow("automated-warning-repeat")<<QString("auto")<<QString("warning")<<0<<0;
+        QTest::newRow("reconnect-fails")<<QString("download")<<QString("fail")<<1<<0;
+        QTest::newRow("still-busoff-two-raw-clicks")<<QString("raw")<<QString("two-clicks")<<2<<2;
+        QTest::newRow("still-busoff-two-finite-clicks")<<QString("finite")<<QString("two-clicks")<<2<<3;
+        QTest::newRow("automated-repeat")<<QString("auto")<<QString("busoff")<<0<<0;
+        QTest::newRow("adapter-removed")<<QString("finite")<<QString("removed")<<0<<0;
+        QTest::newRow("manual-disconnect")<<QString("raw")<<QString("disconnect")<<0<<0;
+    }
+    void manualCanFaultAdmission(){
+        QFETCH(QString,action);QFETCH(QString,condition);QFETCH(int,reconnects);QFETCH(int,writes);
+        QTemporaryDir dir;QVERIFY(dir.isValid());
+        auto settings=ChannelSettings::defaults(Bus::Can);
+        settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        settings.downloadProfile["target"]="generic";
+        settings.applicationBAddress.clear();settings.bootBAddress.clear();
+        settings.applicationPath=dir.filePath("app.bin");settings.flashPath=dir.filePath("driver.bin");
+        for(const auto &name:{settings.applicationPath,settings.flashPath}){
+            QFile file(name);QVERIFY(file.open(QIODevice::WriteOnly));QCOMPARE(file.write(QByteArray(64,'A')),qint64(64));
+        }
+        ReceiveEventFakeCan *fake=nullptr;
+        ChannelWorker worker(settings,[&]{auto adapter=std::make_unique<ReceiveEventFakeCan>(false);fake=adapter.get();return adapter;});
+        QSignalSpy generation(&worker,&ChannelWorker::connectionGenerationChanged),
+            health(&worker,&ChannelWorker::healthChanged),state(&worker,&ChannelWorker::stateChanged),
+            run(&worker,&ChannelWorker::signalStatus),diagnostic(&worker,&ChannelWorker::diagnosticFinished);
+        worker.initialize();worker.connectChannel(settings);
+        QCOMPARE(generation.size(),1);QVERIFY(fake&&fake->opened);
+        fake->operations.clear();
+        fake->busOff=condition!="ready"&&condition!="warning";
+        fake->warning=condition=="warning";fake->present=condition!="removed";
+        if(condition=="fatal")fake->liveOverride=CanBusState::Fatal;
+        fake->reconnectOk=condition!="fail";fake->becomesReady=condition!="two-clicks";
+        fake->rejectWhenOff=true;
+        if(condition=="disconnect")worker.disconnectChannel();
+        const bool signalAction=action=="finite"||action=="periodic";
+        const auto click=[&](quint64 index){
+            if(action=="download"){worker.startPreview(settings);return;}
+            if(signalAction){
+                signal::TxPlan plan;plan.connection=generation.last().first().toULongLong();plan.run=index;
+                plan.repeatCount=2;plan.periodic=action=="periodic";
+                signal::TxItem item;item.key="frame";item.id=0x123;item.enabled=true;
+                item.payload=QByteArray(1,'X');item.periodMs=plan.periodic?1000:5;plan.items.append(item);
+                fake->autoEcho=true;
+                worker.startSignals(plan);return;
+            }
+            diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex("22f189");request.service.physical=true;
+            worker.sendDiagnostic(settings,request,action!="auto");
+        };
+        click(1);
+        if(condition=="two-clicks"){
+            QTRY_COMPARE_WITH_TIMEOUT(fake->writes,1,1000);
+            if(signalAction){
+                QTRY_VERIFY_WITH_TIMEOUT(!run.isEmpty()&&qvariant_cast<signal::RunStatus>(run.last()[0]).state==signal::RunState::Faulted,1000);
+            }else{
+                QTRY_VERIFY_WITH_TIMEOUT(!diagnostic.isEmpty(),1000);
+                QVERIFY(!diagnostic.last()[0].toBool());
+            }
+            QCOMPARE(fake->operations.mid(0,3),QStringList({"disconnect","connect","write"}));
+            QVERIFY(!health.isEmpty());
+            QCOMPARE(qvariant_cast<communication::Health>(health.last()[0]),communication::Health::BusOff);
+            fake->becomesReady=true;
+            click(2);
+        }
+        if(writes)QTRY_COMPARE_WITH_TIMEOUT(fake->writes,writes,1000);
+        if(action=="periodic")worker.stopSignals(1);
+        QTest::qWait(80);
+        QCOMPARE(fake->writes,writes);QCOMPARE(fake->operations.count("connect"),reconnects);
+        if(condition=="removed"){
+            QCOMPARE(qvariant_cast<communication::ConnectionState>(state.last()[0]),communication::ConnectionState::Missing);
+            QCOMPARE(fake->operations,QStringList({"disconnect"}));
+        }else if(condition=="fail"){
+            QVERIFY(!fake->opened);
+            QVERIFY(qvariant_cast<communication::ConnectionState>(state.last()[0])!=communication::ConnectionState::Connected);
+        }
+        worker.shutdown();
+    }
+    void linNoResponseAndIncompleteResponse_data(){
+        QTest::addColumn<int>("flags");QTest::addColumn<int>("count");QTest::addColumn<int>("direction");
+        QTest::addColumn<bool>("suppressed");QTest::addColumn<bool>("noResponse");QTest::addColumn<int>("payloadBytes");
+        auto row=[](const QByteArray&name,int flags,int count,int direction,bool suppressed,bool noResponse,int bytes){
+            QTest::newRow(name.constData())<<flags<<count<<direction<<suppressed<<noResponse<<bytes;
+        };
+        row("SNR",MSG_ERR_SLAVE_NOT_RESPONDING,0xa5,dirSubscriber,false,true,0);
+        row("SNR/suppressed",MSG_ERR_SLAVE_NOT_RESPONDING,0xa5,dirSubscriber,true,true,0);
+        row("SNR/autolength",MSG_ERR_SLAVE_NOT_RESPONDING,0xa5,dirSubscriberAutoLength,true,true,0);
+        for(int count:{0,3,8}){
+            const auto suffix=QByteArray::number(count);
+            row("TIMEOUT/"+suffix,MSG_ERR_TIMEOUT,count,dirSubscriber,false,false,count);
+            row("TIMEOUT/suppressed/"+suffix,MSG_ERR_TIMEOUT,count,dirSubscriber,true,false,count);
+            row("publisher/TIMEOUT/"+suffix,MSG_ERR_TIMEOUT,count,dirPublisher,true,false,count);
+        }
+        row("SNR+TIMEOUT",MSG_ERR_SLAVE_NOT_RESPONDING|MSG_ERR_TIMEOUT,3,dirSubscriber,true,false,3);
+        row("publisher/SNR",MSG_ERR_SLAVE_NOT_RESPONDING,0xa5,dirPublisher,true,false,0);
+        row("generic-adapter-error",0x10000,0xa5,dirSubscriber,true,false,8);
+    }
+    void linNoResponseAndIncompleteResponse(){
+        QFETCH(int,flags);QFETCH(int,count);QFETCH(int,direction);QFETCH(bool,suppressed);QFETCH(bool,noResponse);QFETCH(int,payloadBytes);
+        auto settings=realWakeSettings();settings.nad="5F";settings.rxdEnabled=false;settings.linAsMs=1000;settings.p2Ms=500;settings.p2StarMs=1000;
+        WakeFakeLin *fake=nullptr;ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
+        FrameBatch visible;signal::BusFrameEvents bus;
+        connect(&worker,&ChannelWorker::framesReceived,&worker,[&](const FrameBatch&batch){visible+=batch;});
+        connect(&worker,&ChannelWorker::busEvents,&worker,[&](signal::BusFrameEvents events){bus+=events;});
+        QSignalSpy done(&worker,&ChannelWorker::diagnosticFinished);worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);
+        diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex(suppressed?"1083":"1003");
+        if(suppressed){diag::Field subfunction;subfunction.suppressible=true;request.service.request.fields.append(subfunction);}
+        worker.sendDiagnostic(settings,request);QTRY_COMPARE_WITH_TIMEOUT(fake->writes.size(),1,1000);
+        auto frame=[](quint8 id,int direction,const QByteArray&bytes){
+            TLINRcvMsg out={};out.Type=mstStandard;out.FrameId=id;out.Direction=BYTE(direction);out.Length=8;out.ChecksumType=cstClassic;
+            unsigned sum=0;for(int i=0;i<8;++i){out.Data[i]=BYTE(bytes[i]);sum+=out.Data[i];if(sum>255)sum-=255;}out.Checksum=BYTE(~sum);return out;
+        };
+        const QByteArray sent(reinterpret_cast<const char*>(fake->writes.first().Data),8);
+        const bool publisher=direction==dirPublisher;
+        if(!publisher){
+            fake->frames.enqueue(frame(0x3c,dirPublisher,sent));
+            QTRY_VERIFY_WITH_TIMEOUT(fake->writes.size()>1,1000);QCOMPARE(fake->writes.last().FrameId,BYTE(0x3d));
+        }
+        const auto payload=publisher?sent:QByteArray::fromHex("5f065003003201f4");
+        auto event=frame(publisher?0x3c:0x3d,direction,payload);event.ErrorFlags=flags;event.Checksum=BYTE(count);
+        const int before=visible.size();fake->frames.enqueue(event);QTRY_COMPARE_WITH_TIMEOUT(visible.size(),before+1,1000);
+        const auto received=visible.last();QCOMPARE(received.direction,QString("Rx"));QVERIFY(!received.echo);
+        QCOMPARE(received.noResponse,noResponse);QCOMPARE(received.error,!noResponse);QCOMPARE(received.length,payloadBytes);
+        QCOMPARE(received.payload,payload.left(payloadBytes));QCOMPARE(bus.last().bytes,payload.left(payloadBytes));
+        QCOMPARE(bus.last().source,noResponse?signal::EventSource::NoResponse:signal::EventSource::Received);QVERIFY(!bus.last().valid);
+        QCOMPARE(received.checksum,(flags&(MSG_ERR_TIMEOUT|MSG_ERR_SLAVE_NOT_RESPONDING))?-1:count);
+        if(flags&MSG_ERR_TIMEOUT)QCOMPARE(received.data,QString::fromLatin1(payload.left(payloadBytes).toHex(' ')).toUpper());
+        if(noResponse&&!suppressed){
+            QVERIFY(done.isEmpty());fake->frames.enqueue(frame(0x3d,dirSubscriber,payload));
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,2000);
+        QCOMPARE(done.last()[0].toBool(),noResponse); // Only genuine silence may complete a suppressed request.
+        if(!noResponse)QVERIFY(done.last()[2].toString().contains("LIN"));
+        if(publisher)QCOMPARE(fake->writes.size(),1); // Failed publisher never opens response polling.
+        worker.cancelTask();worker.shutdown();
+    }
+    void linReceiveDirectionAndPendingEdges_data(){
+        QTest::addColumn<QString>("kind");
+        for(const auto name:{"subscriber","subscriber-auto","wrong-payload","short","empty","oversize","error","no-pending","cancelled-publisher","cancelled-subscriber"})
+            QTest::newRow(name)<<QString(name);
+    }
+    void linReceiveDirectionAndPendingEdges(){
+        QFETCH(QString,kind);auto settings=realWakeSettings();settings.nad="5F";settings.rxdEnabled=false;
+        settings.linAsMs=1000;settings.p2Ms=2000;settings.p2StarMs=3000;
+        WakeFakeLin *fake=nullptr;ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
+        FrameBatch visible;connect(&worker,&ChannelWorker::framesReceived,&worker,[&](const FrameBatch&batch){visible+=batch;});
+        QSignalSpy done(&worker,&ChannelWorker::diagnosticFinished);worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);
+        QByteArray payload=QByteArray::fromHex("5f021003ffffffff");
+        if(kind!="no-pending"){
+            diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex("1003");worker.sendDiagnostic(settings,request);
+            QTRY_COMPARE_WITH_TIMEOUT(fake->writes.size(),1,1000);QCOMPARE(visible.first().direction,QString("TxPending"));
+            payload=QByteArray(reinterpret_cast<const char*>(fake->writes.first().Data),8);
+        }
+        if(kind.startsWith("cancelled"))worker.cancelTask();
+        const int writesBefore=fake->writes.size(),doneBefore=done.size(),visibleBefore=visible.size();
+        TLINRcvMsg event={};event.Type=mstStandard;event.FrameId=0x3c;event.Length=8;event.Direction=dirPublisher;event.ChecksumType=cstClassic;
+        for(int i=0;i<8;++i)event.Data[i]=BYTE(payload[i]);
+        if(kind=="subscriber"||kind=="cancelled-subscriber")event.Direction=dirSubscriber;
+        if(kind=="subscriber-auto")event.Direction=dirSubscriberAutoLength;
+        if(kind=="wrong-payload")event.Data[7]^=1;
+        if(kind=="short")event.Length=7;
+        if(kind=="empty")event.Length=0;
+        if(kind=="oversize")event.Length=9;
+        if(kind=="error")event.ErrorFlags=MSG_ERR_CHECKSUM;
+        fake->frames.enqueue(event);QTRY_COMPARE_WITH_TIMEOUT(visible.size(),visibleBefore+1,1000);
+        const bool valid=event.Length==8&&!event.ErrorFlags;
+        const bool actualTx=valid&&event.Direction==dirPublisher;
+        QCOMPARE(visible.last().direction,QString(actualTx?"Tx":"Rx"));QCOMPARE(visible.last().echo,actualTx);
+        QCOMPARE(visible.last().error,!valid);QVERIFY(!visible.last().monitorHidden);
+        QTest::qWait(35);QCOMPARE(fake->writes.size(),writesBefore); // No 3D polling: no successful confirmation.
+        if(kind=="error"){QCOMPARE(done.size(),doneBefore+1);QVERIFY(!done.last()[0].toBool());}
+        else QCOMPARE(done.size(),doneBefore);
+        if(!kind.startsWith("cancelled")&&kind!="no-pending"&&kind!="error"){
+            // Invalid/unrelated observations must not consume the pending write.
+            event.Direction=dirPublisher;event.Length=8;event.ErrorFlags=0;
+            for(int i=0;i<8;++i)event.Data[i]=BYTE(payload[i]);
+            fake->frames.enqueue(event);QTRY_VERIFY_WITH_TIMEOUT(fake->writes.size()>writesBefore,1000);
+            QCOMPARE(fake->writes.last().FrameId,BYTE(0x3d));
+        }
+        worker.cancelTask();worker.shutdown();
+    }
+    void linDiagnosticReadbackVisibleWithOptionalRxdOff_data(){
+        QTest::addColumn<bool>("rxd");QTest::addColumn<bool>("bad");
+        QTest::newRow("confirmed/RxDoff")<<false<<false;QTest::newRow("confirmed/RxDon")<<true<<false;
+        QTest::newRow("bad/RxDoff")<<false<<true;QTest::newRow("bad/RxDon")<<true<<true;
+    }
+    void linDiagnosticReadbackVisibleWithOptionalRxdOff(){
+        QFETCH(bool,rxd);QFETCH(bool,bad);auto settings=realWakeSettings();
+        settings.nad="5F";settings.rxdEnabled=rxd;settings.linAsMs=1000;settings.p2Ms=2000;settings.p2StarMs=3000;
+        WakeFakeLin *fake=nullptr;ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
+        FrameBatch visible;connect(&worker,&ChannelWorker::framesReceived,&worker,[&](const FrameBatch&batch){visible+=batch;});
+        worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);
+        diag::Request request;request.raw=true;request.bytes=QByteArray::fromHex("1003");worker.sendDiagnostic(settings,request);
+        QTRY_VERIFY_WITH_TIMEOUT(!fake->writes.isEmpty(),1000);QCOMPARE(visible.size(),1);
+        QCOMPARE(visible.first().direction,QString("TxPending"));QVERIFY(visible.first().request);QVERIFY(!visible.first().echo);
+        const auto sent=fake->writes.first();QCOMPARE(sent.Data[0],BYTE(0x5f));
+        TLINRcvMsg echo={};echo.Type=mstStandard;echo.FrameId=0x3c;echo.Length=8;echo.Direction=dirPublisher;echo.ChecksumType=cstClassic;
+        for(int i=0;i<8;++i)echo.Data[i]=sent.Data[i];echo.ErrorFlags=bad?MSG_ERR_CHECKSUM:0;fake->frames.enqueue(echo);
+        QTRY_COMPARE_WITH_TIMEOUT(visible.size(),2,1000);
+        QCOMPARE(visible.last().direction,QString(bad?"Rx":"Tx"));QCOMPARE(visible.last().echo,!bad);
+        QCOMPARE(visible.last().error,bad);QVERIFY(!visible.last().monitorHidden);
+        QCOMPARE(visible.first().direction,QString("TxPending")); // Request history is never fabricated as confirmation.
+        worker.cancelTask();worker.shutdown();
+    }
+    void downloadNadUsesExistingSettingsAndValidation(){
+        MainWindow window(m_temp.path()+"/nad-download.json",true);window.setAttribute(Qt::WA_DontShowOnScreen);window.show();
+        auto *vm=window.linChannel();auto *page=window.findChild<ChannelPage*>("linPage");QVERIFY(vm&&page);
+        auto settings=vm->settings();settings.nad="15";QVERIFY(vm->setSettings(settings));QTRY_VERIFY(!vm->pending());
+        onDialog(page,"downloadSettingsDialog",[&](QDialog *dialog){
+            auto *nad=dialog->findChild<QLineEdit*>("downloadNad");QVERIFY(nad);QCOMPARE(nad->text(),QString("15"));
+            auto *initial=dialog->findChild<QLineEdit*>("download_default_downloadNad");QVERIFY(initial);QVERIFY(initial->isReadOnly());QCOMPARE(initial->text(),QString("01"));
+            QVERIFY(!dialog->findChild<QLineEdit*>("downloadTxId"));
+            auto *save=dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok);
+            for(const auto invalid:{"","00","7E","7F","FF","GG"}){nad->setText(invalid);save->click();QVERIFY(dialog->isVisible());QCOMPARE(vm->settings().nad,QString("15"));}
+            nad->setText("5f");save->click();
+        });
+        page->findChild<QPushButton*>("downloadSettings")->click();QCOMPARE(vm->settings().nad,QString("5F"));
+        QString error;QVERIFY(SettingsStore(m_temp.path()+"/nad-saved.json").save({vm->settings()},error));
+        QVector<ChannelSettings> restored;QVERIFY(SettingsStore(m_temp.path()+"/nad-saved.json").load(restored,error));QCOMPARE(restored.first().nad,QString("5F"));
+        QTRY_VERIFY(!vm->pending());
+        onDialog(page,"downloadSettingsDialog",[](QDialog *dialog){auto *nad=dialog->findChild<QLineEdit*>("downloadNad");QVERIFY(nad);nad->setText("21");dialog->reject();});
+        page->findChild<QPushButton*>("downloadSettings")->click();QCOMPARE(vm->settings().nad,QString("5F"));
+        auto *can=window.findChild<ChannelPage*>("canPage");QVERIFY(can);
+        onDialog(can,"downloadSettingsDialog",[](QDialog *dialog){QVERIFY(!dialog->findChild<QLineEdit*>("downloadNad"));QVERIFY(dialog->findChild<QLineEdit*>("downloadTxId"));dialog->reject();});
+        can->findChild<QPushButton*>("downloadSettings")->click();
+    }
+    void linDownloadWakePrecedesFirstFrameAndProtocolTimers(){
+        auto settings=realWakeSettings();WakeFakeLin *fake=nullptr;
+        ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
+        QSignalSpy tasks(&worker,&ChannelWorker::taskChanged);worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);
+        worker.startPreview(settings);QCOMPARE(fake->wakes,1);QVERIFY(fake->writes.isEmpty());
+        QTest::qWait(70);QVERIFY(fake->writes.isEmpty());QCOMPARE(qvariant_cast<TaskState>(tasks.last()[0]),TaskState::Running);
+        QTRY_VERIFY_WITH_TIMEOUT(!fake->writes.isEmpty(),700);QVERIFY(fake->writeMs.first()>=120);QCOMPARE(fake->writes.first().FrameId,BYTE(0x3c));QCOMPARE(fake->wakes,1);
+        worker.cancelTask();worker.shutdown();
+    }
+    void linWakeCancellationAndDisconnect_data(){QTest::addColumn<bool>("disconnect");QTest::newRow("cancel")<<false;QTest::newRow("disconnect")<<true;}
+    void linWakeCancellationAndDisconnect(){
+        QFETCH(bool,disconnect);auto settings=realWakeSettings();WakeFakeLin *fake=nullptr;
+        ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
+        worker.initialize();worker.connectChannel(settings);worker.startPreview(settings);QCOMPARE(fake->wakes,1);
+        if(disconnect)worker.disconnectChannel();else worker.cancelTask();QTest::qWait(180);QVERIFY(fake->writes.isEmpty());worker.shutdown();
+    }
+    void linCancelledWakeCannotStartReplacementJobEarly(){
+        auto settings=realWakeSettings();WakeFakeLin *fake=nullptr;
+        ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
+        worker.initialize();worker.connectChannel(settings);worker.startPreview(settings);QCOMPARE(fake->wakes,1);QTest::qWait(60);worker.cancelTask();
+        worker.startPreview(settings);QCOMPARE(fake->wakes,2);QTest::qWait(85);QVERIFY(fake->writes.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(!fake->writes.isEmpty(),700);QVERIFY(fake->writeMs.first()>=120);worker.cancelTask();worker.shutdown();
+    }
+    void linWakeFailureStopsAndUnsupportedPreservesExistingFlow_data(){QTest::addColumn<bool>("unsupported");QTest::newRow("SDK failure")<<false;QTest::newRow("no verified API")<<true;}
+    void linWakeFailureStopsAndUnsupportedPreservesExistingFlow(){
+        QFETCH(bool,unsupported);auto settings=realWakeSettings();WakeFakeLin *fake=nullptr;
+        ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();p->wakeResult=unsupported?LinWakeResult::Unsupported:LinWakeResult::Failed;fake=p.get();return p;});
+        QSignalSpy tasks(&worker,&ChannelWorker::taskChanged),logs(&worker,&ChannelWorker::logMessage);
+        worker.initialize();worker.connectChannel(settings);worker.startPreview(settings);QCOMPARE(fake->wakes,1);
+        if(unsupported){QTRY_VERIFY_WITH_TIMEOUT(!fake->writes.isEmpty(),700);bool notice=false;for(const auto &row:logs)notice|=row[0].toString().contains("节点需处于唤醒状态");QVERIFY(notice);worker.cancelTask();}
+        else{QCOMPARE(qvariant_cast<TaskState>(tasks.last()[0]),TaskState::Failed);QTest::qWait(180);QVERIFY(fake->writes.isEmpty());}
+        worker.shutdown();
+    }
     void failedWriteRemainsUnresolvedUntilManualRecovery(){
         auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
         ReceiveEventFakeCan *fake=nullptr;ChannelWorker worker(settings,[&]()->std::unique_ptr<CanHardware>{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
@@ -353,13 +867,13 @@ private slots:
     }
     void packageVersionSettingsRoundTrip(){
         for(const auto bus:{Bus::Can,Bus::Lin}){
-            auto s=ChannelSettings::defaults(bus);QVERIFY(!s.checkDriverAbi&&!s.checkAppVersion&&!s.checkMinimumBoot);
-            s.bootAddress="00000000";s.bootEraseLength="00020000";s.checkDriverAbi=true;s.checkAppVersion=true;s.checkMinimumBoot=true;
-            s.expectedDriverAbi="1.4";s.expectedAppVersion="T008A0001";s.expectedMinimumBoot="001";
+            auto s=ChannelSettings::defaults(bus);QVERIFY(!s.checkAppVersion);
+            s.bootAddress="00000000";s.bootEraseLength="00020000";s.checkAppVersion=true;
+            s.expectedAppVersion="T008A0001";
             ChannelSettings restored;QString error;QVERIFY2(ChannelSettings::fromJson(s.toJson(),restored,error),qPrintable(error));
             QCOMPARE(restored.bootAddress,s.bootAddress);QCOMPARE(restored.bootEraseLength,s.bootEraseLength);
-            QVERIFY(restored.checkDriverAbi&&restored.checkAppVersion&&restored.checkMinimumBoot);
-            QCOMPARE(restored.expectedDriverAbi,s.expectedDriverAbi);QCOMPARE(restored.expectedAppVersion,s.expectedAppVersion);QCOMPARE(restored.expectedMinimumBoot,s.expectedMinimumBoot);
+            QVERIFY(restored.checkAppVersion);
+            QCOMPARE(restored.expectedAppVersion,s.expectedAppVersion);
         }
     }
     void downloadLengthRoundTripAndValidation() {
@@ -471,7 +985,7 @@ private slots:
     }
     void frameIntervalsAcrossBatchesAndClear() {
         FrameTableModel model;FrameRecord record;record.timestamp="12:34:56.789";record.relativeTime="1000000";
-        model.append({record});QCOMPARE(model.columnCount(),9);
+        model.append({record});QCOMPARE(model.columnCount(),10);
         QCOMPARE(model.headerData(0,Qt::Horizontal).toString(),QString("时间"));
         QCOMPARE(model.headerData(2,Qt::Horizontal).toString(),QString("绝对时间/s"));
         QCOMPARE(model.data(model.index(0,2)).toString(),QString("0"));
@@ -482,7 +996,7 @@ private slots:
         QCOMPARE(model.data(model.index(2,2)).toString(),QString("0.002501"));
         QString error;const auto path=m_temp.path()+"/intervals.csv";QVERIFY(model.exportCsv(path,error));
         QFile csv(path);QVERIFY(csv.open(QIODevice::ReadOnly));const auto bytes=csv.readAll();
-        QVERIFY(bytes.contains(QString("绝对时间/s").toUtf8()));QVERIFY(bytes.contains("\"0.003751\",\"0.002501\""));
+        QVERIFY(bytes.contains(QString("间隔时间/s").toUtf8()));QVERIFY(bytes.contains("\"0.003751\",\"0.002501\""));
         model.clear();model.append({record});
         QCOMPARE(model.data(model.index(0,1)).toString(),QString("0"));
         QCOMPARE(model.data(model.index(0,2)).toString(),QString("0"));
@@ -762,6 +1276,7 @@ private slots:
         model->healthChanged(communication::Health::BusWarning,"bus warning");QCOMPARE(vm->communicationIndicator(),3);
         QCOMPARE(tabs->tabToolTip(0),QString("通讯告警"));
         color=tabs->tabIcon(0).pixmap(16,16).toImage().pixelColor(8,8);QVERIFY(color.red()>color.blue());QVERIFY(color.green()>color.blue());
+        model->healthChanged(communication::Health::BusOff,"bus off");QCOMPARE(vm->communicationIndicator(),3);
         model->healthChanged(communication::Health::Error,"unclassified adapter error");QCOMPARE(vm->communicationIndicator(),3);
         model->healthChanged(communication::Health::Removed,"status alone is not proof of physical removal");QCOMPARE(vm->communicationIndicator(),3);
         model->stateChanged(communication::ConnectionState::Missing,"removed");
