@@ -23,10 +23,6 @@
 #include "views/FrameDataDelegate.h"
 #include "views/FrameTableView.h"
 #include "views/ChannelPage.h"
-#include "views/MainWindow.h"
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QTabWidget>
 #include "localization/Language.h"
 #include "infrastructure/BusHardware.h"
 #include "infrastructure/SignalTransmitter.h"
@@ -58,203 +54,6 @@ class FrameColumnsTest:public QObject {
     }
     ChannelSettings settings(){auto s=ChannelSettings::defaults(communication::Bus::Can);s.simulation=true;return s;}
 private slots:
-    void monitorNameColumn_data(){
-        QTest::addColumn<bool>("lin");
-        QTest::newRow("CAN")<<false;
-        QTest::newRow("LIN")<<true;
-    }
-    void monitorNameColumn(){
-        QFETCH(bool,lin);
-        QTemporaryDir dir;QVERIFY(dir.isValid());
-        MainWindow window(dir.filePath("clean.json"),true);
-        window.resize(1440,1000);
-        auto *tabs=window.findChild<QTabWidget*>("channelTabs");
-        QVERIFY(tabs);
-        tabs->setCurrentIndex(lin?1:0);
-        window.show();
-        auto *channel=lin?window.linChannel():window.canChannel();
-        auto *page=tabs->currentWidget();
-        auto *table=page->findChild<QTreeView*>("frameTable");
-        QVERIFY(channel&&table);
-        QVERIFY(page->findChild<QWidget*>("eventLogPanel")->isVisible());
-        auto *header=table->header();
-        const auto nameColumn=FrameTableModel::NameColumn;
-        QCOMPARE(header->visualIndex(nameColumn),header->visualIndex(5)+1);
-        QCOMPARE(header->visualIndex(6),header->visualIndex(nameColumn)+1);
-        QCOMPARE(table->model()->headerData(nameColumn,Qt::Horizontal).toString(),Language::text("名称"));
-        QTRY_COMPARE(table->horizontalScrollBar()->maximum(),0);
-        for(int c=0;c<header->count();++c){
-            if(header->isSectionHidden(c))continue;
-            const auto caption=table->model()->headerData(c,Qt::Horizontal).toString();
-            QVERIFY(header->sectionViewportPosition(c)+header->sectionSize(c)<=table->viewport()->width());
-            QVERIFY2(header->fontMetrics().horizontalAdvance(caption)+(c==nameColumn?11:32)<=header->sectionSize(c),qPrintable(caption));
-        }
-
-        const auto bus=lin?signal::Bus::Lin:signal::Bus::Can;
-        auto *vm=channel->signalTransmission();
-        QString error;
-        const auto fixture=QString(TEST_SOURCE_DIR)+(lin?"/fixtures/signals-synthetic.ldf":"/fixtures/signals-synthetic.dbc");
-        QVERIFY2(vm->importFile(fixture,error),qPrintable(error));
-        const quint32 knownId=lin?0x10:0x123;
-        const quint32 customId=lin?0x2a:0x55a;
-        const quint32 unknownId=lin?0x2b:0x1fffffff;
-        QString expectedDb,extendedName;
-        for(const auto &definition:vm->database()->frames)if(definition.id==knownId){
-            if(definition.extended)extendedName=definition.name;else expectedDb=definition.name;
-        }
-        QVERIFY(!expectedDb.isEmpty());
-        QVERIFY2(vm->putCustom({},"CustomOnly",customId,2,100,error),qPrintable(error));
-        if(!lin)QVERIFY2(vm->putCustom({},"CustomWithDatabaseId",knownId,2,100,error,true),qPrintable(error));
-        auto known=record(1,knownId,"Tx");known.echo=true;known.bus=bus;
-        known.length=lin?2:8;known.payload=QByteArray(known.length,char(3));
-        auto custom=record(2,customId);custom.bus=bus;
-        auto unknown=record(3,unknownId);unknown.bus=bus;unknown.extended=!lin;
-        auto wrongType=known;wrongType.captureUs=4;wrongType.extended=!lin;wrongType.bus=lin?signal::Bus::Can:bus;
-        channel->frames()->append({known,custom,unknown,wrongType});
-        const auto name=[&](int row){return channel->frames()->index(row,nameColumn).data().toString();};
-        QCOMPARE(name(0),expectedDb);
-        QCOMPARE(name(1),QString("CustomOnly"));
-        QVERIFY(name(2).isEmpty());
-        QCOMPARE(name(3),extendedName);
-        QVERIFY(table->fontMetrics().horizontalAdvance(unknown.identifier)+8<=header->sectionSize(5));
-        QVERIFY(header->sectionSize(3)<120&&header->sectionSize(4)<100&&header->sectionSize(5)<150&&header->sectionSize(6)<90);
-        const auto key=vm->working().customFrames.first().key;
-        QVERIFY2(vm->putCustom(key,"RenamedCustom",customId,2,100,error),qPrintable(error));
-        QCOMPARE(name(1),QString("RenamedCustom"));
-        channel->frames()->setRolling(true);
-        QCOMPARE(name(0),expectedDb);
-        QCOMPARE(name(1),QString("RenamedCustom"));
-        const auto child=channel->frames()->index(0,0);
-        QVERIFY(channel->frames()->rowCount(child)>1);
-        for(int c=5;c<=8;++c)QVERIFY(!channel->frames()->index(0,c,child).data().toString().isEmpty());
-        QVERIFY(!channel->frames()->index(0,nameColumn,child).data().isValid());
-        QString renamedKey;
-        for(const auto &frame:vm->working().customFrames)if(frame.id==customId)renamedKey=frame.key;
-        QVERIFY(!renamedKey.isEmpty());
-        QVERIFY2(vm->removeCustom(renamedKey,error),qPrintable(error));
-        QVERIFY(name(1).isEmpty());
-        table->setColumnWidth(5,111);
-        channel->frames()->append({known});
-        QCOMPARE(table->columnWidth(5),111);
-    }
-    void oldMonitorColumnsKeepLogicalNumbers(){
-        const QJsonArray lengthFilter{QJsonObject{{"column",6},{"valuesEnabled",true},{"values",QJsonArray{"2"}}}};
-        const auto legacy=QJsonObject{{"columnFilters",lengthFilter},{"sortColumn",8},{"sortOrder",1}};
-        signal::Bus bus=signal::Bus::Can;
-        SignalTransmitViewModel old(bus);
-        old.setUiSettings(QJsonObject{{"monitor",legacy}});
-        auto configuration=old.configuration();
-        for(int attempt=0;attempt<2;++attempt){
-            ChannelViewModel vm(settings());
-            ChannelPage page(&vm);
-            QString error;
-            QVERIFY2(vm.signalTransmission()->readConfiguration(configuration,{},error),qPrintable(error));
-            auto *table=page.findChild<QTreeView*>("frameTable");
-            auto *proxy=qobject_cast<FrameFilterProxy*>(table->model());QVERIFY(proxy);
-            QCOMPARE(proxy->saveFilters().at(0).toObject().value("column").toInt(),6);
-            QCOMPARE(table->header()->sortIndicatorSection(),8);
-            QCOMPARE(table->header()->sortIndicatorOrder(),Qt::DescendingOrder);
-            auto larger=record(2,0x124);larger.length=3;
-            vm.frames()->append({record(1,0x123,"TxPending"),larger});
-            QCOMPARE(proxy->rowCount(),1);
-            QVERIFY(proxy->index(0,8).data(Qt::ToolTipRole).toString().contains("CAN ISO-TP"));
-            const auto stored=QJsonDocument(vm.signalTransmission()->configuration()).toJson();
-            configuration=QJsonDocument::fromJson(stored).object();
-        }
-        auto empty=legacy;empty["columnFilters"]=QJsonArray();
-        old.setUiSettings(QJsonObject{{"monitor",empty}});
-        ChannelViewModel vm(settings());ChannelPage page(&vm);
-        QString error;QVERIFY(vm.signalTransmission()->readConfiguration(old.configuration(),{},error));
-        auto *proxy=qobject_cast<FrameFilterProxy*>(page.findChild<QTreeView*>("frameTable")->model());
-        QVERIFY(proxy&&proxy->saveFilters().isEmpty());
-        vm.frames()->append({record(1,0x123,"TxPending")});
-        QCOMPARE(proxy->rowCount(),1);
-    }
-    void nativeFrameStripesCoverTreeIndentation_data(){
-        monitorNameColumn_data();
-    }
-    void nativeFrameStripesCoverTreeIndentation(){
-        QFETCH(bool,lin);
-        auto s=ChannelSettings::defaults(lin?communication::Bus::Lin:communication::Bus::Can);
-        s.simulation=true;
-        ChannelViewModel vm(s);
-        ChannelPage page(&vm);
-        page.resize(1440,1000);page.show();
-        auto *tree=page.findChild<QTreeView*>("frameTable");
-        auto *rolling=page.findChild<QCheckBox*>("frameRolling");
-        QVERIFY(tree&&rolling);
-        tree->setSelectionMode(QAbstractItemView::NoSelection);
-        tree->setFocusPolicy(Qt::NoFocus);
-        QPalette palette=tree->palette();
-        palette.setColor(QPalette::Base,Qt::white);
-        palette.setColor(QPalette::AlternateBase,QColor(230,230,230));
-        tree->setPalette(palette);
-        const auto bus=lin?signal::Bus::Lin:signal::Bus::Can;
-        const auto fixture=QString(TEST_SOURCE_DIR)+(lin?"/fixtures/signals-synthetic.ldf":"/fixtures/signals-synthetic.dbc");
-        QString error;QVERIFY2(vm.signalTransmission()->importFile(fixture,error),qPrintable(error));
-        const quint32 id=lin?0x10:0x123;
-        auto tx=record(1,id,"Tx");tx.bus=bus;tx.echo=true;tx.length=lin?2:8;tx.payload=QByteArray(tx.length,0);
-        auto hidden=tx;hidden.captureUs=2;hidden.echo=false;hidden.request=true;
-        auto repeated=tx;repeated.captureUs=3;
-        auto rx=record(4,id+1);rx.bus=bus;
-        auto next=record(5,id+2);next.bus=bus;
-        vm.frames()->append({tx,hidden,repeated,rx,next});
-        auto *model=tree->model();
-        auto verify=[&](QList<QColor> &colors,bool ordered=true){
-            colors.clear();
-            const auto image=tree->viewport()->grab().toImage();
-            QColor previous;
-            for(int n=0;n<model->rowCount();++n){
-                const auto row=tree->visualRect(model->index(n,1));
-                const int y=row.top()+3;
-                const auto shade=image.pixelColor(row.right()-4,y);
-                QCOMPARE(image.pixelColor(2,y),shade);
-                QCOMPARE(image.pixelColor(tree->visualRect(model->index(n,7)).right()-4,y),shade);
-                QVERIFY(shade==Qt::white||shade==QColor(230,230,230));
-                if(n&&ordered)QVERIFY(shade!=previous);
-                previous=shade;
-                colors.append(shade);
-            }
-        };
-        QTRY_COMPARE(model->rowCount(),4);
-        QCOMPARE(tree->treePosition(),1);
-        QList<QColor> historyColors,rollingColors,updatedColors;
-        verify(historyColors);
-        QTest::mouseClick(rolling,Qt::LeftButton);
-        QTRY_COMPARE(model->rowCount(),3);
-        QVERIFY(model->rowCount(model->index(0,0))>1);
-        verify(rollingColors);
-        QCOMPARE(rollingColors.size(),3);
-        QSignalSpy resets(vm.frames(),&QAbstractItemModel::modelReset);
-        repeated.captureUs=6;
-        repeated.payload[0]=char(0x06);
-        repeated.data=QString::fromLatin1(repeated.payload.toHex(' ')).toUpper();
-        vm.frames()->append({repeated});
-        QTRY_COMPARE(model->index(0,7).data().toString(),repeated.data);
-        QCOMPARE(model->rowCount(),3);
-        QCOMPARE(resets.count(),0);
-        verify(updatedColors);
-        QCOMPARE(updatedColors,rollingColors);
-        tree->sortByColumn(5,Qt::AscendingOrder);
-        auto earlier=record(7,id-1);earlier.bus=bus;
-        auto later=record(8,id+3);later.bus=bus;
-        vm.frames()->append({earlier,later});
-        QTRY_COMPARE(model->rowCount(),5);
-        verify(updatedColors,false);
-        QCOMPARE(updatedColors.mid(1,3),rollingColors);
-        QVERIFY(updatedColors.first()!=rollingColors.last());
-        QCOMPARE(updatedColors.last(),rollingColors.last());
-        tree->sortByColumn(5,Qt::DescendingOrder);
-        QList<QColor> afterSort;
-        verify(afterSort,false);
-        std::reverse(updatedColors.begin(),updatedColors.end());
-        QCOMPARE(afterSort,updatedColors);
-        QCOMPARE(resets.count(),0);
-        QTest::mouseClick(rolling,Qt::LeftButton);
-        QTRY_COMPARE(model->rowCount(),7);
-        verify(historyColors);
-        QCOMPARE(historyColors.size(),7);
-    }
     void filteredWindowIgnoresHiddenTrafficAndKeepsVisibleRecords(){
         FrameTableModel model;FrameFilterProxy proxy;proxy.setSourceModel(&model);
         FrameColumnFilter filter;filter.valuesEnabled=true;filter.values={QString::number(0x715),QString::number(0x795)};
@@ -312,7 +111,7 @@ private slots:
         FrameBatch hidden;for(int n=0;n<FrameTableModel::Capacity+20;++n)hidden.append(record(1000+n,0x38b));
         vm.frames()->append(hidden);QCoreApplication::processEvents();QCOMPARE(proxy->rowCount(),150);QCOMPARE(bar->value(),anchor);
         vm.frames()->append({record(20000,0x715)});QCoreApplication::processEvents();QCOMPARE(bar->value(),anchor);
-        bar->setSliderDown(false);vm.frames()->append({record(20001,0x795)});QTRY_COMPARE(bar->value(),bar->maximum());
+        bar->setSliderDown(false);vm.frames()->append({record(20001,0x795)});QCoreApplication::processEvents();QCOMPARE(bar->value(),bar->maximum());
     }
     void filteredFullWindowKeepsDraggedRecordWhenOldestEvicted(){
         ChannelViewModel vm(settings());ChannelPage page(&vm);page.resize(1100,700);page.show();QCoreApplication::processEvents();
@@ -325,7 +124,7 @@ private slots:
         vm.frames()->append({record(20000000,0x38b)});QCoreApplication::processEvents();QCOMPARE(first(),anchor);
         vm.frames()->append({record(20001000,0x715)});QCoreApplication::processEvents();QCOMPARE(first(),anchor);
         bar->setSliderDown(false);const auto afterRelease=first();QCOMPARE(afterRelease,anchor);
-        vm.frames()->append({record(20002000,0x795)});QTRY_COMPARE(bar->value(),bar->maximum());
+        vm.frames()->append({record(20002000,0x795)});QCoreApplication::processEvents();QCOMPARE(bar->value(),bar->maximum());
     }
     void peakStatusDecodingIsExplicitAndVendorScoped(){
         auto hardware=createCanHardware();
@@ -334,8 +133,6 @@ private slots:
         QCOMPARE(hardware->classifyStatus(PCAN_ERROR_BUSHEAVY),CanBusState::Warning);
         QCOMPARE(hardware->classifyStatus(PCAN_ERROR_BUSPASSIVE),CanBusState::Warning);
         QCOMPARE(hardware->classifyStatus(PCAN_ERROR_BUSOFF),CanBusState::BusOff);
-        QCOMPARE(hardware->classifyStatus(PCAN_ERROR_BUSOFF|PCAN_ERROR_QXMTFULL),CanBusState::BusOff);
-        QCOMPARE(hardware->classifyStatus(PCAN_ERROR_BUSOFF|PCAN_ERROR_ILLHW),CanBusState::Fatal);
         QCOMPARE(hardware->classifyStatus(PCAN_ERROR_INITIALIZE),CanBusState::Fatal);
         TPCANMsg status={};status.MSGTYPE=PCAN_MESSAGE_STATUS;status.DATA[3]=0x10;
         QCOMPARE(hardware->statusFrame(status),CanBusState::BusOff);
@@ -379,31 +176,6 @@ private slots:
             tx.stop();const int count=hardware.writes;tx.observe({echo});QTest::qWait(10);QCOMPARE(hardware.writes,count);
         }
     }
-    void rollingTimeOrderStaysStable_data(){
-        QTest::addColumn<bool>("lin");QTest::addColumn<int>("column");QTest::addColumn<bool>("descending");
-        for(bool lin:{false,true})for(int column=0;column<3;++column)for(bool descending:{false,true})
-            QTest::newRow(qPrintable(QString("%1-%2-%3").arg(lin?"LIN":"CAN").arg(column).arg(descending)))<<lin<<column<<descending;
-    }
-    void rollingTimeOrderStaysStable(){
-        QFETCH(bool,lin);QFETCH(int,column);QFETCH(bool,descending);
-        FrameTableModel model;model.setRolling(true);FrameFilterProxy proxy;proxy.setSourceModel(&model);
-        auto a=record(10,0x10),b=record(20,0x20);a.bus=b.bus=lin?signal::Bus::Lin:signal::Bus::Can;
-        model.append({a,b});proxy.sort(column,descending?Qt::DescendingOrder:Qt::AscendingOrder);
-        auto ids=[&]{QStringList values;for(int n=0;n<proxy.rowCount();++n)values<<proxy.index(n,5).data().toString();return values;};
-        const auto original=ids();
-        for(int n=0;n<5;++n){a.captureUs=100+n*200;b.captureUs=200+n*200;model.append({a});QCOMPARE(ids(),original);model.append({b});QCOMPARE(ids(),original);}
-        QCOMPARE(model.historyCount(),qint64(12));QCOMPARE(model.frameAt(model.index(0,0))->captureUs,qint64(900));
-        proxy.sort(5,Qt::DescendingOrder);QCOMPARE(proxy.index(0,5).data().toString(),QString("0x20"));
-        model.setPaused(true);QCOMPARE(proxy.rowCount(),12);model.setPaused(false);QCOMPARE(proxy.rowCount(),2);
-        model.clear();b.captureUs=10;a.captureUs=20;model.append({b,a});proxy.sort(0,Qt::AscendingOrder);QCOMPARE(proxy.index(0,5).data().toString(),QString("0x20"));
-    }
-    void rollingTimeOrderSurvivesWindowRebuild(){
-        FrameTableModel model;model.setRolling(true);FrameFilterProxy proxy;proxy.setSourceModel(&model);proxy.sort(0,Qt::AscendingOrder);
-        auto a=record(1,0x10),b=record(2,0x20);model.append({a,b});FrameBatch fill;
-        for(int n=0;n<FrameTableModel::Capacity-2;++n)fill.append(record(n+3,quint32(n+0x100)));
-        model.append(fill);b.captureUs=30000;a.captureUs=30001;model.append({b,a});model.append({record(30002,0x10000)});
-        QCOMPARE(proxy.index(0,5).data().toString(),QString("0x10"));QCOMPARE(proxy.index(1,5).data().toString(),QString("0x20"));
-    }
     void filteredHiddenUpdatesKeepVisibleAge(){
         FrameTableModel model;model.setRolling(true);FrameFilterProxy proxy;proxy.setSourceModel(&model);
         auto visible=record(10,0x100),hidden=record(11,0x200);model.append({visible,hidden});
@@ -428,17 +200,17 @@ private slots:
         visible.captureUs=20003;model.append({visible});
         QVERIFY(proxy.index(0,7).data(FrameTableModel::NibbleAgeRole).toList().first().toInt()>before.first().toInt());
     }
-    void rollingRowsKeepVisibleOrderWhenOtherFramesAreHidden(){
+    void rollingRowBackgroundFollowsFrameIdentity(){
         FrameTableModel model;model.setRolling(true);FrameFilterProxy proxy;proxy.setSourceModel(&model);
         auto first=record(1,0x100),hidden=record(2,0x200),second=record(3,0x300);
         model.append({first,hidden,second});QVERIFY(proxy.setColumnFilter(5,rule(FrameFilterOp::NotEqual,"200")));
         proxy.sort(0,Qt::AscendingOrder);QCOMPARE(proxy.rowCount(),2);
-        auto firstId=[&]{return proxy.index(0,5).data().toString();};
-        QCOMPARE(firstId(),QString("0x100"));
-        hidden.captureUs=10;model.append({hidden});QCOMPARE(proxy.rowCount(),2);QCOMPARE(firstId(),QString("0x100"));
-        first.captureUs=11;model.append({first});QCOMPARE(proxy.rowCount(),2);QCOMPARE(firstId(),QString("0x100"));
-        proxy.sort(5,Qt::DescendingOrder);QCOMPARE(firstId(),QString("0x300"));
-        model.setRolling(false);QVERIFY(proxy.setColumnFilter(5,{}));QCOMPARE(proxy.rowCount(),5);
+        auto background=[&](const QString&id){for(int n=0;n<proxy.rowCount();++n)if(proxy.index(n,5).data().toString()==id)return proxy.index(n,0).data(Qt::BackgroundRole);return QVariant();};
+        const auto one=background("0x100"),two=background("0x300");QVERIFY(!one.isValid());QVERIFY(!two.isValid());
+        hidden.captureUs=10;model.append({hidden});QCOMPARE(background("0x100"),one);QCOMPARE(background("0x300"),two);
+        first.captureUs=11;model.append({first});QCOMPARE(background("0x100"),one);QCOMPARE(background("0x300"),two);
+        proxy.sort(5,Qt::DescendingOrder);QCOMPARE(background("0x100"),one);QCOMPARE(background("0x300"),two);
+        model.setRolling(false);QVERIFY(proxy.setColumnFilter(5,{}));QVERIFY(model.index(0,0).data(Qt::BackgroundRole).isValid());
     }
     void historyFilteredRemainingRowKeepsBackgroundAfterEviction(){
         FrameTableModel model;FrameFilterProxy proxy;proxy.setSourceModel(&model);
@@ -494,7 +266,7 @@ private slots:
     void initTestCase(){QApplication::setStyle("Fusion");QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");QApplication::setFont(QFont("Microsoft YaHei",9));}
     void cleanup(){Language::instance().setCode("zh_CN");}
     void sharedPresentationAndDefaultDirection(){
-        FrameTableModel model;
+        FrameTableModel model;FrameFilterProxy proxy;proxy.setSourceModel(&model);
         auto pending=record(0,1,"CAN Tx");pending.request=true;
         auto echo=record(1,2,"TX ECHO");echo.echo=true;
         auto sim=record(2,3,"SIM TX");sim.simulated=true;
@@ -504,129 +276,10 @@ private slots:
         QCOMPARE(model.index(1,4).data().toString(),QString("Tx"));QCOMPARE(model.index(2,4).data().toString(),QString("Tx"));QCOMPARE(model.index(3,4).data().toString(),QString("Rx"));
         QCOMPARE(model.index(4,8).data().toString(),QString("无响应"));QCOMPARE(model.index(5,8).data().toString(),QString("错误"));QCOMPARE(model.index(6,8).data().toString(),QString("硬件状态"));
         QVERIFY(model.index(2,8).data(Qt::ToolTipRole).toString().contains("CAN ISO-TP"));QVERIFY(model.index(2,8).data(Qt::ToolTipRole).toString().contains("模拟"));
-        FrameFilterProxy proxy;proxy.setSourceModel(&model);
         QCOMPARE(proxy.rowCount(),6);QCOMPARE(proxy.filteredHistory().size(),6);QVERIFY(model.history()[0].request);QVERIFY(model.history()[1].echo);
         QVERIFY(proxy.setColumnFilter(4,{}));QCOMPARE(proxy.rowCount(),7);
         model.append(model.history().mid(0,1));QCOMPARE(model.index(7,4).data().toString(),QString("TxPending"));QCOMPARE(model.history()[7].detail,QString("CAN ISO-TP"));
     }
-    void hiddenRequestsKeepTxStripesAndScroll_data(){
-        QTest::addColumn<bool>("customFilter");
-        QTest::newRow("default directions")<<false;
-        QTest::newRow("ID and direction filter")<<true;
-    }
-    void hiddenRequestsKeepTxStripesAndScroll(){
-        QFETCH(bool,customFilter);
-        ChannelViewModel vm(settings());ChannelPage page(&vm);page.resize(1200,760);page.show();
-        QString error;
-        QVERIFY(vm.signalTransmission()->importFile(QString(TEST_SOURCE_DIR)+"/fixtures/signals-synthetic.dbc",error));
-        auto *tree=page.findChild<QTreeView*>("frameTable");
-        auto *proxy=qobject_cast<FrameFilterProxy*>(tree->model());QVERIFY(proxy);
-        if(customFilter){
-            FrameColumnFilter filter;filter.valuesEnabled=true;filter.values={QString::number(0x123)};
-            QVERIFY(proxy->setColumnFilter(5,filter));
-        }
-        EchoCanHardware hw;SignalTransmitter transmitter;
-        signal::TxPlan plan;plan.bus=signal::Bus::Can;plan.run=1;plan.periodic=true;
-        plan.items={{signal::frameKey(plan.bus,0x123),0x123,false,QByteArray::fromHex("0321000000000000"),200,1,{},false,true}};
-        transmitter.start(plan,500000,false,&hw,nullptr);
-        QTRY_VERIFY(hw.writes>0);TPCANMsg raw={};QCOMPARE(hw.recvRaw(1,&raw,nullptr),DWORD(1));
-        transmitter.stop();QVERIFY(raw.MSGTYPE&PCAN_MESSAGE_ECHO);
-        auto echo=record(0,raw.ID,"TX ECHO");echo.echo=true;echo.length=raw.LEN;
-        echo.payload=QByteArray(reinterpret_cast<const char*>(raw.DATA),raw.LEN);
-        echo.data=echo.payload.toHex(' ');auto pending=echo;pending.echo=false;pending.request=true;pending.direction="TX";
-        FrameBatch traffic;
-        for(int n=0;n<100;++n){
-            pending.captureUs=200000LL*n;echo.captureUs=pending.captureUs+100;
-            traffic.append(pending);traffic.append(echo);
-        }
-        vm.frames()->append(traffic);QCOMPARE(proxy->rowCount(),100);
-        auto *bar=tree->verticalScrollBar();QTRY_VERIFY(bar->maximum()>10);
-        QTRY_COMPARE(bar->value(),bar->maximum());bar->setValue(0);QTest::qWait(120);
-        const auto anchor=bar->value();QCOMPARE(anchor,0);
-        auto colors=[&](){
-            const QImage image=tree->viewport()->grab().toImage();QList<QColor> result;
-            for(int n=0;n<3;++n){
-                const auto rect=tree->visualRect(proxy->index(n,1));
-                result.append(image.pixelColor(rect.right()-4,rect.center().y()));
-            }
-            return result;
-        };
-        const auto before=colors();QCOMPARE(before.at(0),before.at(2));QVERIFY(before.at(0)!=before.at(1));
-        auto *timer=page.findChild<QTimer*>("frameRefreshTimer");QVERIFY(timer);
-        QSignalSpy follow(timer,&QTimer::timeout);
-        pending.captureUs=20000000;vm.frames()->append({pending});QTest::qWait(100);
-        QCOMPARE(proxy->rowCount(),100);QCOMPARE(bar->value(),anchor);QCOMPARE(colors(),before);QCOMPARE(follow.count(),0);
-        FrameBatch hidden(FrameTableModel::Capacity+1,pending);vm.frames()->append(hidden);QTest::qWait(100);
-        QCOMPARE(proxy->rowCount(),100);QCOMPARE(bar->value(),anchor);QCOMPARE(colors(),before);QCOMPARE(follow.count(),0);
-        echo.captureUs=pending.captureUs+100;vm.frames()->append({echo});
-        QTRY_COMPARE(bar->value(),bar->maximum());QCOMPARE(proxy->rowCount(),101);QCOMPARE(vm.frames()->historyCount(),qint64(202+hidden.size()));
-        page.findChild<QCheckBox*>("frameRolling")->setChecked(true);
-        QCOMPARE(proxy->rowCount(),1);
-        const auto parent=proxy->index(0,0);tree->expand(parent);QVERIFY(tree->isExpanded(parent));
-        vm.frames()->append({pending});QCOMPARE(proxy->rowCount(),1);QVERIFY(tree->isExpanded(parent));
-        vm.frames()->append({echo});QVERIFY(tree->isExpanded(parent));
-        QCOMPARE(proxy->index(1,6,parent).data().toString(),QString("3"));
-        QCOMPARE(proxy->index(2,6,parent).data().toString(),QString("33"));
-    }
-
-    void confirmedFramesKeepPresentation_data(){
-        QTest::addColumn<bool>("lin");
-        QTest::addColumn<bool>("rolling");
-        QTest::newRow("CAN expanded echo")<<false<<true;
-        QTest::newRow("LIN expanded echo")<<true<<true;
-        QTest::newRow("CAN history stripes")<<false<<false;
-        QTest::newRow("LIN history stripes")<<true<<false;
-    }
-    void confirmedFramesKeepPresentation(){
-        QFETCH(bool,lin);QFETCH(bool,rolling);
-        const auto bus=lin?signal::Bus::Lin:signal::Bus::Can;
-        const auto fixture=QString(TEST_SOURCE_DIR)+(lin?"/fixtures/signals-synthetic.ldf":"/fixtures/signals-synthetic.dbc");
-        const auto imported=signal::DatabaseImporter::load(fixture,bus);
-        QVERIFY2(imported.database,qPrintable(imported.error));
-        FrameTableModel model;model.setDatabase(imported.database);model.setRolling(rolling);
-        FrameFilterProxy proxy;proxy.setSourceModel(&model);
-        FrameTableView view;view.setModel(&proxy);
-        auto pending=record(0,lin?0x10:0x123,"TX");
-        pending.bus=bus;pending.request=true;pending.length=lin?2:8;
-        pending.payload=QByteArray(pending.length,0);pending.payload[0]=3;
-        auto echo=pending;echo.request=false;echo.echo=true;
-        if(!lin){
-            EchoCanHardware hardware;SignalTransmitter tx;signal::BusFrameEvents submitted;
-            connect(&tx,&SignalTransmitter::events,this,[&](const signal::BusFrameEvents &batch){submitted+=batch;});
-            signal::TxPlan plan;plan.bus=bus;plan.run=1;plan.periodic=true;
-            plan.items={{signal::frameKey(bus,pending.id),pending.id,false,pending.payload,200,1,{},false,true}};
-            tx.start(plan,500000,false,&hardware,nullptr);
-            QTRY_VERIFY(!submitted.isEmpty());QCOMPARE(submitted.first().source,signal::EventSource::RequestAccepted);
-            TPCANMsg message={};QCOMPARE(hardware.recvRaw(1,&message,nullptr),DWORD(1));
-            echo.echo=bool(message.MSGTYPE&PCAN_MESSAGE_ECHO);QVERIFY(echo.echo);
-            echo.id=message.ID;echo.payload=QByteArray(reinterpret_cast<const char*>(message.DATA),message.LEN);
-            QCOMPARE(echo.payload,pending.payload);tx.stop();
-        }
-        model.append({pending,echo});
-        QCOMPARE(proxy.rowCount(),1);
-        const auto first=proxy.index(0,0);
-        if(rolling){
-            view.expand(first);QVERIFY(view.isExpanded(first));
-            QCOMPARE(proxy.index(1,6,first).data().toString(),QString("3"));
-        }
-        pending.captureUs=200000;model.append({pending});
-        if(rolling){QCOMPARE(proxy.rowCount(),1);QVERIFY(view.isExpanded(proxy.index(0,0)));}
-        echo.captureUs=200100;model.append({echo});
-        QCOMPARE(model.historyCount(),qint64(4));QCOMPARE(proxy.rowCount(),rolling?1:2);
-        if(rolling){
-            auto rx=echo;rx.echo=false;rx.direction="Rx";rx.payload[0]=5;
-            model.append({rx});QVERIFY(view.isExpanded(proxy.index(0,0)));
-            QCOMPARE(proxy.index(0,4).data().toString(),QString("Rx"));
-            QCOMPARE(proxy.index(1,6,proxy.index(0,0)).data().toString(),QString("5"));
-            rx.id=0x3b;model.append({rx});QCOMPARE(proxy.rowCount(proxy.index(1,0)),0);
-            FrameColumnFilter only;only.valuesEnabled=true;only.values={QString::number(pending.id)};
-            QVERIFY(proxy.setColumnFilter(5,only));QCOMPARE(proxy.rowCount(),1);
-            QCOMPARE(proxy.index(1,6,proxy.index(0,0)).data().toString(),QString("5"));
-        }else{
-            QCOMPARE(proxy.index(1,4).data().toString(),QString("Tx"));
-        }
-    }
-
     void physicalCanEchoVisibleWithDefaultFilter_data(){
         QTest::addColumn<int>("mode");QTest::newRow("one-shot")<<0;QTest::newRow("periodic")<<1;QTest::newRow("replay")<<2;
     }
@@ -728,10 +381,10 @@ private slots:
     }
     void taskProducersUseSamePresentation(){
         ChannelViewModel vm(settings());QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());QString error;
-        QVERIFY(vm.sendDiagnostic(0,QByteArray::fromHex("1001"),error,true));QTRY_VERIFY(!vm.diagnosticBusy());QTRY_VERIFY(!vm.frames()->history().isEmpty());
+        QVERIFY(vm.sendDiagnostic(0,QByteArray::fromHex("1001"),error,true));QTRY_VERIFY(!vm.diagnosticBusy());QVERIFY(!vm.frames()->history().isEmpty());
         for(const auto&r:vm.frames()->history()){QVERIFY(r.direction=="Tx"||r.direction=="Rx");QCOMPARE(r.status,QString("正常"));QVERIFY(!r.detail.isEmpty());}
-        vm.frames()->clear();auto*signalVm=vm.signalTransmission();QVERIFY(signalVm->putCustom({},"test",0x600,2,10,error));QVERIFY(signalVm->start(false,error));QTRY_VERIFY(!signalVm->running());QTRY_VERIFY(!vm.frames()->history().isEmpty());for(const auto&r:vm.frames()->history()){QCOMPARE(r.direction,QString("Tx"));QCOMPARE(r.status,QString("正常"));}
-        vm.frames()->clear();QTemporaryDir dir;QFile image(dir.filePath("sample.bin"));QVERIFY(image.open(QIODevice::WriteOnly));image.write(QByteArray(128,char(0x5A)));image.close();auto download=vm.settings();download.applicationPath=image.fileName();QFile driver(dir.filePath("driver.bin"));QVERIFY(driver.open(QIODevice::WriteOnly));driver.write(QByteArray(128,char(0x44)));driver.close();download.flashPath=driver.fileName();download.downloadProfile["resetWaitMs"]=0;QVERIFY(vm.setSettings(download));QTRY_VERIFY2(vm.canStart(),qPrintable(vm.startHint()+" / "+vm.error()+" / "+vm.logs().join(";")));vm.start();QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),TaskState::Completed,8000);QTRY_VERIFY(!vm.frames()->history().isEmpty());
+        vm.frames()->clear();auto*signalVm=vm.signalTransmission();QVERIFY(signalVm->putCustom({},"test",0x600,2,10,error));QVERIFY(signalVm->start(false,error));QTRY_VERIFY(!signalVm->running());QVERIFY(!vm.frames()->history().isEmpty());for(const auto&r:vm.frames()->history()){QCOMPARE(r.direction,QString("Tx"));QCOMPARE(r.status,QString("正常"));}
+        vm.frames()->clear();QTemporaryDir dir;QFile image(dir.filePath("sample.bin"));QVERIFY(image.open(QIODevice::WriteOnly));image.write(QByteArray(128,char(0x5A)));image.close();auto download=vm.settings();download.applicationPath=image.fileName();download.flashRequired=false;download.downloadProfile["resetWaitMs"]=0;QVERIFY(vm.setSettings(download));QTRY_VERIFY(vm.canStart());vm.start();QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),TaskState::Completed,8000);QVERIFY(!vm.frames()->history().isEmpty());
         for(const auto&r:vm.frames()->history()){QVERIFY(r.direction=="Tx"||r.direction=="Rx");QCOMPARE(r.status,QString("正常"));QVERIFY(!r.detail.isEmpty());}
     }
 };

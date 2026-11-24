@@ -1,5 +1,4 @@
 #include "FlashJob.h"
-#include "S32kLayout.h"
 #include <QDateTime>
 #include <QJsonValue>
 namespace boot {
@@ -11,9 +10,9 @@ QJsonObject FlashProfile::toJson() const{
     auto steps=stepEnabled,negative=negativeResponseChecks,timeouts=timeoutChecks;
     for(const auto&s:downloadSteps()){
         const QString id=s.id;
-        if(isT008()||isS32kV2())steps[id]=enabled(id);
-        if(isT008()||isS32kV2()||requiresNegativeResponseCheck(id))negative[id]=checksNegativeResponse(id);
-        if(isT008()||isS32kV2()||fixedUncheckedTimeout(id))timeouts[id]=checksTimeout(id);
+        if(isT008())steps[id]=enabled(id);
+        if(isT008()||requiresNegativeResponseCheck(id))negative[id]=checksNegativeResponse(id);
+        if(isT008()||fixedUncheckedTimeout(id))timeouts[id]=checksTimeout(id);
     }
     return {{"name",name},{"simulationOnly",simulationOnly},{"keyProvider",keyProvider},{"session",session},{"appSecurityLevel",appSecurityLevel},{"securityLevel",securityLevel},
         {"eraseRoutine",eraseRoutine},{"verifyRoutine",verifyRoutine},{"dependencyRoutine",dependencyRoutine},{"identityDid",identityDid},
@@ -32,8 +31,7 @@ bool FlashProfile::fromJson(const QJsonObject &o,FlashProfile &out,QString &erro
     for(const auto key:{"flow","keyLibrary","target"})if(o.contains(key)&&!o[key].isString())return bad();
     p.flow=o.value("flow").toString(p.flow);p.keyLibrary=o.value("keyLibrary").toString();
     p.target=o.value("target").toString(p.target);
-    if(p.target!="generic"&&!p.isT008()&&!p.isS32kV2())return bad();
-    if(p.isS32kV2()&&p.flow=="legacy")return bad();
+    if(p.target!="generic"&&!p.isT008())return bad();
     if(p.flow!="legacy"&&p.flow!="app"&&p.flow!="boot")return bad();
     for(const auto key:{"feedbackChecks","stepEnabled","negativeResponseChecks","timeoutChecks"})
         if(o.contains(key)&&!o[key].isObject())return bad();
@@ -73,6 +71,18 @@ bool FlashProfile::fromJson(const QJsonObject &o,FlashProfile &out,QString &erro
     if(!number("resetWaitMs",p.resetWaitMs,0,60000,v))return bad();p.resetWaitMs=v;
     if(p.name.isEmpty()||p.name.size()>80||(p.keyProvider!="simulation-xor-v1"&&p.keyProvider!="external-generatekeyex"&&p.keyProvider!="seed-as-key")||(p.keyProvider=="simulation-xor-v1"&&!p.simulationOnly)||
        p.eraseRoutine==p.verifyRoutine||p.eraseRoutine==p.dependencyRoutine||p.verifyRoutine==p.dependencyRoutine)return bad();
+    if(p.isT008()){
+        if(p.simulationOnly||p.flow=="legacy"||p.keyProvider!="external-generatekeyex"||p.keyLibrary.trimmed().isEmpty()||p.session!=2||p.appSecurityLevel!=0x01||p.securityLevel!=0x11||
+           p.eraseRoutine!=0xff00||p.verifyRoutine!=0xff01||p.dependencyRoutine!=0xff02||(p.identityDid!=0xf180&&p.identityDid!=0xf189))return bad();
+        if(p.flow=="boot")for(const auto map:{&p.stepEnabled}){
+            if(map->contains("pre1001"))(*map)["pre1001"]=false;
+            if(map->contains("pre1003"))(*map)["pre1003"]=true;
+        }
+        for(const auto&s:downloadSteps()){
+            const QString id=s.id;const bool required=p.enabled(id);
+            if(p.stepEnabled.contains(id)&&p.stepEnabled[id].toBool()!=required)return bad();
+        }
+    }
     out=p;error.clear();return true;
 }
 static QByteArray routine(quint16 id){return QByteArray::fromHex("3101")+char(id>>8)+char(id);}
@@ -82,15 +92,6 @@ static QByteArray positive(QByteArray request,int length){
         request[1]=char(quint8(request[1])&0x7f);
     return request.left(length);
 }
-static bool continuousFile(const QVector<Segment> &source,QVector<Segment> &result,QString &error){
-    result.clear();if(source.isEmpty())return true;
-    const auto base=source.first().address;quint64 cursor=base;QByteArray bytes;
-    for(const auto &part:source){
-        if(part.data.isEmpty()||part.address!=cursor||cursor+quint64(part.data.size())>0x100000000ULL){error="File must contain continuous bytes; holes are not filled";return false;}
-        bytes+=part.data;cursor+=quint64(part.data.size());
-    }
-    result={{base,bytes}};return true;
-}
 FlashJob::FlashJob(UdsSession &session,FlashProfile profile,std::unique_ptr<KeyProvider> key,QObject *parent)
  :QObject(parent),m_session(session),m_profile(std::move(profile)),m_key(std::move(key)){
     m_deadline.setSingleShot(true);connect(&m_deadline,&QTimer::timeout,this,[this]{fail(QString("T008 total job deadline exceeded (%1ms)").arg(t008::JobDeadlineMs));});
@@ -99,153 +100,35 @@ bool FlashJob::start(const FirmwareImage &app,const FirmwareImage &driver,QStrin
     return start(app,driver,FirmwareImage{},error);
 }
 bool FlashJob::start(const FirmwareImage &app,const FirmwareImage &driver,const FirmwareImage &bootBundle,QString &error){
-    return start(app,driver,bootBundle,FirmwareImage{},error);
-}
-bool FlashJob::start(const FirmwareImage &app,const FirmwareImage &driverFile,const FirmwareImage &bootBundle,const FirmwareImage &calibration,QString &error){
     FlashProfile valid;
-    if(m_running||m_session.busy()||!FlashProfile::fromJson(m_profile.toJson(),valid,error)||!m_key||(app.segments.isEmpty()&&bootBundle.segments.isEmpty()&&calibration.segments.isEmpty())){if(error.isEmpty())error="Job busy or missing image/key provider";return false;}
-    FirmwareImage driver=driverFile;
-    if(!continuousFile(driverFile.segments,driver.segments,error))return false;
-    QString driverError;
-    const bool currentT008=t008::validateCurrentDriver(driver,false,driverError);
-    bool t010Image=false;for(const auto &part:app.segments)t010Image|=part.data.startsWith("T010APP1");
-    if(t010Image&&m_profile.target!="generic"&&!m_profile.isT010V2()){error="T010APP1 conflicts with the selected target";return false;}
-    const bool inferredT010=t010Image&&m_profile.target=="generic";
-    const bool t010Layout=m_profile.isT010V2()||inferredT010;
-    if(inferredT010){
-        const auto *layout=s32kApplicationLayout(true,m_profile.applicationEraseBase,m_profile.applicationEraseLength);
-        if(!layout||m_profile.applicationEraseLength!=layout->t010AppBytes||
-           (m_profile.applicationHasB&&(m_profile.applicationEraseBase!=layout->appBase||m_profile.applicationBBase!=layout->t010AppB))){error="T010 App addresses and capacity do not match the file contract";return false;}
+    if(m_running||m_session.busy()||!FlashProfile::fromJson(m_profile.toJson(),valid,error)||!m_key||(app.segments.isEmpty()&&bootBundle.segments.isEmpty())){if(error.isEmpty())error="Job busy or missing image/key provider";return false;}
+    if(!bootBundle.segments.isEmpty()&&(bootBundle.segments.size()!=1||bootBundle.segments.first().data.size()!=0x1e000)){
+        error="Boot bundle must contain both complete 60 KiB slot images";return false;
     }
-    // Driver validation determines image layout only. It never changes selected
-    // services, routine IDs, checkboxes or the original download sequence.
-    const bool modern=m_profile.isS32kV2()||currentT008||t010Layout||FirmwareImage::hasCurrentMarker(app)||FirmwareImage::hasCurrentMarker(driver)||FirmwareImage::hasCurrentMarker(bootBundle)||FirmwareImage::hasCurrentMarker(calibration);
-    if(modern){
-        const auto *layout=s32kApplicationLayout(t010Layout,m_profile.applicationEraseBase,m_profile.applicationEraseLength);
-        const quint16 minor=t010Layout&&layout==&S32kUnified80?11:9;
-        if(!t008::validateCurrentDriver(driver,t010Layout,error,minor))return false;
-        // Routine IDs come from the existing download settings. Recognizing a
-        // driver selects its memory layout, never a different set of services.
-        if(t010Layout&&!bootBundle.segments.isEmpty()){error="T010固定Boot不允许常规下载";return false;}
+    m_segments=driver.segments;m_driverCount=m_segments.size();m_bootIndex=-1;m_appIndex=-1;m_total=0;m_bootSlotB.clear();
+    if(!bootBundle.segments.isEmpty()){
+        m_bootIndex=m_segments.size();const auto &bundle=bootBundle.segments.first().data;
+        m_segments.append({0x5000,bundle.left(0xf000)});m_bootSlotB=bundle.mid(0xf000,0xf000);
     }
-    if(!calibration.segments.isEmpty()&&!FirmwareImage::validateCalibration(calibration,m_profile.calibBase,m_profile.calibLength,error))return false;
-    if(!modern&&!m_profile.applicationHasB&&!app.segments.isEmpty()&&m_profile.enabled("erase")&&
-       (!m_profile.applicationEraseLength||quint64(m_profile.applicationEraseBase)+m_profile.applicationEraseLength>0x100000000ULL)){
-        error="Invalid or overflowing erase range";return false;
-    }
-    QVector<Segment> bootPrimary,appPrimary;
-    m_targetPlan={};m_alternateTargetPlan={};
-    m_bootAlternate.clear();m_appAlternate.clear();m_bootUsingB=m_appUsingB=false;
-    if(!bootBundle.segments.isEmpty()&&!FirmwareImage::planSlots(bootBundle,m_profile.bootEraseBase,m_profile.bootBBase,m_profile.bootHasB,m_profile.bootEraseLength,bootPrimary,m_bootAlternate,error))return false;
-    if(!app.segments.isEmpty()){
-        if(modern||m_profile.applicationHasB){if(!FirmwareImage::planSlots(app,m_profile.applicationEraseBase,m_profile.applicationBBase,m_profile.applicationHasB,m_profile.applicationEraseLength,appPrimary,m_appAlternate,error))return false;}
-        else if(!continuousFile(app.segments,appPrimary,error))return false;
-    }
-    if(modern){
-        auto bootRegion=[&](const QVector<Segment> &parts){if(parts.isEmpty())return true;
-            const auto a=parts.first().address;
-            const bool usingB=m_profile.bootHasB&&a>=m_profile.bootBBase&&quint64(a)<quint64(m_profile.bootBBase)+m_profile.bootEraseLength;
-            const auto base=usingB?m_profile.bootBBase:m_profile.bootEraseBase;
-            return s32kBootLayout(base,m_profile.bootEraseLength)!=nullptr;
-        };
-        if(!bootRegion(bootPrimary)||!bootRegion(m_bootAlternate)){error="Boot erase range exceeds the current target slot";return false;}
-        auto appRegion=[&](const QVector<Segment> &segments){if(segments.isEmpty())return true;
-            const auto a=segments.first().address;const bool b=m_profile.applicationHasB&&a>=m_profile.applicationBBase&&quint64(a)<quint64(m_profile.applicationBBase)+m_profile.applicationEraseLength;
-            const auto base=b?m_profile.applicationBBase:m_profile.applicationEraseBase;const quint64 end=quint64(base)+m_profile.applicationEraseLength;
-            Q_UNUSED(end);return s32kApplicationLayout(t010Layout,base,m_profile.applicationEraseLength)!=nullptr;
-        };
-        if(!appRegion(appPrimary)||!appRegion(m_appAlternate)){error="App擦除范围越过当前profile分区边界或涉及状态/工厂/配置区";return false;}
-        const auto *appLayout=appPrimary.isEmpty()?nullptr:s32kApplicationLayout(t010Layout,
-            appPrimary.first().address,m_profile.applicationEraseLength);
-        const auto *bootLayout=bootPrimary.isEmpty()?nullptr:s32kBootLayout(bootPrimary.first().address,m_profile.bootEraseLength);
-        if(appLayout&&bootLayout&&appLayout!=bootLayout){error="Boot and App use different memory layouts";return false;}
-        if(appLayout==&S32kUnified80){
-            if(t010Layout&&m_profile.applicationHasB&&
-               (m_profile.applicationEraseBase!=appLayout->appBase||m_profile.applicationBBase!=appLayout->t010AppB)){
-                error="T010 App A/B addresses do not match the selected layout";return false;
-            }
-            if(!t010Layout&&m_profile.applicationHasB){error="T008/T009 unified layout contains one App";return false;}
-        }
-        if(bootLayout==&S32kUnified80&&m_profile.bootHasB&&
-           (m_profile.bootEraseBase!=0x5000||m_profile.bootBBase!=bootLayout->bootB)){
-            error="Boot A/B addresses do not match the selected layout";return false;
-        }
-    }
-    for(const auto &part:appPrimary){
-        const bool usingB=m_profile.applicationHasB&&part.address>=m_profile.applicationBBase&&quint64(part.address)<quint64(m_profile.applicationBBase)+m_profile.applicationEraseLength;
-        const quint32 base=usingB?m_profile.applicationBBase:m_profile.applicationEraseBase;
-        if(part.address!=base||quint64(part.address)+quint64(part.data.size())>quint64(base)+m_profile.applicationEraseLength){error="App write range exceeds configured erase range";return false;}
-    }
-    m_segments=driver.segments;m_driverCount=m_segments.size();m_bootIndex=m_appIndex=m_calibIndex=-1;m_total=0;
-    if(!bootPrimary.isEmpty()){
-        m_bootIndex=m_segments.size();m_segments+=bootPrimary;
-        m_bootUsingB=bootPrimary.first().address>=m_profile.bootBBase&&quint64(bootPrimary.first().address)<quint64(m_profile.bootBBase)+m_profile.bootEraseLength&&m_profile.bootHasB;
-    }
-    if(!calibration.segments.isEmpty()){
-        QVector<Segment> data,none;if(!FirmwareImage::planSlots(calibration,m_profile.calibBase,0,false,m_profile.calibLength,data,none,error))return false;
-        m_calibIndex=m_segments.size();m_segments+=data;
-    }
-    m_isV2=modern||!bootBundle.segments.isEmpty()||t008::looksLikeImage(app)||t008::looksLikeDriver(driver);
+    m_isV2=!bootBundle.segments.isEmpty()||t008::looksLikeImage(app)||t008::looksLikeDriver(driver);
     if(!m_profile.fingerprintData.isEmpty()){
         const auto &fp=m_profile.fingerprintData;
         if(fp.size()!=19){error="F184 requires exactly 19 bytes";return false;}
         QString fpError;const QDate date(2000+quint8(fp[0]),quint8(fp[1]),quint8(fp[2]));
         if(t008::fingerprint(date,fp.mid(3),fpError).isEmpty()){error=fpError;return false;}
     }
-    if(!app.segments.isEmpty()&&modern){
-        auto prepare=[&](const QVector<Segment> &parts,t008::Plan &plan){
-            FirmwareImage selected;selected.segments=parts;const auto a=parts.first().address;
-            const bool b=m_profile.applicationHasB&&a>=m_profile.applicationBBase&&quint64(a)<quint64(m_profile.applicationBBase)+m_profile.applicationEraseLength;
-            const auto base=b?m_profile.applicationBBase:m_profile.applicationEraseBase;
-            return t008::completeApplication(selected,base,m_profile.applicationEraseLength,t010Layout,s32kT010Slot(base),plan,error,app.binary);
-        };
-        if(!prepare(appPrimary,m_targetPlan))return false;
-        if(!m_appAlternate.isEmpty()){if(!prepare(m_appAlternate,m_alternateTargetPlan))return false;m_appAlternate=m_alternateTargetPlan.application;}
-        m_appIndex=m_segments.size();m_segments+=m_targetPlan.application;
-    }else if(!app.segments.isEmpty()&&(m_profile.isT008()||m_isV2)){
-        FirmwareImage selected=app;selected.segments=appPrimary;
-        if(!t008::images(selected,driver,m_targetPlan,error))return false;
-        if(!m_profile.isT008())m_targetPlan.application=selected.segments;
+    if(!app.segments.isEmpty()&&(m_profile.isT008()||m_isV2)){
+        if(!t008::images(app,driver,m_targetPlan,error))return false;
         if((m_profile.enabled("driver36")&&!m_profile.enabled("driver34"))||(m_profile.enabled("app36")&&!m_profile.enabled("app34"))){error="TransferData requires RequestDownload";return false;}
         m_appIndex=m_segments.size();m_segments+=m_targetPlan.application;
-        if(!m_appAlternate.isEmpty()){
-            FirmwareImage alternate;alternate.segments=m_appAlternate;t008::Plan alternatePlan;
-            if(!t008::images(alternate,driver,alternatePlan,error))return false;if(!m_profile.isT008())alternatePlan.application=alternate.segments;m_appAlternate=alternatePlan.application;m_alternateTargetPlan=alternatePlan;
-        }
-    }else if(!app.segments.isEmpty()){m_appIndex=m_segments.size();m_segments+=appPrimary;}
-    if(m_appIndex>=0){m_appUsingB=m_profile.applicationHasB&&appPrimary.first().address>=m_profile.applicationBBase&&quint64(appPrimary.first().address)<quint64(m_profile.applicationBBase)+m_profile.applicationEraseLength;}
-    // Erase ranges may not overlap any other role, including a validated alternate.
-    auto intersects=[](quint32 a,quint64 n,quint32 b,quint64 m){return quint64(a)<quint64(b)+m&&quint64(b)<quint64(a)+n;};
-    QVector<Segment> allBoot=bootPrimary;allBoot+=m_bootAlternate;QVector<Segment> allApp=appPrimary;allApp+=m_appAlternate;
-    auto slotBase=[](const Segment &s,quint32 a,quint32 b,bool hasB,quint32 length){return hasB&&s.address>=b&&quint64(s.address)<quint64(b)+length?b:a;};
-    for(const auto &b:allBoot)for(const auto &a:allApp)
-        if(intersects(slotBase(b,m_profile.bootEraseBase,m_profile.bootBBase,m_profile.bootHasB,m_profile.bootEraseLength),m_profile.bootEraseLength,slotBase(a,m_profile.applicationEraseBase,m_profile.applicationBBase,m_profile.applicationHasB,m_profile.applicationEraseLength),m_profile.applicationEraseLength)){error="Boot/App erase ranges overlap";return false;}
-    if(!calibration.segments.isEmpty()){
-        for(const auto &part:allBoot)if(intersects(slotBase(part,m_profile.bootEraseBase,m_profile.bootBBase,m_profile.bootHasB,m_profile.bootEraseLength),m_profile.bootEraseLength,m_profile.calibBase,m_profile.calibLength)){error="Boot erase range overlaps Calib";return false;}
-        for(const auto &part:allApp)if(intersects(slotBase(part,m_profile.applicationEraseBase,m_profile.applicationBBase,m_profile.applicationHasB,m_profile.applicationEraseLength),m_profile.applicationEraseLength,m_profile.calibBase,m_profile.calibLength)){error="App erase range overlaps Calib";return false;}
-    }
-    // Validate every candidate before any erase, including the unused fallback slot.
-    if(modern&&!t010Layout){
-        QVector<QPair<Segment,quint32>> selected;
-        for(const auto &part:driver.segments)selected.append({part,ROM_MARKER_DRIVER});
-        for(const auto &part:allBoot)selected.append({part,ROM_MARKER_BOOT});
-        for(const auto &part:allApp)selected.append({part,ROM_MARKER_APP});
-        for(const auto &part:calibration.segments)selected.append({part,ROM_MARKER_CAL});
-        if(!FirmwareImage::validateMarkerSet(selected,error,app.binary))return false;
-    }
-    for(int i=0;i<m_driverCount;++i){const auto &d=m_segments[i];
-        if(!calibration.segments.isEmpty()&&intersects(d.address,d.data.size(),m_profile.calibBase,m_profile.calibLength)){error="Calib范围与RAM Driver重叠";return false;}
-        for(const auto &b:allBoot)if(intersects(d.address,d.data.size(),slotBase(b,m_profile.bootEraseBase,m_profile.bootBBase,m_profile.bootHasB,m_profile.bootEraseLength),m_profile.bootEraseLength)){error="Boot erase range overlaps driver";return false;}
-        for(const auto &a:allApp)if(intersects(d.address,d.data.size(),slotBase(a,m_profile.applicationEraseBase,m_profile.applicationBBase,m_profile.applicationHasB,m_profile.applicationEraseLength),m_profile.applicationEraseLength)){error="App erase range overlaps driver";return false;}
-    }
-    if((!m_bootAlternate.isEmpty()||!m_appAlternate.isEmpty())&&!m_profile.enabled("erase")){error="Dual-slot images require the erase selection step";return false;}
+    }else if(!app.segments.isEmpty()){m_appIndex=m_segments.size();m_segments+=app.segments;}
     for(int i=0;i<m_segments.size();++i){
         const auto &s=m_segments[i];const quint64 end=quint64(s.address)+quint64(s.data.size());
         if(s.data.isEmpty()||end>0x100000000ULL){error="Invalid image segment";return false;}
         m_total+=s.data.size();
     }
     ++m_epoch;m_index=0;m_acked=0;m_ignored=0;m_running=true;m_unresolvedSids.clear();m_versionObservation.clear();
-    if(m_isV2)emit notice("ROM targets follow the configured 34/36/37/security loop, then one programming dependency check. Positive responses are ECU evidence only; no host signature verification is implemented.");
+    if(m_isV2)emit notice("T008: fingerprint, verification and dependency positive responses do not prove cryptographic verification; algorithms are not implemented.");
     if(m_profile.isT008()){
         m_wall.start();m_deadline.start(t008::JobDeadlineMs);emit notice("Reset is software reset, not physical POR.");
         preSteps(0);
@@ -311,9 +194,10 @@ void FlashJob::enterProgramming(){
     });
 }
 void FlashJob::preSteps(int index){
+    if(m_profile.isT008()&&m_profile.flow=="boot"&&index==2){enterProgramming();return;}
     if(index==2){unlock(m_profile.appSecurityLevel,"pre2701","pre2702",[this]{preSteps(3);});return;}
     static const char *ids[]={"pre1001","pre1003","","pre220101","pre31010203","pre1003control","pre8502","pre2803"};
-    static const char *requests[]={"1001","1003","","220101","31010203","1083","8582","2883f1"};
+    static const char *requests[]={"1001","1003","","220101","31010203","1083","8582","288301"};
     if(index==8){enterProgramming();return;}
     const auto req=index==3?QByteArray::fromHex("22f180"):QByteArray::fromHex(requests[index]);
     const int echo=quint8(req[0])==0x31?4:quint8(req[0])==0x22?3:2;
@@ -344,41 +228,27 @@ void FlashJob::unlock(quint8 level,const QString &seedId,const QString &keyId,st
 }
 void FlashJob::seed(){
     unlock(m_profile.securityLevel,"bootSeed","bootKey",[this]{
-        if(m_profile.flow=="legacy"){nextImage();return;}
+        if(m_profile.flow=="legacy"){nextSegment();return;}
         QString error;const auto data=m_profile.fingerprintData.isEmpty()?t008::fingerprint(QDate::currentDate(),QByteArray("TEST-PLACEHOLDER"),error):m_profile.fingerprintData;
         if(!error.isEmpty()||data.size()!=19){fail("F184 requires exactly 19 bytes");return;}
         const auto req=QByteArray::fromHex("2ef184")+data;
         emit notice(m_profile.fingerprintData.isEmpty()?"F184: TEST-PLACEHOLDER is a test identifier, not a device serial":"F184: configured value");
-        step("fingerprint",req,QByteArray::fromHex("6ef184"),[this](const QByteArray &){nextImage();});
+        step("fingerprint",req,QByteArray::fromHex("6ef184"),[this](const QByteArray &){nextSegment();});
     });
 }
-void FlashJob::nextImage(){
+void FlashJob::nextSegment(){
     if(m_index>=m_segments.size()){finalSteps();return;}
     const auto &s=m_segments[m_index];m_offset=0;m_sequence=1;m_transferPacket=0;
     if(m_index<m_driverCount){report("Flash driver");download();return;}
-    if(m_index==m_bootIndex){eraseTarget(RomTarget::Boot,m_bootUsingB);return;}
-    if(m_index==m_calibIndex){eraseTarget(RomTarget::Calib);return;}
-    if(m_index==m_appIndex){eraseTarget(RomTarget::App,m_appUsingB);return;}
-    download();
-}
-void FlashJob::eraseTarget(RomTarget target,bool useB){
-    const bool boot=target==RomTarget::Boot,calib=target==RomTarget::Calib;
-    const auto base=calib?m_profile.calibBase:boot?(useB?m_profile.bootBBase:m_profile.bootEraseBase):(useB?m_profile.applicationBBase:m_profile.applicationEraseBase);
-    const auto length=calib?m_profile.calibLength:boot?m_profile.bootEraseLength:m_profile.applicationEraseLength;
-    const auto req=routine(m_profile.eraseRoutine)+char(0x44)+be32(base)+be32(length);
-    const bool canFallback=!calib&&!useB&&!(boot?m_bootAlternate:m_appAlternate).isEmpty();
-    const auto unavailable=QByteArray::fromHex("7f3131");
-    step("erase",req,positive(req,4)+char(0),[this,req](const QByteArray &pdu){
-        if(m_profile.enabled("erase")&&!pdu.isEmpty()&&pdu!=positive(req,4)+char(0)){fail("Erase requires exact positive response/status");return;}download();
-    },true,[this,target,boot,canFallback,unavailable](const QByteArray &pdu){
-        if(!canFallback||pdu!=unavailable)return false;
-        auto &alternate=boot?m_bootAlternate:m_appAlternate;
-        m_total-=m_segments[m_index].data.size();
-        m_segments[m_index]=alternate.first();m_total+=m_segments[m_index].data.size();
-        if(boot)m_bootUsingB=true;else{m_appUsingB=true;m_targetPlan=m_alternateTargetPlan;}
-        alternate.clear();emit notice(boot?"Boot A unavailable (31 NRC31); trying validated B image":"App A unavailable (31 NRC31); trying validated B image");
-        eraseTarget(target,true);return true;
-    },canFallback?unavailable:QByteArray());
+    if(m_index==m_bootIndex){
+        report("Erase Boot slot");
+        const auto req=routine(m_profile.eraseRoutine)+char(0x44)+be32(m_profile.bootEraseBase)+be32(m_profile.bootEraseLength);
+        step("erase",req,positive(req,4)+char(0),[this](const QByteArray &){download();});return;
+    }
+    if(m_index!=m_appIndex){download();return;}
+    report("Erase application segment");
+    const auto req=routine(m_profile.eraseRoutine)+char(0x44)+be32(m_profile.applicationEraseBase)+be32(m_profile.applicationEraseLength);
+    step("erase",req,positive(req,4)+char(0),[this](const QByteArray &){download();});
 }
 void FlashJob::download(){
     const auto &s=m_segments[m_index];report("RequestDownload");
@@ -401,7 +271,12 @@ void FlashJob::download(){
             m_blockSize=1024;
         }
         block();
-    },true);
+    },true,[this,req](const QByteArray &pdu){
+        if(m_index!=m_bootIndex||req!=QByteArray::fromHex("340044000050000000f000")||
+           pdu!=QByteArray::fromHex("7f3470")||m_bootSlotB.size()!=0xf000)return false;
+        emit notice("Boot slot A unavailable (NRC 70); trying slot B");
+        m_segments[m_index]={0x6d000,std::move(m_bootSlotB)};m_bootSlotB.clear();download();return true;
+    },m_index==m_bootIndex&&s.address==0x5000&&!m_bootSlotB.isEmpty()?QByteArray::fromHex("7f3470"):QByteArray());
 }
 void FlashJob::block(){
     const auto &s=m_segments[m_index];
@@ -421,21 +296,19 @@ void FlashJob::block(){
     });
 }
 void FlashJob::verify(){
-    const auto &s=m_segments[m_index];report(m_profile.verifyRoutine==0xdd02?"Security routine response (ECU placeholder)":(m_isV2||m_profile.isT008())?"Verification service response (algorithm not implemented)":"Verify segment CRC32");
+    const auto &s=m_segments[m_index];report((m_isV2||m_profile.isT008())?"Verification service response (algorithm not implemented)":"Verify segment CRC32");
     const auto req=routine(m_profile.verifyRoutine)+be32(s.address)+be32(quint32(s.data.size()))+
-        ((m_isV2||m_profile.isT008()||m_profile.verifyRoutine==0xdd02)?QByteArray(4,'\0'):be32(crc32(s.data)));
+        ((m_isV2||m_profile.isT008())?QByteArray(4,'\0'):be32(crc32(s.data)));
     step(m_index<m_driverCount?"driverVerify":"appVerify",req,positive(req,4)+char(0),[this](const QByteArray &){
-        ++m_index;nextImage();
+        if(m_index==m_bootIndex){
+            const auto commit=routine(m_profile.dependencyRoutine);
+            step("dependency",commit,positive(commit,4)+char(0),[this](const QByteArray &){++m_index;if(m_index>=m_segments.size())resetAfterTransfers();else nextSegment();});
+        }else{++m_index;nextSegment();}
     });
 }
 void FlashJob::finalSteps(){
     const auto req=routine(m_profile.dependencyRoutine);
-    step("dependency",req,positive(req,4),[this](const QByteArray &pdu){
-        if(!pdu.isEmpty()&&(pdu.size()!=5||quint8(pdu[4])!=0)){
-            fail(pdu.size()==5?QString("Programming dependency failed (ECU status %1)").arg(quint8(pdu[4])):"Malformed programming dependency response");return;
-        }
-        resetAfterTransfers();
-    });
+    step("dependency",req,positive(req,4)+char(0),[this](const QByteArray &){resetAfterTransfers();});
 }
 void FlashJob::resetAfterTransfers(){
     step("reset",QByteArray::fromHex("1101"),QByteArray::fromHex("5101"),[this](const QByteArray &){
@@ -448,7 +321,7 @@ void FlashJob::resetAfterTransfers(){
 }
 void FlashJob::postSteps(int index){
     static const char *ids[]={"post1003","post14","post2800","post8501","post1001"};
-    static const char *requests[]={"1003","14ffffff","2880f1","8581","1081"};
+    static const char *requests[]={"1003","14ffffff","288001","8581","1081"};
     if(index==5){identify();return;}
     if(index==1){
         step("post14",QByteArray::fromHex("14ffffff"),QByteArray::fromHex("54"),[this](const QByteArray &pdu){
@@ -459,20 +332,27 @@ void FlashJob::postSteps(int index){
     step(ids[index],req,positive(req,index==1?1:2),[this,index](const QByteArray &){postSteps(index+1);});
 }
 void FlashJob::identify(){
-    const auto req=QByteArray(1,char(0x22))+char(m_profile.identityDid>>8)+char(m_profile.identityDid);
-    const bool versionObservation=m_isV2&&m_profile.identityDid==0xf189;
-    const auto expected=positive(req,3)+(m_profile.simulationOnly&&!versionObservation?QByteArray("SIM-ECU"):QByteArray());
-    // Even version observation uses the existing identity step and its checks.
-    // A target tag must not bypass a disabled checkbox or send a different DID.
-    step("identity",req,expected,[this](const QByteArray &pdu){
-        if(m_isV2&&m_profile.identityDid==0xf189){
-            if(pdu.isEmpty())m_versionObservation=QString::fromUtf8("F189 \u672a\u8bfb\u53d6\uff0c\u8bf7\u4eba\u5de5\u786e\u8ba4");
-            else if(pdu.mid(3)!=m_targetPlan.version.leftJustified(9,'\0'))m_versionObservation=QString::fromUtf8("F189 \u7248\u672c\u4e0d\u5339\u914d\uff0c\u8bf7\u4eba\u5de5\u786e\u8ba4");
-            else m_versionObservation=QString::fromUtf8("F189 \u7248\u672c\u5339\u914d\uff08\u5237\u540e\u89c2\u5bdf\uff09");
-            emit notice(m_versionObservation);
+    if(m_profile.isT008()||(m_isV2&&m_profile.identityDid==0xf189)){
+        if(m_profile.identityDid==0xf180){
+            step("identity",QByteArray::fromHex("22f180"),QByteArray::fromHex("62f180"),[this](const QByteArray &){done();},true);return;
         }
-        done();
-    });
+        if(m_unresolvedSids.contains(0x22)){fail("identity: unresolved earlier response for same service; cannot safely correlate");return;}
+        const auto epoch=m_epoch;const auto request=QByteArray::fromHex("22f189");
+        if(!m_session.request(request,QByteArray::fromHex("62f189"),[this,epoch,request](bool ok,const QByteArray &pdu,const QString &){
+            if(!m_running||epoch!=m_epoch||!withinDeadline())return;
+            QString why;
+            if(!ok||!t008::response(request,pdu,false,why))m_versionObservation=QString::fromUtf8("F189 无法读取，请人工确认");
+            else if(pdu.mid(3)!=m_targetPlan.version.leftJustified(9,'\0'))m_versionObservation=QString::fromUtf8("F189 版本不匹配，请人工确认");
+            else m_versionObservation=QString::fromUtf8("F189 版本匹配（刷后观察）");
+            emit notice(m_versionObservation);done();
+        })){
+            m_versionObservation=QString::fromUtf8("F189 无法读取，请人工确认");emit notice(m_versionObservation);done();
+        }
+        return;
+    }
+    const auto req=QByteArray(1,char(0x22))+char(m_profile.identityDid>>8)+char(m_profile.identityDid);
+    const auto expected=positive(req,3)+(m_profile.simulationOnly?QByteArray("SIM-ECU"):QByteArray());
+    step("identity",req,expected,[this](const QByteArray &){done();});
 }
 void FlashJob::done(){
     if(!withinDeadline())return;

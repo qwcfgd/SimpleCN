@@ -27,10 +27,6 @@ add_test(NAME host_ui COMMAND test_host_ui -o "${CMAKE_CURRENT_BINARY_DIR}/host-
 set_tests_properties(host_ui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 180)
 
 add_executable(test_protocol test_protocol.cpp)
-add_executable(test_rom_marker test_rom_marker.cpp)
-target_link_libraries(test_rom_marker PRIVATE bootloader_protocol Qt${QT_VERSION_MAJOR}::Test)
-host_deploy(test_rom_marker)
-add_test(NAME rom_marker COMMAND test_rom_marker -o "${CMAKE_CURRENT_BINARY_DIR}/rom-marker-results.txt,txt")
 target_link_libraries(test_protocol PRIVATE bootloader_protocol Qt${QT_VERSION_MAJOR}::Test)
 host_deploy(test_protocol)
 add_test(NAME protocol COMMAND test_protocol -o "${CMAKE_CURRENT_BINARY_DIR}/protocol-results.xml,xml")
@@ -114,16 +110,6 @@ target_link_libraries(trace_performance_probe PRIVATE bootloader_ui)
 target_compile_definitions(trace_performance_probe PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 host_deploy(trace_performance_probe)
 
-add_executable(trace_ui_performance_probe EXCLUDE_FROM_ALL trace_ui_performance_probe.cpp)
-target_link_libraries(trace_ui_performance_probe PRIVATE bootloader_ui)
-host_deploy(trace_ui_performance_probe)
-
-add_executable(test_download_flow_contract test_download_flow_contract.cpp)
-target_link_libraries(test_download_flow_contract PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
-host_deploy(test_download_flow_contract)
-add_test(NAME download_flow_contract COMMAND test_download_flow_contract -o "${CMAKE_CURRENT_BINARY_DIR}/download-flow-results.txt,txt")
-set_tests_properties(download_flow_contract PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
-
 add_executable(test_trace_plot test_trace_plot.cpp)
 target_link_libraries(test_trace_plot PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
 target_compile_definitions(test_trace_plot PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -170,9 +156,6 @@ set_tests_properties(revision141 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscre
 
 # Opt-in native desktop probe with a bounded Windows driver; never run by CTest.
 if(WIN32)
-    add_executable(trace_pipeline_probe EXCLUDE_FROM_ALL trace_pipeline_probe.cpp)
-    target_link_libraries(trace_pipeline_probe PRIVATE bootloader_ui)
-    host_deploy(trace_pipeline_probe)
     add_executable(idle_cpu_probe EXCLUDE_FROM_ALL idle_cpu_probe.cpp)
     target_link_libraries(idle_cpu_probe PRIVATE bootloader_ui)
     host_deploy(idle_cpu_probe)
@@ -216,36 +199,3 @@ add_executable(test_safe_trace_recorder test_safe_trace_recorder.cpp ../src/infr
 target_include_directories(test_safe_trace_recorder PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(test_safe_trace_recorder PRIVATE Qt${QT_VERSION_MAJOR}::Core)
 add_test(NAME safe_trace_recorder COMMAND test_safe_trace_recorder)
-set_tests_properties(safe_trace_recorder PROPERTIES ENVIRONMENT "QT_TRACE_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}")
-
-# Loader-only regression: never initializes a vendor API or opens a bus.
-add_executable(test_driver_runtime test_driver_runtime.cpp)
-target_link_libraries(test_driver_runtime PRIVATE peak_communication Qt${QT_VERSION_MAJOR}::Test)
-host_deploy(test_driver_runtime)
-add_test(NAME driver_runtime COMMAND test_driver_runtime)
-set_tests_properties(driver_runtime PROPERTIES TIMEOUT 30)
-
-# Injected Vector XL API regression; no physical bus access.
-add_executable(test_vector test_vector.cpp)
-target_link_libraries(test_vector PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
-host_deploy(test_vector)
-add_test(NAME vector COMMAND test_vector -o "${CMAKE_CURRENT_BINARY_DIR}/vector-results.xml,xml" -o "${CMAKE_CURRENT_BINARY_DIR}/vector-results.txt,txt")
-set_tests_properties(vector PROPERTIES TIMEOUT 30)
-
-# Generic single/dual Boot/App and safety regression, in-memory transport only.
-add_executable(test_dual_slot test_dual_slot.cpp)
-target_link_libraries(test_dual_slot PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
-host_deploy(test_dual_slot)
-add_test(NAME dual_slot COMMAND test_dual_slot -o "${CMAKE_CURRENT_BINARY_DIR}/dual-slot-results.xml,xml" -o "${CMAKE_CURRENT_BINARY_DIR}/dual-slot-results.txt,txt")
-set_tests_properties(dual_slot PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
-
-# Calib file/role/UI validation; no physical bus access.
-add_executable(test_calib_revision test_calib_revision.cpp)
-target_link_libraries(test_calib_revision PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Test)
-host_deploy(test_calib_revision)
-add_test(NAME calib_revision COMMAND test_calib_revision -o "${CMAKE_CURRENT_BINARY_DIR}/calib-revision-results.xml,xml" -o "${CMAKE_CURRENT_BINARY_DIR}/calib-revision-results.txt,txt")
-set_tests_properties(calib_revision PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
-
-# Optional offline regression with user-supplied App and Boot CDDs.
-add_executable(check_lin19200_channels EXCLUDE_FROM_ALL check_lin19200_channels.cpp)
-target_link_libraries(check_lin19200_channels PRIVATE bootloader_ui Qt${QT_VERSION_MAJOR}::Widgets)

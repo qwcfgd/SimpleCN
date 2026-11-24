@@ -176,29 +176,7 @@ private slots:
         device.failInstall=false;plan.role=LinRole::Monitor;QVERIFY(runner.start(plan,19200,300,error));QVERIFY(device.publishers.isEmpty());QVERIFY(runner.simulatedHeader(0x12).isEmpty());
     }
     void nonPublisherUpdatesNeverReachHardware(){RecordingLin device;LinScheduleRunner runner(&device);QString error;auto plan=linPlan(LinRole::Slave);QVERIFY(runner.start(plan,19200,0,error));device.calls.clear();
-        QVERIFY(runner.update(frameKey(Bus::Lin,0x12),{QByteArray(1,'x'),2},error));QVERIFY(device.calls.isEmpty());QVERIFY(runner.update(frameKey(Bus::Lin,0x11),{QByteArray(2,'y'),2},error));QVERIFY(device.calls.isEmpty());
-        BusFrameEvent e;e.bus=Bus::Lin;e.id=0x10;runner.observe(e);QVERIFY(runner.tick(1,error));QVERIFY(device.calls.isEmpty());
-        e.id=0x11;runner.observe(e);QVERIFY(runner.tick(2,error));QVERIFY(device.publishers==QSet<QString>{frameKey(Bus::Lin,0x11)});
-        QCOMPARE(device.calls,QStringList({"update"}));
-    }
-    void canRoundCoalescesEditsAndPreservesDeadlines(){
-        QVector<TxItem> items{{"A",1,false,"a",10,1,{},false},{"B",2,false,"b",10,1,{},false},{"C",3,false,"c",20,1,{},false}};
-        CanTxScheduler scheduler;scheduler.start(items,0);QByteArray wire;
-        auto send=[&](const TxItem &item,QString&){wire+=item.payload;return true;};
-        scheduler.pump(0,send,1);std::reverse(items.begin(),items.end());scheduler.replaceItems(items);
-        items[0].payload="Z";items[0].revision=2;scheduler.replaceItems(items);
-        scheduler.update("B",{"Y",3});scheduler.pump(0,send);QCOMPARE(wire,QByteArray("abc"));
-        scheduler.pump(10000,send);QCOMPARE(wire,QByteArray("abcYa"));
-        scheduler.pump(20000,send);QCOMPARE(wire,QByteArray("abcYaZYa"));
-    }
-    void linRoundCoalescesAndDeletedTableStops(){
-        LinScheduleRunner runner;auto plan=linPlan();QString why;QVector<quint32> wire;
-        runner.event=[&](const BusFrameEvent&e){wire.append(e.id);};QVERIFY(runner.start(plan,19200,0,why));QVERIFY(runner.tick(0,why));
-        auto &entries=plan.schedules[0].entries;std::reverse(entries.begin(),entries.end());QVERIFY(runner.replacePlan(plan,why));
-        entries[0].delayMs="15";QVERIFY(runner.replacePlan(plan,why));QVERIFY(runner.tick(10000,why));QVERIFY(runner.tick(20000,why));
-        QCOMPARE(wire,QVector<quint32>({16,17,17}));QVERIFY(runner.tick(30000,why));QCOMPARE(wire.size(),3);
-        plan.schedules.removeAt(0);QVERIFY(runner.replacePlan(plan,why));QVERIFY(runner.tick(35000,why));QVERIFY(runner.tick(45000,why));
-        QCOMPARE(wire,QVector<quint32>({16,17,17,16}));QCOMPARE(runner.status().state,RunState::Stopped);
+        QVERIFY(runner.update(frameKey(Bus::Lin,0x12),{QByteArray(1,'x'),2},error));QVERIFY(device.calls.isEmpty());QVERIFY(runner.update(frameKey(Bus::Lin,0x11),{QByteArray(2,'y'),2},error));QCOMPARE(device.calls,QStringList{"update"});
     }
     void canEnableUpdatesWaitForRoundAndCanResumeFromEmpty(){
         CanTxScheduler scheduler;QVector<TxItem> items{{"a",1,false,QByteArray(1,0),10,1,{},false,true},{"b",2,false,QByteArray(1,0),10,1,{},false,true},{"c",3,false,QByteArray(1,0),10,1,{},false,false}};

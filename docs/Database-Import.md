@@ -20,8 +20,8 @@
 cmake --build --preset qt5 --target signal_fixture_probe
 cmake --build --preset qt6 --target signal_fixture_probe
 
-python tests/database_import_audit.py --source . --probe ../build/qttemp/Qt-SimpleCN-qt5/tests/signal_fixture_probe.exe --output ../build/qttemp/database-import-audit/qt5
-python tests/database_import_audit.py --source . --probe ../build/qttemp/Qt-SimpleCN-qt6/tests/signal_fixture_probe.exe --output ../build/qttemp/database-import-audit/qt6
+python tests/database_import_audit.py --source . --probe ../build/qttemp/Qt-GeneralController-qt5/tests/signal_fixture_probe.exe --output ../build/qttemp/database-import-audit/qt5
+python tests/database_import_audit.py --source . --probe ../build/qttemp/Qt-GeneralController-qt6/tests/signal_fixture_probe.exe --output ../build/qttemp/database-import-audit/qt6
 ```
 
 工具逐个调用程序使用的原生导入器，并检查：

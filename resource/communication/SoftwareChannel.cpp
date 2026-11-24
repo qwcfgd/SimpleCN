@@ -91,12 +91,12 @@ bool SoftwareChannel::choose(HardwareChannel &selected) const
     // Ambiguous identities must never silently attach a different device.
     return matches==1;
 }
-bool SoftwareChannel::connectChannel(bool retryOnFailure)
+bool SoftwareChannel::connectChannel()
 {
     if (m_busy) return false;
     if (m_state==ConnectionState::Connected) return true;
     QScopedValueRollback<bool> guard(m_busy,true);
-    m_wantConnected=retryOnFailure;
+    m_wantConnected=true;
     m_retry.restart();
     ++m_generation;
     if (!m_config.isValid() || m_config.bus!=m_backend->bus()) {
@@ -128,7 +128,6 @@ bool SoftwareChannel::connectChannel(bool retryOnFailure)
         return false;
     }
     m_active=selected;
-    m_wantConnected=true;
     if(m_config.bus==Bus::Can&&selected.key.startsWith("can:")){
         QMutexLocker lock(&leasesMutex);activePeakCan.insert(this);
     }

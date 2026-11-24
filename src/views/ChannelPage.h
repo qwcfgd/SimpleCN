@@ -1,14 +1,12 @@
 #pragma once
 #include <QWidget>
 #include <QElapsedTimer>
-#include <QHash>
 #include "viewmodels/ChannelViewModel.h"
 #include "model/FrameFilterProxy.h"
 class QComboBox;class QLineEdit;class QCheckBox;class QLabel;
 class QPushButton;class QProgressBar;class QTableView;class QPlainTextEdit;
 class QTreeView;class QSplitter;class QResizeEvent;class QShowEvent;class QTabWidget;class QTableWidget;
 namespace host {
-class FrameTableView;
 class ChannelPage : public QWidget {
     Q_OBJECT
 public:
@@ -26,8 +24,6 @@ private:
     void render();
     void browseImage(bool flash);
     void addDownloadFiles();
-    void appendDownloadFile(const QString &role,const QString &path,const QString &identity={});
-    void changeDownloadRole(int row);
     void removeDownloadFiles();
     void saveDownloadFiles();
     void rememberDownloadFiles();
@@ -45,14 +41,13 @@ private:
     QLabel *m_hardwareSummary,*m_connectionStatus,*m_flashInfo,*m_appInfo,*m_hint,*m_task,*m_count,*m_elapsedText,*m_error;
     QPushButton *m_start,*m_cancel,*m_scan,*m_downloadSettings,*m_browseFlash,*m_connectButton=nullptr;
     QProgressBar *m_progress;
-    FrameTableView *m_table;
+    QTreeView *m_table;
     FrameFilterProxy *m_frameProxy=nullptr;
     bool m_restoringMonitor=false;
     QPlainTextEdit *m_log;
     QWidget *m_images;
     QTableWidget *m_imageTable=nullptr;
     QJsonArray m_entryFiles;
-    QHash<QString,QString> m_downloadFileIds;
     bool m_hasEntryFiles=false;
     QSplitter *m_regions=nullptr,*m_outputs=nullptr;
     QTabWidget *m_tasks=nullptr;

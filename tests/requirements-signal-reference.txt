@@ -1,4 +1,4 @@
-# Development-only comparison tools; never shipped or invoked by SimpleCN.
+# Development-only comparison tools; never shipped or invoked by QtBootloader.
 cantools==44.1.0
 ldfparser==0.26.0
 bitstruct==8.23.0

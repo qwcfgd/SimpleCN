@@ -1,5 +1,4 @@
 #include "TosunRuntime.h"
-#include "communication/DriverLibrary.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -15,9 +14,12 @@ std::function<Ret(Args...)> symbol(HMODULE library,const char *name){
 }
 }
 Runtime::Runtime(){
-    QStringList folders{communication::driverDirectory(QStringLiteral("tosun"))};
+    QStringList folders;
     const auto configured=qEnvironmentVariable("TOSUN_SDK_DIR");
     if(!configured.isEmpty())folders<<configured;
+    folders<<QCoreApplication::applicationDirPath()+"/dll/tosun";
+    const auto programFiles=qEnvironmentVariable("ProgramFiles(x86)","C:/Program Files (x86)");
+    folders<<programFiles+"/TOSUN/TSMaster/"+(sizeof(void*)==8?"bin64":"bin");
     for(const auto &folder:folders){
         const auto path=QDir::toNativeSeparators(QFileInfo(folder+"/libTSCAN.dll").absoluteFilePath());
         if(!QFileInfo::exists(path))continue;
@@ -25,7 +27,7 @@ Runtime::Runtime(){
         if(m_library){m_path=path;break;}
         m_error=QString("同星运行库加载失败（Windows %1）：%2").arg(GetLastError()).arg(path);
     }
-    if(!m_library){if(m_error.isEmpty())m_error=QString("未找到同星运行库：%1；请部署完整 driver/tosun 目录，开发调试可设置 TOSUN_SDK_DIR").arg(communication::driverLibraryPath("tosun","libTSCAN.dll"));return;}
+    if(!m_library){if(m_error.isEmpty())m_error="未找到同星 libTSCAN.dll；请安装 TSMaster 或设置 TOSUN_SDK_DIR";return;}
     const auto lib=static_cast<HMODULE>(m_library);
     auto initialize=symbol<void,bool,bool,bool>(lib,"initialize_lib_tscan");
     m_finalize=symbol<void>(lib,"finalize_lib_tscan");

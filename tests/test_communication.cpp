@@ -67,9 +67,8 @@ public:
     quint64 filter=0;
     TLINHardwareState busState=hwsActive;
     QQueue<TLINRcvMsg> frames;
-    TLINMsg lastWrite={};int writes=0,checksumCalls=0,wakes=0;HLINCLIENT wakeClient=0;HLINHW wakeHardware=0;TLINError wakeResult=errOK,writeResult=errOK;
-    TLINError XmtWakeUp(HLINCLIENT c,HLINHW h)override{++wakes;wakeClient=c;wakeHardware=h;return wakeResult;}
-    TLINError Write(HLINCLIENT,HLINHW,TLINMsg *message) override {++writes;lastWrite=*message;return writeResult;}
+    TLINMsg lastWrite={};int writes=0,checksumCalls=0;
+    TLINError Write(HLINCLIENT,HLINHW,TLINMsg *message) override {++writes;lastWrite=*message;return errOK;}
     TLINError GetPID(BYTE *id) override {if(*id==0x3d)*id=0x7d;return errOK;}
     TLINError CalculateChecksum(TLINMsg *message) override {++checksumCalls;message->Checksum=0xa5;return errOK;}
     TLINError GetAvailableHardware(HLINHW *out,WORD bytes,int *count) override {
@@ -137,54 +136,6 @@ static SoftwareChannelConfiguration cfg(QString id="LIN-A") {
 class CommunicationTest : public QObject {
     Q_OBJECT
 private slots:
-    void pcanReconnectUsesUninitializeResult_data(){
-        QTest::addColumn<bool>("uninitializeFails");
-        QTest::newRow("queue-reset-fails-channel-released")<<false;
-        QTest::newRow("channel-release-fails")<<true;
-    }
-    void pcanReconnectUsesUninitializeResult(){
-        QFETCH(bool,uninitializeFails);
-        FakeCanApi api;tstPeakCan driver(nullptr,&api);
-        SoftwareChannelConfiguration c;c.softwareId="CAN01";c.bus=Bus::Can;
-        c.bitrate=500000;c.uds.profileId="CAN A";c.preferredHandle=PCAN_USBBUS1;
-        SoftwareChannel session(c,std::make_unique<PeakCanBackend>(driver));
-        QVERIFY(session.connectChannel());
-        api.resetResult=PCAN_ERROR_BUSOFF;
-        api.uninitializeResult=uninitializeFails?PCAN_ERROR_ILLHW:PCAN_ERROR_OK;
-        const bool disconnected=session.disconnectChannel();
-        const bool reopened=disconnected && session.connectChannel(false);
-        QCOMPARE(reopened,!uninitializeFails);
-        QCOMPARE(api.releases,1);
-        QCOMPARE(api.opens,uninitializeFails?1:2);
-        const auto expected=uninitializeFails?ConnectionState::Available:ConnectionState::Connected;
-        QCOMPARE(session.state(),expected);
-    }
-    void pcanBusOffUsesOrdinaryReconnect(){
-        FakeCanApi api;
-        api.handles={PCAN_USBBUS1,PCAN_USBBUS2};
-        tstPeakCan driver(nullptr,&api);
-        QVERIFY(driver.setHardwareHandle(PCAN_USBBUS2));
-        QVERIFY(driver.setDevBaudrate(500));
-        QVERIFY(driver.startDevice());
-        QVERIFY(driver.stopDevice());
-        QVERIFY(driver.startDevice());
-        QCOMPARE(api.openedPorts.value(PCAN_USBBUS2),2);
-        QCOMPARE(api.releasedPorts.value(PCAN_USBBUS2),1);
-        QCOMPARE(api.resetPorts.value(PCAN_USBBUS2),1); // normal queue clear
-        QCOMPARE(api.openedPorts.value(PCAN_USBBUS1),0);
-        QCOMPARE(api.releasedPorts.value(PCAN_USBBUS1),0);
-        QCOMPARE(driver.getDevBaudrate(),int(PCAN_BAUD_500K));
-        QVERIFY(api.hardResetSettings.isEmpty());
-        QCOMPARE(api.autoResetValue,DWORD(PCAN_PARAMETER_OFF));
-        QCOMPARE(api.writes,0);
-        QCOMPARE(driver.hardwareHealth(),Health::BusWarning); // mock still reports Bus-Off
-        api.initializeResult=PCAN_ERROR_HWINUSE;
-        QVERIFY(driver.stopDevice());
-        QVERIFY(!driver.startDevice());
-        QCOMPARE(api.openedPorts.value(PCAN_USBBUS2),3);
-        QCOMPARE(api.releasedPorts.value(PCAN_USBBUS2),2);
-        QCOMPARE(api.writes,0);
-    }
     void idleCanChannelDefersProviderEnumerationWhilePeerIsConnected(){
         SoftwareChannelConfiguration c;c.softwareId="CAN-A";c.bus=Bus::Can;c.uds.profileId="A";c.hardwareKey="can:fake:1";
         HardwareChannel h;h.bus=Bus::Can;h.handle=0x51;h.key=c.hardwareKey;h.persistentIdentity=true;
@@ -277,20 +228,6 @@ private slots:
         QVERIFY(driver.setHardwareHandle(PCAN_USBBUS2));QVERIFY(driver.startDevice());QVERIFY(driver.enableEcho());
         QCOMPARE(api.echoCalls,1);QCOMPARE(api.echoHandle,TPCANHandle(PCAN_USBBUS2));QCOMPARE(api.echoValue,DWORD(PCAN_PARAMETER_ON));
         api.echoResult=PCAN_ERROR_ILLPARAMVAL;QVERIFY(!driver.enableEcho());QCOMPARE(driver.lastErrorCode(),static_cast<unsigned long>(PCAN_ERROR_ILLPARAMVAL));QVERIFY(driver.lastErrorText().contains("8000"));
-    }
-    void linWake19200UsesOnlyStandardResponseHeader(){
-        FakeLinApi api;tstPeakLin driver(nullptr,&api);driver.setHardwareHandle(21);driver.setDevMode(modMaster);driver.setDevBaudrate(19200);QVERIFY(driver.startDevice());
-        QVERIFY(driver.wakeUp());QCOMPARE(api.wakes,0);QCOMPARE(api.writes,1);QCOMPARE(api.registers,1);QCOMPARE(api.connects,1);
-        QCOMPARE(api.lastWrite.FrameId,BYTE(0x7d));QCOMPARE(api.lastWrite.Direction,TLINDirection(dirSubscriber));QCOMPARE(api.lastWrite.ChecksumType,TLINChecksumType(cstClassic));QCOMPARE(api.lastWrite.Length,BYTE(8));QCOMPARE(api.checksumCalls,0);
-        api.writeResult=errManagerNotResponding;QVERIFY(!driver.wakeUp());QCOMPARE(driver.lastErrorCode(),static_cast<unsigned long>(errManagerNotResponding));QCOMPARE(api.wakes,0);
-    }
-    void linWakeUsesOwnedClientAndPreservesErrors(){
-        FakeLinApi api;tstPeakLin driver(nullptr,&api);QVERIFY(!driver.wakeUp());QCOMPARE(api.wakes,0);
-        driver.setHardwareHandle(21);driver.setDevMode(modMaster);driver.setDevBaudrate(9600);QVERIFY(driver.startDevice());
-        QVERIFY(driver.wakeUp());QCOMPARE(api.wakes,1);QCOMPARE(api.wakeClient,HLINCLIENT(42));QCOMPARE(api.wakeHardware,HLINHW(21));QCOMPARE(api.registers,1);QCOMPARE(api.writes,0);
-        api.wakeResult=errManagerNotResponding;QVERIFY(!driver.wakeUp());QCOMPARE(driver.lastErrorCode(),static_cast<unsigned long>(errManagerNotResponding));
-        QVERIFY(driver.stopDevice());QVERIFY(!driver.wakeUp());QCOMPARE(api.wakes,2);
-        driver.setDevMode(modSlave);QVERIFY(driver.startDevice());QVERIFY(!driver.wakeUp());QCOMPARE(api.wakes,2);
     }
     void rawLinDiagnosticUsesClassicChecksumAndProtectedId() {
         FakeLinApi api;tstPeakLin driver(nullptr,&api);driver.setHardwareHandle(21);driver.setDevMode(modMaster);driver.setDevBaudrate(19200);
@@ -393,11 +330,10 @@ private slots:
     }
     void linReadPreservesFramesAndStopsOnErrors() {
         FakeLinApi api;tstPeakLin d(nullptr,&api);d.setHardwareHandle(21);d.setDevMode(modMaster);d.setDevBaudrate(19200);
-        QVERIFY(d.startDevice());TLINRcvMsg msg={};msg.Type=mstStandard;msg.FrameId=0x3d;msg.Length=8;msg.Data[0]=0x12;msg.Direction=dirSubscriber;
-        api.frames.enqueue(msg);msg.Data[0]=0x34;msg.Direction=dirPublisher;api.frames.enqueue(msg);
+        QVERIFY(d.startDevice());TLINRcvMsg msg={};msg.Type=mstStandard;msg.FrameId=0x3d;msg.Length=8;msg.Data[0]=0x12;
+        api.frames.enqueue(msg);msg.Data[0]=0x34;api.frames.enqueue(msg);
         StrtLinSchdRxBuf out={};QCOMPARE(d.recvMsg(2,out),DWORD(2));
         QCOMPARE(out.data[0][0],BYTE(0x12));QCOMPARE(out.data[1][0],BYTE(0x34));QCOMPARE(api.reads,1);
-        QCOMPARE(out.direct[0],BYTE(dirSubscriber));QCOMPARE(out.direct[1],BYTE(dirPublisher));
         QCOMPARE(d.recvMsg(2,out),DWORD(0));QCOMPARE(out.slotlen,DWORD(0));
         api.readResult=errIllegalClient;QCOMPARE(d.recvMsg(255,out),DWORD(0));QCOMPARE(api.reads,3);
     }
