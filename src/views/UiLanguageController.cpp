@@ -111,7 +111,7 @@ void UiLanguageController::refresh(){
     }
 }
 bool UiLanguageController::eventFilter(QObject *object,QEvent *event){
-    if(event->type()==QEvent::Wheel&&(qobject_cast<QAbstractSpinBox*>(object)||qobject_cast<QComboBox*>(object)||qobject_cast<QSlider*>(object)||object->inherits("host::SignalPlotCanvas"))){
+    if(event->type()==QEvent::Wheel&&(qobject_cast<QAbstractSpinBox*>(object)||qobject_cast<QComboBox*>(object)||qobject_cast<QSlider*>(object))){
         auto *widget=qobject_cast<QWidget*>(object);auto *wheel=static_cast<QWheelEvent*>(event);
         for(auto *parent=widget?widget->parentWidget():nullptr;parent;parent=parent->parentWidget()){
             auto *area=qobject_cast<QAbstractScrollArea*>(parent);if(!area)continue;

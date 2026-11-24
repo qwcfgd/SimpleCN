@@ -287,6 +287,7 @@ private slots:
         page.findChild<QCheckBox*>("frameRolling")->setChecked(true);vm.frames()->append({frame(),frame(1000,3)});
         tree->expandAll();QCOMPARE(vm.frames()->rowCount(),1);QTest::qWait(50);QVERIFY(page.grab().save(artifacts()+"/monitor.png"));
     }
+
     void plotInteractionAndScreenshots(){
         SignalTransmitViewModel vm(Bus::Can);QString error;QVERIFY(vm.importFile(fixture(),error));SignalPlotDialog dialog(&vm);auto *model=dialog.plotModel();
         model->addSignal(frameKey(Bus::Can,291),"Scaled");model->addSignal(frameKey(Bus::Can,291),"Signed");
@@ -301,9 +302,9 @@ private slots:
         display->setCurrentIndex(1);QCOMPARE(canvas->visibleRows().size(),2);table->clearSelection();QCOMPARE(canvas->visibleRows().size(),0);display->setCurrentIndex(0);
         axes->setCurrentIndex(0);auto before=canvas->xRange();const QPointF position(canvas->width()/2,canvas->height()-25);
         QWheelEvent wheel(position,canvas->mapToGlobal(position.toPoint()),QPoint(),QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
-        // The 1.47 interaction contract disables wheel-based value changes.
-        // Install the global controller explicitly so isolated/full-suite runs agree.
-        QApplication::sendEvent(canvas,&wheel);QCOMPARE(canvas->xRange().first,before.first);QCOMPARE(canvas->xRange().second,before.second);
+        UiLanguageController::instance();
+        QApplication::sendEvent(canvas,&wheel);
+        QVERIFY(canvas->xRange().second-canvas->xRange().first < before.second-before.first);
         auto *c1=dialog.findChild<QDoubleSpinBox*>("plotC1");const auto cursor=c1->value();
         const QPointF c1pos(c1->rect().center());QWheelEvent cursorWheel(c1pos,c1->mapToGlobal(c1pos.toPoint()),QPoint(),QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
         QApplication::sendEvent(c1,&cursorWheel);QCOMPARE(c1->value(),cursor);
@@ -311,6 +312,119 @@ private slots:
         QWheelEvent axisWheel(apos,axes->mapToGlobal(apos.toPoint()),QPoint(),QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
         QApplication::sendEvent(axes,&axisWheel);QCOMPARE(axes->currentIndex(),axisMode);
         table->clearSelection();table->topLevelItem(0)->setSelected(true);table->setFocus();QTest::keyClick(table,Qt::Key_Delete);QCOMPARE(model->rowCount(),1);
+    }
+    void wheelZoomRegions(){
+        UiLanguageController::instance();
+        SignalTransmitViewModel vm(Bus::Can);
+        QString error;
+        QVERIFY(vm.importFile(fixture(),error));
+        SignalPlotDialog dialog(&vm);
+        auto *model = dialog.plotModel();
+        const auto frameId = frameKey(Bus::Can,291);
+        QVERIFY(model->addSignal(frameId,"Scaled"));
+        QVERIFY(model->addSignal(frameId,"Signed"));
+        QVERIFY(model->addSignal(frameId,"Small"));
+        model->createGroup({0,1},"Shared axis");
+        model->mark({0,1,2},0);
+        const auto sharedKey = model->series()[model->representative(0)].key;
+        const auto otherKey = model->series()[model->representative(2)].key;
+        QVERIFY(sharedKey != otherKey);
+        dialog.show();
+        auto *canvas = dialog.findChild<SignalPlotCanvas*>();
+        auto *axisMode = dialog.findChild<QComboBox*>("plotAxisMode");
+        auto *follow = dialog.findChild<QCheckBox*>("plotFollow");
+        QVERIFY(canvas && axisMode && follow);
+        axisMode->setCurrentIndex(SignalPlotCanvas::AllAxes);
+        QCoreApplication::processEvents();
+
+        const QJsonObject initialY{
+            {sharedKey,QJsonObject{{"min",0},{"max",60}}},
+            {otherKey,QJsonObject{{"min",-80},{"max",160}}}};
+        const auto reset = [&](const QJsonObject &y = {}) {
+            canvas->restoreViewSettings({{"x0",0},{"x1",12},{"y",y.isEmpty()?initialY:y}});
+        };
+        const auto y = [&]{ return canvas->viewSettings().value("y").toObject(); };
+        const auto wheel = [&](QPointF pos,QPoint delta) {
+            QWheelEvent event(pos,canvas->mapToGlobal(pos.toPoint()),{},delta,Qt::NoButton,
+                              Qt::NoModifier,Qt::NoScrollPhase,false);
+            QApplication::sendEvent(canvas,&event);
+        };
+        const auto anchored = [](const QJsonObject &before,const QJsonObject &after,
+                                 double fraction,double scale) {
+            const auto value = [fraction](const QJsonObject &range) {
+                return range["min"].toDouble()*(1-fraction)+range["max"].toDouble()*fraction;
+            };
+            QVERIFY(qAbs(value(before)-value(after))<1e-9);
+            const auto span = [](const QJsonObject &range) {
+                return range["max"].toDouble()-range["min"].toDouble();
+            };
+            QVERIFY(qAbs(span(after)-scale*span(before))<1e-9);
+        };
+
+        follow->setChecked(false);
+        reset();
+        const double left = 160;
+        const double right = canvas->width()-24;
+        const double bottom = canvas->height()-60;
+        const double yQuarter = bottom-(bottom-28)*0.25;
+        const double xThird = left+(right-left)/3;
+        wheel({xThird,bottom+8},{0,-120});
+        auto range = canvas->xRange();
+        QVERIFY(range.first<0);
+        QVERIFY(qAbs(range.second-range.first-14.4)<1e-9);
+        QVERIFY(qAbs(range.first+(range.second-range.first)/3-4)<1e-9);
+        QCOMPARE(y(),initialY);
+        const auto saved = canvas->viewSettings();
+        reset();
+        canvas->restoreViewSettings(saved);
+        QCOMPARE(canvas->xRange(),range);
+        wheel({xThird,bottom+8},{0,120});
+        QVERIFY(qAbs(canvas->xRange().first)<1e-9);
+        QVERIFY(qAbs(canvas->xRange().second-12)<1e-9);
+
+        follow->setChecked(true);
+        reset();
+        range = canvas->xRange();
+        wheel({45,yQuarter},{0,120});
+        QVERIFY(follow->isChecked());
+        QCOMPARE(canvas->xRange(),range);
+        anchored(initialY[sharedKey].toObject(),y()[sharedKey].toObject(),0.25,1.0/1.2);
+        QCOMPARE(y()[otherKey],initialY[otherKey]);
+        QCOMPARE(y().size(),2);
+        wheel({125,yQuarter},{0,-120});
+        anchored(initialY[otherKey].toObject(),y()[otherKey].toObject(),0.25,1.2);
+        QCOMPARE(canvas->xRange(),range);
+
+        follow->setChecked(false);
+        reset();
+        wheel({xThird,yQuarter},{0,120});
+        range=canvas->xRange();
+        QVERIFY(qAbs(range.second-range.first-10)<1e-9);
+        QVERIFY(qAbs(range.first+(range.second-range.first)/3-4)<1e-9);
+        for (const auto &key : {sharedKey,otherKey})
+            anchored(initialY[key].toObject(),y()[key].toObject(),0.25,1.0/1.2);
+
+        const auto viewport = canvas->viewSettings();
+        wheel({xThird,3},{0,120});                   // Outside the plot and axis columns.
+        wheel({xThird,yQuarter},{120,0});             // Horizontal wheel.
+        QCOMPARE(canvas->viewSettings(),viewport);
+
+        axisMode->setCurrentIndex(SignalPlotCanvas::Fit);
+        reset({{"shared",QJsonObject{{"min",0},{"max",60}}}});
+        const auto fitY = y()["shared"].toObject();
+        wheel({45,yQuarter},{0,-120});
+        anchored(fitY,y()["shared"].toObject(),0.25,1.2);
+
+        axisMode->setCurrentIndex(SignalPlotCanvas::Arrange);
+        reset();
+        const double slot=(canvas->height()-20.0)/2;
+        const double panelTop=slot+qMin(28.0,slot*0.25);
+        const double panelBottom=2*slot-qMin(52.0,slot*0.35);
+        range=canvas->xRange();
+        wheel({45,(panelTop+panelBottom)/2},{0,120});
+        QCOMPARE(canvas->xRange(),range);
+        QCOMPARE(y()[sharedKey],initialY[sharedKey]);
+        anchored(initialY[otherKey].toObject(),y()[otherKey].toObject(),0.5,1.0/1.2);
     }
     void exportPreservesInputAndStableTimeOrder(){
         const FrameBatch input{frame(2000,2,10,0x125),frame(1000,2,10,0x124),frame(1000,2,10,0x123)};

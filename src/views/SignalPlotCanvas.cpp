@@ -2,6 +2,7 @@
 #include "SignalPlotCanvas.h"
 #include <QPainter>
 #include <QPainterPath>
+#include <QPaintEvent>
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <algorithm>
@@ -9,6 +10,29 @@
 #include <limits>
 namespace host {
 namespace {
+constexpr int axisWidth = 80;
+constexpr int xLabelsHeight = 42;
+
+QRect panelUpdateRect(const QRectF &panel)
+{
+    const int top = qRound(panel.top());
+    return {0, top, int(panel.width()), qRound(panel.bottom()) - top};
+}
+
+
+QPair<double, double> zoomedRange(const QPair<double, double> &range,
+                                  double anchor, double factor, double minSpan, double maxSpan)
+{
+    const double span = range.second - range.first;
+    const double newSpan = qBound(minSpan, span * factor, maxSpan);
+    if (newSpan == span)
+        return range;
+
+    const double value = range.first + anchor * span;
+    const QPair<double, double> zoomed{value - anchor * newSpan, value + (1.0 - anchor) * newSpan};
+    return zoomed.first < zoomed.second ? zoomed : range;
+}
+
 QPointF wheelPosition(QWheelEvent *e){
 #if QT_VERSION >= QT_VERSION_CHECK(5,14,0)
     return e->position();
@@ -46,15 +70,19 @@ QVector<SignalPlotCanvas::AxisTick> SignalPlotCanvas::enumTicks(const QMap<doubl
     for(auto it=ticks.begin();it!=ticks.end();++it)result.append({it.key(),it.value()});return result;
 }
 QVector<int> SignalPlotCanvas::visibleRows() const {QVector<int> rows;for(int n=0;n<m_model->series().size();++n)if(m_display!=Marked||m_model->series()[n].marked)rows.append(n);return rows;}
-QVector<int> SignalPlotCanvas::axisRows() const {
-    const auto rows=visibleRows();QVector<int> axes;
+QVector<int> SignalPlotCanvas::axisRows(const QVector<int> &rows) const {
+    QVector<int> axes;
     if(m_axes==AllAxes||m_axes==Arrange){for(int n:rows)if(m_axes==Arrange||m_model->series()[n].marked){const int r=m_model->representative(n);if(!axes.contains(r))axes.append(r);}}
     if(axes.isEmpty()&&!rows.isEmpty())axes.append(m_model->representative(rows.contains(m_model->activeRow())?m_model->activeRow():rows.first()));
     return axes;
 }
+QRectF SignalPlotCanvas::panelRect(int panel, int panels) const {
+    const double heightPerPanel = qMax(1.0, (height() - 20.0) / panels);
+    return {0, panel * heightPerPanel, double(width()), heightPerPanel};
+}
 QRectF SignalPlotCanvas::area(int panel,int panels,int axisCount) const {
-    const double left=80*qMax(1,axisCount);
-    if(m_axes==Arrange){const double slot=qMax(1.0,(height()-20.0)/qMax(1,panels));const double topPad=qMin(28.0,slot*0.25),bottomPad=qMin(52.0,slot*0.35);
+    const double left=axisWidth*qMax(1,axisCount);
+    if(m_axes==Arrange){const double slot=panelRect(panel,panels).height();const double topPad=qMin(28.0,slot*0.25),bottomPad=qMin(52.0,slot*0.35);
         return {left,panel*slot+topPad,qMax(20.0,width()-left-24.0),qMax(1.0,slot-topPad-bottomPad)};}
     return {left,28.0,qMax(20.0,width()-left-24.0),qMax(1.0,height()-88.0)};
 }
@@ -83,31 +111,36 @@ void SignalPlotCanvas::fit(){m_yRanges.clear();double lo=0,hi=10;bool have=false
 void SignalPlotCanvas::refresh(){
     if(m_autoRevision!=m_model->revision()){m_autoRanges.clear();m_autoRevision=m_model->revision();}
     auto rows=visibleRows();
-    setMinimumWidth(m_axes==AllAxes?qMax(400,int(axisRows().size())*80+260):400);
+    setMinimumWidth(m_axes==AllAxes?qMax(400,int(axisRows(rows).size())*axisWidth+260):400);
     if(m_follow){double end=0;for(int n:rows){const auto &p=m_model->series()[n].points;if(!p.empty())end=qMax(end,p.back().us/1e6);}
         double span=qMax(0.001,m_x1-m_x0);m_x1=qMax(span,end);m_x0=m_x1-span;}
     update();
 }
-void SignalPlotCanvas::paintEvent(QPaintEvent *){
+void SignalPlotCanvas::paintEvent(QPaintEvent *event){
     QPainter p(this);p.setRenderHint(QPainter::Antialiasing);p.fillRect(rect(),QColor("#FAFCFE"));
-    const auto rows=visibleRows();const auto axes=axisRows();
+    const auto rows=visibleRows();const auto axes=axisRows(rows);
     if(rows.isEmpty()){p.setPen(QColor("#64748B"));p.drawText(rect(),Qt::AlignCenter,m_model->rowCount()?Language::text("当前无选中信号"):Language::text("右键信号列表，添加数据库信号"));return;}
     const int panels=m_axes==Arrange?axes.size():1;
     for(int panel=0;panel<panels;++panel){
-        p.save();if(m_axes==Arrange){const double slot=qMax(1.0,(height()-20.0)/panels);p.setClipRect(QRectF(0,panel*slot,width(),slot));}
+        const auto panelBounds = m_axes == Arrange ? panelRect(panel, panels) : QRectF(rect());
+        const auto panelPixels = panelUpdateRect(panelBounds);
+        if (!event->region().intersects(panelPixels))
+            continue;
+        p.save();
+        p.setClipRect(panelPixels);
         const auto a=area(panel,panels,m_axes==AllAxes?axes.size():1);p.setPen(QColor("#CBD5E1"));p.drawRect(a);
         const double xSpan=m_x1-m_x0;const double xScale=xSpan<0.001?1e6:xSpan<1?1000:1;
         const QString xUnit=xSpan<0.001?"μs":xSpan<1?"ms":"s";
         auto majorStep=[](double span,double count){const double raw=span/qMax(1.0,count);const double exponent=std::pow(10.0,std::floor(std::log10(qMax(1e-300,raw))));const double normalized=raw/exponent;return (normalized<=1?1:normalized<=2?2:normalized<=5?5:10)*exponent;};
         const double majorX=majorStep(xSpan,a.width()/110.0),minorX=majorX/5;
         const qint64 firstX=qint64(std::ceil(m_x0/minorX)),lastX=qint64(std::floor(m_x1/minorX));
-        for(qint64 k=firstX;k<=lastX&&k-firstX<2000;++k){const double t=k*minorX;if(t<0)continue;const double x=a.left()+(t-m_x0)/xSpan*a.width();const bool major=k%5==0;
+        for(qint64 k=firstX;k<=lastX&&k-firstX<2000;++k){const double t=k*minorX;const double x=a.left()+(t-m_x0)/xSpan*a.width();const bool major=k%5==0;
             p.setPen(QColor("#526174"));p.drawLine(QPointF(x,a.bottom()),QPointF(x,a.bottom()+(major?6:3)));
             if(major){p.drawText(QRectF(x-40,a.bottom()+6,80,18),Qt::AlignCenter,QString::number(t*xScale,'g',7));if(m_grid){p.setPen(QPen(QColor("#CFD8E4"),1,Qt::DashLine));p.drawLine(QPointF(x,a.top()),QPointF(x,a.bottom()));}}
         }
         p.setPen(QColor("#526174"));p.drawText(QRectF(a.right()-60,a.bottom()+24,60,18),Qt::AlignRight,xUnit);
         const QVector<int> shownAxes=m_axes==Arrange?QVector<int>{axes[panel]}:axes;
-        for(int ax=0;ax<shownAxes.size();++ax){const int n=shownAxes[ax];const auto &series=m_model->series()[n];const auto range=yRange(n,rows);const double x=m_axes==AllAxes?80.0*(ax+1):a.left();
+        for(int ax=0;ax<shownAxes.size();++ax){const int n=shownAxes[ax];const auto &series=m_model->series()[n];const auto range=yRange(n,rows);const double x=m_axes==AllAxes?axisWidth*(ax+1):a.left();
             const double span=range.second-range.first;const double magnitude=qMax(std::abs(range.first),std::abs(range.second));
             const double scale=magnitude>=1e6?1e-6:magnitude>=1e3?0.001:magnitude>0&&magnitude<0.001?1e6:magnitude>0&&magnitude<1?1000:1;
             const QString prefix=scale==1e-6?"M":scale==0.001?"k":scale==1e6?"μ":scale==1000?"m":"";
@@ -140,34 +173,103 @@ void SignalPlotCanvas::paintEvent(QPaintEvent *){
     }
     p.setPen(QColor("#526174"));p.drawText(QRectF(width()-130,height()-19,110,18),Qt::AlignRight,Language::text("时间"));
 }
-void SignalPlotCanvas::wheelEvent(QWheelEvent *e){
-    const auto rows=visibleRows();if(rows.isEmpty()){e->ignore();return;}const auto axes=axisRows();
-    const auto pos=wheelPosition(e);const int panels=m_axes==Arrange?axes.size():1;
-    int panel=qBound(0,int(pos.y()/qMax(1.0,(height()-20.0)/panels)),panels-1);
-    const auto a=area(panel,panels,m_axes==AllAxes?axes.size():1);
-    const bool overX=pos.y()>a.bottom(),overY=pos.x()<a.left();
-    const double factor=std::pow(1.2,-e->angleDelta().y()/120.0);
-    if(!overY){const double ratio=qBound(0.0,(pos.x()-a.left())/a.width(),1.0),center=m_x0+ratio*(m_x1-m_x0),span=qBound(0.000001,(m_x1-m_x0)*factor,1e12);
-        m_x0=qMax(0.0,center-ratio*span);m_x1=m_x0+span;m_follow=false;emit followChanged(false);}
-    if(!overX){QVector<int> target;
-        if(m_axes==Fit)target.append(rows.first());else if(m_axes==Arrange)target.append(axes[panel]);else if(overY&&!axes.isEmpty())target.append(axes[qBound(0,int(pos.x()/80),int(axes.size())-1)]);else {for(int n:rows){const int r=m_model->representative(n);if(!target.contains(r))target.append(r);}}
-        for(int n:target){auto range=yRange(n,rows);const double ratio=qBound(0.0,(a.bottom()-pos.y())/a.height(),1.0),center=range.first+ratio*(range.second-range.first),span=qBound(1e-12,(range.second-range.first)*factor,1e100);m_yRanges[rangeKey(n)]={center-ratio*span,center+(1-ratio)*span};}
-    }update();emit viewChanged();e->accept();
+void SignalPlotCanvas::wheelEvent(QWheelEvent *event)
+{
+    const int delta = event->angleDelta().y();
+    const auto rows = visibleRows();
+    if (delta == 0 || rows.isEmpty()) {
+        event->ignore();
+        return;
+    }
+
+    const auto axes = axisRows(rows);
+    const bool arranged = m_axes == Arrange;
+    const int panels = arranged ? axes.size() : 1;
+    const QPointF pos = wheelPosition(event);
+    const int panel = arranged
+        ? qBound(0, int(pos.y() / panelRect(0, panels).height()), panels - 1)
+        : 0;
+    const auto plot = area(panel, panels, m_axes == AllAxes ? axes.size() : 1);
+    const auto bounds = arranged ? panelRect(panel, panels) : QRectF(rect());
+    const bool withinX = pos.x() >= plot.left() && pos.x() <= plot.right();
+    const bool withinY = pos.y() >= plot.top() && pos.y() < plot.bottom();
+    const bool overX = withinX && pos.y() >= plot.bottom()
+        && pos.y() < qMin(bounds.bottom(), plot.bottom() + xLabelsHeight);
+    const bool overY = withinY && pos.x() >= 0 && pos.x() <= plot.left();
+    const bool overPlot = withinY && withinX && !overY;
+    if (!overX && !overY && !overPlot) {
+        event->ignore();
+        return;
+    }
+
+    const double factor = std::pow(1.2, delta / -120.0);
+    bool xChanged = false;
+    if (overX || overPlot) {
+        const double anchor = (pos.x() - plot.left()) / plot.width();
+        const auto range = zoomedRange(xRange(), anchor, factor, 0.000001, 1e12);
+        xChanged = range != xRange();
+        m_x0 = range.first;
+        m_x1 = range.second;
+        if (xChanged && m_follow) {
+            m_follow = false;
+            emit followChanged(false);
+        }
+    }
+
+    bool yChanged = false;
+    if (overY || overPlot) {
+        QVector<int> targets;
+        if (m_axes == Fit) {
+            targets.append(rows.first());
+        } else if (arranged) {
+            targets.append(axes[panel]);
+        } else if (overY) {
+            const int axis = qBound(0, int(std::ceil(pos.x() / axisWidth)) - 1, int(axes.size()) - 1);
+            targets.append(axes[axis]);
+        } else {
+            QSet<int> seen;
+            for (int row : rows) {
+                const int representative = m_model->representative(row);
+                if (!seen.contains(representative)) {
+                    seen.insert(representative);
+                    targets.append(representative);
+                }
+            }
+        }
+        const double anchor = (plot.bottom() - pos.y()) / plot.height();
+        for (int row : targets) {
+            const auto current = yRange(row, rows);
+            const auto range = zoomedRange(current, anchor, factor, 1e-12, 1e100);
+            if (range != current) {
+                m_yRanges[rangeKey(row)] = range;
+                yChanged = true;
+            }
+        }
+    }
+
+    if (xChanged || yChanged) {
+        if (arranged && !xChanged)
+            update(panelUpdateRect(bounds));
+        else
+            update();
+        emit viewChanged();
+    }
+    event->accept();
 }
 void SignalPlotCanvas::updateCursor(double x){
-    const auto a=area(0,1,m_axes==AllAxes?axisRows().size():1);double t=qMax(0.0,m_x0+qBound(0.0,(x-a.left())/a.width(),1.0)*(m_x1-m_x0));
+    const auto a=area(0,1,m_axes==AllAxes?axisRows(visibleRows()).size():1);double t=qMax(0.0,m_x0+qBound(0.0,(x-a.left())/a.width(),1.0)*(m_x1-m_x0));
     if(m_dragCursor==1)m_t2=t;else m_t1=t;emit cursorsMoved(m_t1,m_t2);update();
 }
 void SignalPlotCanvas::mousePressEvent(QMouseEvent *e){
     if(e->button()!=Qt::LeftButton)return;m_last=mousePosition(e);
-    if(m_cursor||m_difference){const auto a=area(0,1,m_axes==AllAxes?axisRows().size():1);const double t=m_x0+(m_last.x()-a.left())/a.width()*(m_x1-m_x0);
+    if(m_cursor||m_difference){const auto a=area(0,1,m_axes==AllAxes?axisRows(visibleRows()).size():1);const double t=m_x0+(m_last.x()-a.left())/a.width()*(m_x1-m_x0);
         m_dragCursor=m_difference&&std::abs(t-m_t2)<std::abs(t-m_t1)?1:0;updateCursor(m_last.x());}
     else {m_panning=true;m_follow=false;emit followChanged(false);}
 }
 void SignalPlotCanvas::mouseMoveEvent(QMouseEvent *e){
     const auto pos=mousePosition(e);if(m_dragCursor>=0){updateCursor(pos.x());return;}if(!m_panning)return;
-    const auto rows=visibleRows();const auto a=area(0,1,m_axes==AllAxes?axisRows().size():1);
-    double dx=(pos.x()-m_last.x())/a.width()*(m_x1-m_x0);const double span=m_x1-m_x0;m_x0=qMax(0.0,m_x0-dx);m_x1=m_x0+span;
+    const auto rows=visibleRows();const auto a=area(0,1,m_axes==AllAxes?axisRows(rows).size():1);
+    double dx=(pos.x()-m_last.x())/a.width()*(m_x1-m_x0);const double span=m_x1-m_x0;m_x0=qMax(qMin(0.0,m_x0),m_x0-dx);m_x1=m_x0+span;
     QSet<int> moved;for(int n:rows){const int r=m_model->representative(n);if((m_axes==Fit&&n!=rows.first())||(m_axes!=Fit&&moved.contains(r)))continue;moved.insert(r);auto range=yRange(n,rows);double dy=(pos.y()-m_last.y())/a.height()*(range.second-range.first);m_yRanges[rangeKey(n)]={range.first+dy,range.second+dy};}
     m_last=pos;update();
 }
@@ -182,7 +284,7 @@ QJsonObject SignalPlotCanvas::viewSettings()const{
 void SignalPlotCanvas::restoreViewSettings(const QJsonObject &settings){
     m_yRanges.clear();m_autoRanges.clear();
     const auto from=settings.value("x0").toDouble(0),to=settings.value("x1").toDouble(10);
-    if(std::isfinite(from)&&std::isfinite(to)&&from>=0&&to>from){m_x0=from;m_x1=to;}
+    if(std::isfinite(from)&&std::isfinite(to)&&to>from){m_x0=from;m_x1=to;}
     const auto ranges=settings.value("y").toObject();for(auto i=ranges.begin();i!=ranges.end();++i){const auto range=i.value().toObject();const double lo=range["min"].toDouble(),hi=range["max"].toDouble();if(std::isfinite(lo)&&std::isfinite(hi)&&hi>lo)m_yRanges[i.key()]={lo,hi};}
     refresh();
 }

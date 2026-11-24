@@ -17,7 +17,7 @@ public:
     void setThick(bool on){m_thick=on;update();}
     void setCursor(bool on,bool diff);
     void setCursorTimes(double,double);
-    void setFollow(bool on){m_follow=on;refresh();}
+    void setFollow(bool on){if(m_follow!=on){m_follow=on;refresh();}}
     QJsonObject viewSettings()const;void restoreViewSettings(const QJsonObject&);
     void fit();
     void refresh();
@@ -37,7 +37,8 @@ protected:
     void mouseReleaseEvent(QMouseEvent *) override;
 private:
     QRectF area(int panel,int panels,int axisCount) const;
-    QVector<int> axisRows() const;
+    QRectF panelRect(int panel, int panels) const;
+    QVector<int> axisRows(const QVector<int> &rows) const;
     QPair<double,double> yRange(int,const QVector<int>&) const;
     QString rangeKey(int row) const;
     void updateCursor(double x);
