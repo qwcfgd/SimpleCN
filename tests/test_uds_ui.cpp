@@ -97,7 +97,7 @@ private slots:
     void downloadDiagnosticInterlock(){
         QFETCH(bool,lin);QTemporaryDir temp;auto initial=settings(lin?communication::Bus::Lin:communication::Bus::Can);
         QFile image(temp.filePath("app.bin"));QVERIFY(image.open(QIODevice::WriteOnly));image.write(QByteArray(128,'x'));image.close();
-        initial.applicationPath=image.fileName();initial.flashPath=image.fileName();initial.flashRequired=false;initial.p3Ms=500;
+        initial.applicationPath=image.fileName();initial.flashRequired=false;initial.p3Ms=500;
         ChannelViewModel vm(initial);ChannelPage page(&vm);QString error;QVERIFY(vm.loadCdd(fixture(),error));select(page,vm,"DefaultSession/Start");
         QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());
         auto start=page.findChild<QPushButton*>("startButton"),send=page.findChild<QPushButton*>("sendUdsRequest"),settingsButton=page.findChild<QPushButton*>("udsSettings");
@@ -135,10 +135,9 @@ private slots:
         QVERIFY(!page.findChild<QCheckBox*>("udsRawMode"));auto command=page.findChild<QPlainTextEdit*>("udsCommand");command->setPlainText("10 81");
         QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());
         auto send=page.findChild<QPushButton*>("sendUdsRequest");auto button=page.findChild<QPushButton*>("udsSettings");QSignalSpy finished(&vm,&ChannelViewModel::diagnosticFinished);
-        auto stop=page.findChild<QPushButton*>("stopUdsRequest");QVERIFY(stop);
-        send->click();QVERIFY(!send->isEnabled());QVERIFY(stop->isEnabled());QCOMPARE(stop->text(),QString("停止"));QVERIFY(!button->isEnabled());
+        send->click();QCOMPARE(send->text(),QString("取消发送"));QVERIFY(!button->isEnabled());
         command->setPlainText("10 01");auto changed=vm.settings();changed.p2Ms=40;QVERIFY(!vm.setSettings(changed));
-        QTest::qWait(120);QCOMPARE(finished.count(),0);QVERIFY(!button->isEnabled());stop->click();
+        QTest::qWait(120);QCOMPARE(finished.count(),0);QVERIFY(!button->isEnabled());send->click();
         QTRY_COMPARE(finished.count(),1);QTRY_VERIFY(!vm.busy());QVERIFY(!finished[0][0].toBool());QVERIFY(vm.diagnosticResult().contains("TX  10 81"));
         QCOMPARE(send->text(),QString("发送"));QVERIFY(button->isEnabled());
     }
@@ -148,8 +147,7 @@ private slots:
         QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());QSignalSpy finished(&vm,&ChannelViewModel::diagnosticFinished);
         QVERIFY(vm.sendDiagnostic(find(vm,"DefaultSession/Start"),QByteArray::fromHex("1001"),error));QTRY_COMPARE(finished.count(),1);QVERIFY(finished[0][0].toBool());
         QTRY_VERIFY(vm.diagnosticBusy());auto button=page.findChild<QPushButton*>("udsSettings");auto send=page.findChild<QPushButton*>("sendUdsRequest");
-        auto stop=page.findChild<QPushButton*>("stopUdsRequest");QVERIFY(stop&&stop->isEnabled());
-        QVERIFY(!button->isEnabled());QVERIFY(!send->isEnabled());stop->click();QTRY_VERIFY(!vm.busy());QVERIFY(button->isEnabled());
+        QVERIFY(!button->isEnabled());QCOMPARE(send->text(),QString("取消发送"));send->click();QTRY_VERIFY(!vm.busy());QVERIFY(button->isEnabled());
         QTest::qWait(220);QVERIFY(!vm.busy());
     }
     void simulatedCanAndLin_data(){QTest::addColumn<bool>("lin");QTest::newRow("CAN")<<false;QTest::newRow("LIN")<<true;}
@@ -170,7 +168,7 @@ private slots:
         QString error;QVERIFY(vm.loadCdd(fixture(),error));select(page,vm,"Number/Write");
         auto input=page.findChild<QLineEdit*>("udsField_2");QVERIFY(input);auto command=page.findChild<QPlainTextEdit*>("udsCommand");QVERIFY(command);input->setText("4660");QCOMPARE(command->toPlainText(),QString("2E F1 A0 34 12"));
         input->setText("65536");QVERIFY(!page.findChild<QPushButton*>("copyUdsCommand")->isEnabled());input->setText("4660");
-        QVERIFY(!page.findChild<QCheckBox*>("udsRawMode"));command->setPlainText("2E F1 A0 78 56");QVERIFY(page.findChild<QPushButton*>("copyUdsCommand")->isEnabled());command->setPlainText("2E F1 A1 78 56");QVERIFY(!page.findChild<QPushButton*>("copyUdsCommand")->isEnabled());page.findChild<QPushButton*>("stopUdsRequest")->click();
+        QVERIFY(!page.findChild<QCheckBox*>("udsRawMode"));command->setPlainText("2E F1 A0 78 56");QVERIFY(page.findChild<QPushButton*>("copyUdsCommand")->isEnabled());command->setPlainText("2E F1 A1 78 56");QVERIFY(!page.findChild<QPushButton*>("copyUdsCommand")->isEnabled());page.findChild<QPushButton*>("revertUdsCommand")->click();
         QVERIFY(!vm.selectDiagnosticTarget("unknown","Base",error));QCOMPARE(vm.settings().cddVariant,QString("base"));
         QVERIFY(vm.selectDiagnosticTarget("ExampleECU","Other",error));QCOMPARE(vm.settings().cddVariant,QString("other"));
         QVector<ChannelSettings> saved{vm.settings()},loaded;auto path=temp.filePath("channels.json");QVERIFY(SettingsStore(path).save(saved,error));QVERIFY(SettingsStore(path).load(loaded,error));QCOMPARE(loaded[0].cddPath,vm.settings().cddPath);QCOMPARE(loaded[0].cddVariant,QString("other"));
@@ -181,13 +179,13 @@ private slots:
     }
     void rawUndoRestoresParameterRequest(){
         ChannelViewModel vm(settings(communication::Bus::Can));ChannelPage page(&vm);QString error;QVERIFY(vm.loadCdd(fixture(),error));select(page,vm,"DefaultSession/Start");
-        auto*command=page.findChild<QPlainTextEdit*>("udsCommand");auto*revert=page.findChild<QPushButton*>("stopUdsRequest");QVERIFY(command);QVERIFY(revert);QVERIFY(!command->isReadOnly());QVERIFY(!revert->isEnabled());const auto original=command->toPlainText();
+        auto*command=page.findChild<QPlainTextEdit*>("udsCommand");auto*revert=page.findChild<QPushButton*>("revertUdsCommand");QVERIFY(command);QVERIFY(revert);QVERIFY(!command->isReadOnly());QVERIFY(!revert->isEnabled());const auto original=command->toPlainText();
         command->setPlainText("10 81");command->setPlainText("not hex");QVERIFY(revert->isEnabled());revert->click();QCOMPARE(command->toPlainText(),original);QVERIFY(!revert->isEnabled());QVERIFY(!page.findChild<QCheckBox*>("udsRawMode"));QVERIFY(!page.findChild<QLabel*>("cddSummary"));QVERIFY(!page.findChild<QLabel*>("udsConditions"));
     }
     void differentCddsReplaceConfiguration(){
         QTemporaryDir temp;ChannelViewModel vm(settings(communication::Bus::Can));ChannelPage page(&vm);QString error;
         auto parameters=page.findChild<QTableWidget*>("udsParameterTable");auto command=page.findChild<QPlainTextEdit*>("udsCommand");
-        auto revert=page.findChild<QPushButton*>("stopUdsRequest");
+        auto revert=page.findChild<QPushButton*>("revertUdsCommand");
         QVERIFY(vm.loadCdd(fixture(),error));QCOMPARE(vm.diagnosticServices()->rowCount(),5);select(page,vm,"VIN/Write");
         auto vin=qobject_cast<QLineEdit*>(parameters->cellWidget(0,1));QVERIFY(vin);vin->setText("TESTVIN0123456789");command->setPlainText("2E F1 90 00");
         const auto replacement=temp.filePath("current.cdd");
@@ -222,16 +220,15 @@ private slots:
             enabled->setChecked(true);QCOMPARE(count->text(),QString("2"));QCOMPARE(delay->text(),QString("100"));save(dialog);
         });
         auto repeat=page.findChild<QPushButton*>("sendUdsRequest");auto settingsButton=page.findChild<QPushButton*>("udsSettings");
-        auto stop=page.findChild<QPushButton*>("stopUdsRequest");QVERIFY(stop);
         QCOMPARE(vm.settings().udsRepeatCount,2);QCOMPARE(vm.settings().udsRepeatDelayMs,100);QVERIFY(vm.settings().udsRepeatEnabled);
         QTemporaryDir temp;QVector<ChannelSettings> restored;QVERIFY(SettingsStore(temp.filePath("settings.json")).save({vm.settings()},error));QVERIFY(SettingsStore(temp.filePath("settings.json")).load(restored,error));QCOMPARE(restored[0].udsRepeatCount,2);QCOMPARE(restored[0].udsRepeatDelayMs,100);
         QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());QVERIFY(repeat->isEnabled());
         QSignalSpy finished(&vm,&ChannelViewModel::diagnosticFinished);QElapsedTimer timer;timer.start();repeat->click();
-        QTRY_COMPARE(finished.count(),1);QVERIFY(vm.busy());QVERIFY(!settingsButton->isEnabled());QVERIFY(!repeat->isEnabled());QVERIFY(stop->isEnabled());QVERIFY(!vm.loadCdd(fixture(),error));
+        QTRY_COMPARE(finished.count(),1);QVERIFY(vm.busy());QVERIFY(!settingsButton->isEnabled());QCOMPARE(repeat->text(),QString("取消发送"));QVERIFY(!vm.loadCdd(fixture(),error));
         QTRY_COMPARE_WITH_TIMEOUT(finished.count(),3,3000);QVERIFY(timer.elapsed()>=200);QVERIFY(!vm.diagnosticBusy());QVERIFY(settingsButton->isEnabled());QCOMPARE(repeat->text(),QString("发送"));
         for(const auto &call:finished)QVERIFY2(call[0].toBool(),qPrintable(call[2].toString()));
         // Cancelling the delay must not leave a scheduled request behind.
-        auto updated=vm.settings();updated.udsRepeatDelayMs=250;QVERIFY(vm.setSettings(updated));repeat->click();QTRY_COMPARE(finished.count(),4);QVERIFY(vm.diagnosticRepeating());stop->click();QVERIFY(!vm.busy());QTest::qWait(350);QCOMPARE(finished.count(),4);
+        auto updated=vm.settings();updated.udsRepeatDelayMs=250;QVERIFY(vm.setSettings(updated));repeat->click();QTRY_COMPARE(finished.count(),4);QVERIFY(vm.diagnosticRepeating());repeat->click();QVERIFY(!vm.busy());QTest::qWait(350);QCOMPARE(finished.count(),4);
         repeat->click();QTRY_COMPARE(finished.count(),5);vm.toggleConnection();QTRY_VERIFY(!vm.connected()&&!vm.pending());QTest::qWait(350);QCOMPARE(finished.count(),5);QVERIFY(!vm.diagnosticRepeating());
     }
     void layoutAndAutomaticTargetSelection(){

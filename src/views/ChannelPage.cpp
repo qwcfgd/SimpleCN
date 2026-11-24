@@ -1,11 +1,11 @@
-#include <QUuid>
-#include <QSet>
 #include "ChannelPage.h"
 #include "localization/Language.h"
 #include "SignalTransmitPage.h"
 #include "UdsDiagnosticPage.h"
 #include "FrameColumnMenu.h"
 #include "FrameHeaderView.h"
+#include "infrastructure/TraceExporter.h"
+#include "protocol/FirmwareImage.h"
 #include <QMenu>
 #include <QJsonArray>
 #include <QTabWidget>
@@ -101,7 +101,7 @@ void ChannelPage::build() {
     auto downloadLayout=new QVBoxLayout(download);downloadLayout->setContentsMargins(12,8,12,8);downloadLayout->setSpacing(6);
     m_images=new QWidget;m_images->setObjectName("imageRegion");
     auto imageGrid=new QGridLayout(m_images);imageGrid->setContentsMargins(0,0,0,0);imageGrid->setHorizontalSpacing(6);imageGrid->setVerticalSpacing(3);
-    auto heading=label("下载控制台");heading->setObjectName("sectionTitle");
+    auto heading=label("ROM 更新");heading->setObjectName("sectionTitle");
     m_downloadSettings=new QPushButton("下载设置…");m_downloadSettings->setObjectName("downloadSettings");
     auto imageHeader=new QHBoxLayout;imageHeader->addWidget(heading);imageHeader->addStretch();
     imageHeader->addWidget(m_downloadSettings);imageGrid->addLayout(imageHeader,0,0,1,3);
@@ -118,7 +118,6 @@ void ChannelPage::build() {
     auto controls=new QVBoxLayout;auto add=new QPushButton("添加"),remove=new QPushButton("删除"),restore=new QPushButton("默认");
     add->setObjectName("addDownloadFiles");remove->setObjectName("removeDownloadFiles");restore->setObjectName("defaultDownloadFiles");
     controls->addWidget(add);controls->addWidget(remove);controls->addWidget(restore);controls->addStretch();imageGrid->addLayout(controls,1,2);
-    connect(m_imageTable,&QTableWidget::cellDoubleClicked,this,[this](int row,int column){if(column==0)changeDownloadRole(row);});
     connect(add,&QPushButton::clicked,this,&ChannelPage::addDownloadFiles);connect(remove,&QPushButton::clicked,this,&ChannelPage::removeDownloadFiles);
     connect(restore,&QPushButton::clicked,this,&ChannelPage::restoreDownloadFiles);
     m_flashPath->setParent(this);m_appPath->setParent(this);m_flashPath->hide();m_appPath->hide();
@@ -128,12 +127,15 @@ void ChannelPage::build() {
     // Image addresses live in the settings dialog; image selection and task controls stay visible.
     for(auto address:{m_flashAddress,m_appAddress}){address->setParent(this);address->hide();}
     imageGrid->setColumnStretch(1,1);
+    connect(m_vm->signalTransmission(),&SignalTransmitViewModel::changed,this,&ChannelPage::render);
     auto downloadSplit=new QSplitter(Qt::Vertical);downloadSplit->setObjectName("downloadSplit");downloadSplit->setChildrenCollapsible(false);
     downloadLayout->addWidget(downloadSplit);downloadSplit->addWidget(m_images);
     auto taskRegion=new QWidget;taskRegion->setObjectName("taskRegion");
     auto runLayout=new QVBoxLayout(taskRegion);runLayout->setContentsMargins(8,0,0,0);runLayout->setSpacing(8);
-    // Equal flexible bands keep the progress bar vertically centered.
-    runLayout->addStretch();
+    auto taskHeading=new QHBoxLayout;auto title=label("下载任务");title->setObjectName("sectionTitle");taskHeading->addWidget(title);
+    // Equal flexible bands keep the progress bar vertically centered while
+    // keeping the title at the top and the status/actions directly below it.
+    auto upperBand=new QVBoxLayout;upperBand->setSpacing(0);upperBand->addLayout(taskHeading);upperBand->addStretch();runLayout->addLayout(upperBand,1);
     m_progress=new QProgressBar;m_progress->setObjectName("downloadProgress");m_progress->setRange(0,100);m_progress->setValue(0);m_progress->setMinimumHeight(22);
     auto progressRow=new QHBoxLayout;progressRow->addWidget(m_progress,1);runLayout->addLayout(progressRow);
     auto footer=new QHBoxLayout;footer->setSpacing(8);auto statusLayout=new QVBoxLayout;statusLayout->setSpacing(3);auto statusRow=new QHBoxLayout;statusRow->setSpacing(6);
@@ -142,8 +144,8 @@ void ChannelPage::build() {
     m_hint=label("");m_hint->setObjectName("downloadStartHint");m_hint->setWordWrap(true);statusLayout->addWidget(m_hint);
     m_error=label("");m_error->setObjectName("inlineError");m_error->setWordWrap(true);m_error->hide();statusLayout->addWidget(m_error);
     footer->addLayout(statusLayout,1);
-    m_start=new QPushButton("下载");m_start->setObjectName("startButton");m_start->setProperty("primary",true);
-    m_cancel=new QPushButton("停止");m_cancel->setObjectName("cancelButton");progressRow->addWidget(m_start);progressRow->addWidget(m_cancel);
+    m_start=new QPushButton("开始下载");m_start->setObjectName("startButton");m_start->setProperty("primary",true);
+    m_cancel=new QPushButton("取消");m_cancel->setObjectName("cancelButton");progressRow->addWidget(m_start);progressRow->addWidget(m_cancel);
     auto lowerBand=new QVBoxLayout;lowerBand->setSpacing(0);lowerBand->addLayout(footer);lowerBand->addStretch();runLayout->addLayout(lowerBand,1);
     downloadSplit->addWidget(taskRegion);downloadSplit->setSizes({150,110});
     auto tasks=new QTabWidget;m_tasks=tasks;tasks->setObjectName("taskPages");tasks->setDocumentMode(true);
@@ -181,9 +183,6 @@ void ChannelPage::build() {
     });
     auto proxy=new FrameFilterProxy(this);m_frameProxy=proxy;proxy->setIdMaximum(lin?0x3f:0x1fffffff);proxy->setSourceModel(m_vm->frames());
     auto*frameHeader=new FrameHeaderView(m_table);m_table->setHeader(frameHeader);m_table->setModel(proxy);frameHeader->setStretchLastSection(true);
-    // Keep the saved logical column numbers stable. Only the visual order changes.
-    frameHeader->moveSection(frameHeader->visualIndex(FrameTableModel::NameColumn),6);
-    frameHeader->setUnfilterableColumn(FrameTableModel::NameColumn);
     m_table->setSortingEnabled(true);m_table->sortByColumn(0,Qt::AscendingOrder);
     connect(frameHeader,&FrameHeaderView::filterRequested,this,&ChannelPage::configureColumnFilter);
     connect(frameHeader,&QHeaderView::sortIndicatorChanged,this,[this]{saveFrameFilter();});
@@ -196,7 +195,7 @@ void ChannelPage::build() {
         QMenu menu(this);menu.setObjectName("frameContextMenu");auto action=menu.addAction(Language::text("导出"));action->setObjectName("exportSelectedFrames");
         if(menu.exec(m_table->viewport()->mapToGlobal(point))==action)exportFrameBatch(frames,"导出选中报文");
     });
-    const QList<int> widths={116,96,104,88,78,100,64,186,80,120};for(int i=0;i<widths.size();++i)m_table->setColumnWidth(i,widths[i]);
+    const QList<int> widths={130,125,140,120,100,150,90,220,130};for(int i=0;i<widths.size();++i)m_table->setColumnWidth(i,widths[i]);
     auto historyScroll=new QScrollBar(Qt::Vertical);historyScroll->setObjectName("frameHistoryScroll");
     historyScroll->setAccessibleName("历史报文浏览");historyScroll->setVisible(false);
     // The thumb represents the loaded history window, not the tree viewport.
@@ -212,13 +211,9 @@ void ChannelPage::build() {
     auto titleItem=frameLayout->takeAt(0);displayActions->insertWidget(0,titleItem->widget());delete titleItem;frameLayout->insertLayout(0,displayActions);
     auto timeColumns=[this,t,rt,dt]{m_table->setColumnHidden(0,!t->isChecked());m_table->setColumnHidden(1,!rt->isChecked());m_table->setColumnHidden(2,!dt->isChecked());m_table->setTreePosition(t->isChecked()?0:rt->isChecked()?1:dt->isChecked()?2:3);};
     for(auto box:{t,rt,dt})connect(box,&QCheckBox::toggled,this,timeColumns);timeColumns();
-    connect(rolling,&QCheckBox::toggled,this,[this,pause](bool on){
-        m_table->setFrozenStripes(on,FrameTableModel::RowKeyRole);
-        m_vm->frames()->setRolling(on);
-        m_follow->setEnabled(!on&&!pause->isChecked());
-    });
+    connect(rolling,&QCheckBox::toggled,this,[this,pause](bool on){m_vm->frames()->setRolling(on);m_follow->setEnabled(!on&&!pause->isChecked());});
     connect(pause,&QCheckBox::toggled,this,[this,rolling](bool on){
-        m_vm->flushMonitorFrames();m_vm->frames()->setPaused(on);rolling->setEnabled(!on);m_follow->setEnabled(!on&&!rolling->isChecked());
+        m_vm->frames()->setPaused(on);rolling->setEnabled(!on);m_follow->setEnabled(!on&&!rolling->isChecked());
         if(!on&&m_follow->isChecked()&&!rolling->isChecked())followLatestFrame();
     });
     auto historyRange=[this,historyScroll]{
@@ -260,7 +255,7 @@ void ChannelPage::build() {
                 QString error;valid=prepareFrameFilter(5,filter,m_vm->settings().bus==communication::Bus::Lin?0x3f:0x1fffffff,error);if(valid)m_frameProxy->setColumnFilter(5,filter);
             }
         }
-        m_table->sortByColumn(qBound(0,config.value("sortColumn").toInt(0),FrameTableModel::NameColumn),config.value("sortOrder").toInt()==1?Qt::DescendingOrder:Qt::AscendingOrder);timeColumns();}
+        m_table->sortByColumn(qBound(0,config.value("sortColumn").toInt(0),8),config.value("sortOrder").toInt()==1?Qt::DescendingOrder:Qt::AscendingOrder);timeColumns();}
         *savingDisplay=false;if(config.contains("filter")||config.contains("idFilter"))saveFrameFilter();};
     connect(m_vm->signalTransmission(),&SignalTransmitViewModel::structureChanged,this,restoreDisplay);restoreDisplay();
     auto expanded=std::make_shared<QSet<QString>>();
@@ -296,29 +291,9 @@ void ChannelPage::build() {
         dragAnchor->index=QPersistentModelIndex();
     });
     connect(proxy,&QAbstractItemModel::modelReset,this,[dragAnchor]{dragAnchor->index=QPersistentModelIndex();});
-    // Proxy sorting can split one source batch into many insert signals. Scroll only
-    // after those signals finish, at most once per display interval; scrollTo forces
-    // QTreeView layout and must not run for every partial proxy insertion.
-    auto refreshFrames=new QTimer(this);refreshFrames->setSingleShot(true);refreshFrames->setInterval(16);
-    refreshFrames->setObjectName("frameRefreshTimer");
-    connect(refreshFrames,&QTimer::timeout,this,[this]{
-        if(m_follow->isChecked()&&!m_vm->frames()->rolling()&&!m_vm->frames()->paused()&&
-           !m_table->verticalScrollBar()->isSliderDown())followLatestFrame();
-    });
-    // Updating a QLabel's text also invalidates its parent layout in Qt 5.
-    // Keep the counter current without relaying out the whole window per batch.
-    auto refreshCount=new QTimer(this);refreshCount->setSingleShot(true);refreshCount->setInterval(100);
-    refreshCount->setObjectName("frameCountTimer");connect(refreshCount,&QTimer::timeout,this,count);
-    const auto scheduleCount=[refreshCount]{if(!refreshCount->isActive())refreshCount->start();};
-    const auto scheduleVisibleRefresh=[this,refreshFrames,scheduleCount]{
-        scheduleCount();
-        if(m_follow->isChecked()&&!m_vm->frames()->rolling()&&!m_vm->frames()->paused()&&!refreshFrames->isActive())refreshFrames->start();
-    };
-    connect(proxy,&QAbstractItemModel::rowsInserted,this,scheduleVisibleRefresh);
-    connect(proxy,&QAbstractItemModel::rowsRemoved,this,scheduleCount);
-    connect(proxy,&QAbstractItemModel::modelReset,this,scheduleVisibleRefresh);
-    connect(m_vm->frames(),&FrameTableModel::historyChanged,this,scheduleCount);
-    connect(&Language::instance(),&Language::changed,this,count);count();
+    connect(proxy,&QAbstractItemModel::rowsInserted,this,[this,count](){count();if(m_follow->isChecked()&&!m_vm->frames()->rolling()&&!m_vm->frames()->paused()&&!(m_vm->frames()->hasDisplayFilter()&&m_table->verticalScrollBar()->isSliderDown()))followLatestFrame();});
+    connect(proxy,&QAbstractItemModel::rowsRemoved,this,count);connect(proxy,&QAbstractItemModel::modelReset,this,count);
+    connect(m_vm->frames(),&FrameTableModel::historyChanged,this,count);connect(&Language::instance(),&Language::changed,this,count);count();
     for(auto e:{m_flashPath,m_appPath,m_flashAddress,m_appAddress})
         connect(e,&QLineEdit::textChanged,this,&ChannelPage::applyForm);
     connect(m_rxdEnabled,&QCheckBox::toggled,this,&ChannelPage::applyForm);
@@ -348,17 +323,10 @@ void ChannelPage::loadSettings() {
         if(!s.flashPath.isEmpty())files.append(QJsonObject{{"role","driver"},{"path",s.flashPath}});
         if(!s.applicationPath.isEmpty())files.append(QJsonObject{{"role","app"},{"path",s.applicationPath}});
     }
-    QSet<QString> selected;QString current;
-    for(const auto &index:m_imageTable->selectionModel()->selectedRows())selected.insert(m_imageTable->item(index.row(),0)->data(Qt::UserRole+1).toString());
-    if(m_imageTable->currentRow()>=0)current=m_imageTable->item(m_imageTable->currentRow(),0)->data(Qt::UserRole+1).toString();
     m_imageTable->setRowCount(0);
-    for(const auto expected:{"driver","boot","calib","app"})for(const auto &value:files){const auto row=value.toObject();if(row.value("role").toString()!=expected)continue;
-        appendDownloadFile(expected,row.value("path").toString(),row.value("id").toString());
-    }
-    for(int i=0;i<m_imageTable->rowCount();++i){const auto identity=m_imageTable->item(i,0)->data(Qt::UserRole+1).toString();
-        if(selected.contains(identity))m_imageTable->selectionModel()->select(m_imageTable->model()->index(i,0),QItemSelectionModel::Select|QItemSelectionModel::Rows);
-        if(identity==current)m_imageTable->setCurrentCell(i,0,QItemSelectionModel::NoUpdate);
-    }
+    for(const auto &expected:{"driver","boot","app"})for(const auto &value:files){const auto row=value.toObject();const auto role=row.value("role").toString();if(role!=expected)continue;const int i=m_imageTable->rowCount();m_imageTable->insertRow(i);
+        auto type=new QTableWidgetItem(role=="driver"?"Driver":role=="boot"?"Boot":"App");type->setData(Qt::UserRole,role);m_imageTable->setItem(i,0,type);
+        m_imageTable->setItem(i,1,new QTableWidgetItem(row.value("path").toString()));}
     m_loading=false;
 }
 void ChannelPage::applyForm() {
@@ -372,6 +340,7 @@ void ChannelPage::editDownload() {
     if(m_vm->busy())return;
     const auto original=m_vm->settings();boot::FlashProfile profile;QString message;
     if(!m_vm->flashProfile(profile,message))return;
+    profile.target="generic";
     QDialog dialog(this);dialog.setObjectName("downloadSettingsDialog");dialog.setWindowTitle(original.softwareId+" · 下载设置");
     dialog.resize(990,520);if(screen())dialog.resize(dialog.size().boundedTo(screen()->availableGeometry().size()-QSize(40,80)));
     auto outer=new QVBoxLayout(&dialog);auto scroll=new QScrollArea;scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);
@@ -407,16 +376,15 @@ void ChannelPage::editDownload() {
         for(int col=0;col<4;++col){auto header=label(QStringList({"步骤","使能","负响应","超时"})[col]);header->setObjectName("feedbackHeader");grid->addWidget(header,0,base+col);}
         if(group==0)grid->setColumnMinimumWidth(4,16);
     }
-    QVector<QLabel*> stepLabels;
     const int rowsPerColumn=(boot::downloadSteps().size()+1)/2;
     for(int i=0;i<boot::downloadSteps().size();++i){
         const auto &step=boot::downloadSteps()[i];
         const auto id=QString::fromLatin1(step.id);
         const int group=i/rowsPerColumn,base=group*5,row=i%rowsPerColumn+1;
         auto stepLabel=label(QString("%1 · %2").arg(i+1,2,10,QChar('0')).arg(QString::fromUtf8(step.label)));
-        stepLabel->setObjectName("step_"+id);stepLabels.append(stepLabel);
+        stepLabel->setObjectName("step_"+id);
         auto stepEnable=new QCheckBox;stepEnable->setObjectName("enable_"+id);
-        stepEnable->setChecked(profile.enabled(id));
+        stepEnable->setChecked(profile.enabled(id)||(profile.flow=="boot"&&id=="pre1003"));
         stepEnable->setToolTip("勾选：下载时执行该步骤。未勾选：跳过该步骤，负响应和超时判定不可用。");
         auto negative=new QCheckBox;negative->setObjectName("negative_"+id);
         negative->setChecked(profile.checksNegativeResponse(id));
@@ -469,33 +437,23 @@ void ChannelPage::editDownload() {
     auto columns=new QWidget;auto columnsLayout=new QHBoxLayout(columns);columnsLayout->setContentsMargins(0,0,0,0);auto lw=new QWidget;auto rw=new QWidget;auto left=new QFormLayout(lw);auto right=new QFormLayout(rw);columnsLayout->addWidget(lw,1);columnsLayout->addWidget(rw,1);form->addRow(columns);
     auto pair=[&](QFormLayout *layout,const QString &title,QLineEdit *field,const QString &baseline){auto row=new QWidget;auto box=new QHBoxLayout(row);box->setContentsMargins(0,0,0,0);auto initial=new QLineEdit(baseline);initial->setReadOnly(true);initial->setCursorPosition(0);initial->setToolTip(baseline);initial->setObjectName("download_default_"+field->objectName());initial->setStyleSheet("QLineEdit { background:#EEF1F4;color:#687582; }");box->addWidget(initial);box->addWidget(field);layout->addRow(title,row);};
     auto header=[&](QFormLayout *layout){auto row=new QWidget;auto box=new QHBoxLayout(row);box->setContentsMargins(0,0,0,0);box->addWidget(label("默认值"),1);box->addWidget(label("使用值"),1);layout->addRow("参数",row);};header(left);header(right);
-    QLineEdit *txId=nullptr,*rxId=nullptr,*nad=nullptr;
-    if(original.bus==communication::Bus::Can){txId=edit("downloadTxId",10);rxId=edit("downloadRxId",10);txId->setText(original.downloadTxId.isEmpty()?original.requestId:original.downloadTxId);rxId->setText(original.downloadRxId.isEmpty()?original.responseId:original.downloadRxId);pair(right,"Tx ID / hex",txId,original.requestId);pair(right,"Rx ID / hex",rxId,original.responseId);}
     auto hexField=[&](const char *name,int digits,quint32 value){auto e=edit(name,digits);e->setValidator(new QRegularExpressionValidator(QRegularExpression(QString("[0-9A-Fa-f]{1,%1}").arg(digits)),e));e->setText(QString::number(value,16).toUpper());return e;};
     auto h=[](quint32 v){return QString::number(v,16).toUpper();};
-    if(original.bus==communication::Bus::Lin){nad=hexField("downloadNad",2,original.nad.toUInt(nullptr,16));pair(right,"NAD / hex",nad,defaults.nad);}
     auto appLevel=hexField("appSecurityLevel",2,profile.appSecurityLevel),bootLevel=hexField("bootSecurityLevel",2,profile.securityLevel);
     appLevel->setText(appLevel->text().rightJustified(2,'0'));bootLevel->setText(bootLevel->text().rightJustified(2,'0'));
-    pair(right,"Boot安全等级 / hex",bootLevel,h(defaultProfile.securityLevel).rightJustified(2,'0'));
-    pair(right,"App安全等级 / hex",appLevel,h(defaultProfile.appSecurityLevel).rightJustified(2,'0'));
+    pair(left,"App安全等级 / hex",appLevel,h(defaultProfile.appSecurityLevel).rightJustified(2,'0'));pair(right,"Boot安全等级 / hex",bootLevel,h(defaultProfile.securityLevel).rightJustified(2,'0'));
     auto flashAddress=edit("settingsFlashAddress",10),appAddress=edit("settingsApplicationAddress",10),appLength=edit("settingsApplicationLength",10);
     flashAddress->setText(original.flashAddress);appAddress->setText(original.applicationAddress);appLength->setText(original.applicationLength);
     pair(left,"Driver 地址 / hex",flashAddress,defaults.flashAddress);
     auto bootAddress=edit("bootAddress",8),bootLength=edit("bootEraseLength",8);bootAddress->setText(original.bootAddress);bootLength->setText(original.bootEraseLength);
     for(auto field:{bootAddress,bootLength})field->setValidator(new QRegularExpressionValidator(QRegularExpression("[0-9A-Fa-f]{1,8}"),field));
-    auto bootBAddress=edit("bootBAddress",8),appBAddress=edit("applicationBAddress",8);
-    bootBAddress->setText(original.bootBAddress);appBAddress->setText(original.applicationBAddress);
-    for(auto field:{bootBAddress,appBAddress}){field->setValidator(new QRegularExpressionValidator(QRegularExpression("[0-9A-Fa-f]{0,8}"),field));field->setPlaceholderText("未配置");}
-    pair(left,"Boot 地址 / hex",bootAddress,defaults.bootAddress);pair(left,"Boot B 地址 / hex",bootBAddress,defaults.bootBAddress);pair(left,"Boot 长度 / hex",bootLength,defaults.bootEraseLength);
-    pair(left,"App 地址 / hex",appAddress,defaults.applicationAddress);pair(left,"App B 地址 / hex",appBAddress,defaults.applicationBAddress);pair(left,"App 长度 / hex",appLength,defaults.applicationLength);
-    auto calibAddress=hexField("calibAddress",8,original.calibAddress.toUInt(nullptr,16)),calibLength=hexField("calibLength",8,original.calibLength.toUInt(nullptr,16));
-    pair(left,"Calib 地址 / hex",calibAddress,defaults.calibAddress);pair(left,"Calib 长度 / hex",calibLength,defaults.calibLength);
-    calibAddress->setToolTip("仅下载显式选择的Calib文件。BIN使用此地址，HEX保留文件绝对地址；目标ECU决定合法范围。");
-    calibLength->setToolTip("此长度用于31擦除，34使用文件实际长度且不得超出擦除区。文件须自带64字节标记及双CRC64，不自动补全。");
-    for(auto field:{bootLength,appLength})field->setToolTip("长度仅用于 31 擦除。34 使用单区 BIN 实际长度、已确认双区 BIN 的一半或 HEX 对应槽起始地址的连续长度；写入不得超过擦除区。B 地址本身不能证明双区；有歧义时停止，不补齐、不截断。");
+    pair(left,"Boot 地址 / hex",bootAddress,defaults.bootAddress);pair(left,"Boot 擦除长度 / hex",bootLength,defaults.bootEraseLength);
+    pair(left,"App 地址 / hex",appAddress,defaults.applicationAddress);pair(left,"App 擦除长度 / hex",appLength,defaults.applicationLength);appLength->setToolTip("从 App 基址开始的擦除范围长度，含旧代码尾部；不表示镜像大小。");
+    QLineEdit *txId=nullptr,*rxId=nullptr;
+    if(original.bus==communication::Bus::Can){txId=edit("downloadTxId",10);rxId=edit("downloadRxId",10);txId->setText(original.downloadTxId.isEmpty()?original.requestId:original.downloadTxId);rxId->setText(original.downloadRxId.isEmpty()?original.responseId:original.downloadRxId);pair(left,"Tx ID / hex",txId,original.requestId);pair(left,"Rx ID / hex",rxId,original.responseId);}
     auto fingerprint=edit("fingerprintHex",38);fingerprint->setText(original.fingerprintHex);
     QString fpError;const auto defaultFingerprint=boot::t008::fingerprint(QDate::currentDate(),QByteArray("TEST-PLACEHOLDER"),fpError);
-    fingerprint->setPlaceholderText("留空使用默认值");pair(left,"F184 / 19 bytes hex",fingerprint,QString::fromLatin1(defaultFingerprint.toHex()).toUpper());
+    fingerprint->setPlaceholderText("留空使用默认值");pair(right,"F184 / 19 bytes hex",fingerprint,QString::fromLatin1(defaultFingerprint.toHex()).toUpper());
     fingerprint->setToolTip("默认设备号 TEST-PLACEHOLDER 为测试占位；留空时下载使用当天日期。");
     auto erase=hexField("eraseRoutine",4,profile.eraseRoutine),verifyRid=hexField("verifyRoutine",4,profile.verifyRoutine),dependencyRid=hexField("dependencyRoutine",4,profile.dependencyRoutine),did=hexField("identityDid",4,profile.identityDid);
     pair(right,"擦除 RID / hex",erase,h(defaultProfile.eraseRoutine));pair(right,"校验 RID / hex",verifyRid,h(defaultProfile.verifyRoutine));pair(right,"依赖 RID / hex",dependencyRid,h(defaultProfile.dependencyRoutine));pair(right,"身份 DID / hex",did,h(defaultProfile.identityDid));
@@ -512,14 +470,16 @@ void ChannelPage::editDownload() {
         auto field=edit(name,32);field->setText(value);field->setEnabled(checked);connect(check,&QCheckBox::toggled,field,&QWidget::setEnabled);
         rowLayout->addWidget(initial);rowLayout->addWidget(field);versionLayout->addRow(caption,row);return qMakePair(check,field);
     };
+    auto driverVersion=versionRow("Driver ABI","expectedDriverAbi",original.checkDriverAbi,original.expectedDriverAbi,defaults.expectedDriverAbi);
     auto appVersion=versionRow("App 版本","expectedAppVersion",original.checkAppVersion,original.expectedAppVersion,defaults.expectedAppVersion);
+    auto minBootVersion=versionRow("包内最低 Boot 版本","expectedMinimumBoot",original.checkMinimumBoot,original.expectedMinimumBoot,defaults.expectedMinimumBoot);
     form->addRow(versionPanel);form->addRow(checksWidget);form->addRow(policy);
     auto error=label("");error->setObjectName("inlineError");error->setWordWrap(true);error->hide();outer->addWidget(error);
     auto buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel);outer->addWidget(buttons);
     buttons->button(QDialogButtonBox::Ok)->setText("保存");buttons->button(QDialogButtonBox::Cancel)->setText("取消");
     connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
     connect(buttons,&QDialogButtonBox::accepted,&dialog,[&](){
-        for(auto field:{count,interval,erase,verifyRid,dependencyRid,did,block,resetWait,calibAddress,calibLength})if(!field->hasAcceptableInput()){error->setText("请输入有效范围内的参数");error->show();field->setFocus();return;}
+        for(auto field:{count,interval,erase,verifyRid,dependencyRid,did,block,resetWait})if(!field->hasAcceptableInput()){error->setText("请输入有效范围内的参数");error->show();field->setFocus();return;}
         auto s=m_vm->settings();
         bool appOk=false,bootOk=false;
         const auto appValue=appLevel->text().toUInt(&appOk,16),bootValue=bootLevel->text().toUInt(&bootOk,16);
@@ -532,12 +492,11 @@ void ChannelPage::editDownload() {
         s.flashAddress=flashAddress->text();s.applicationAddress=appAddress->text();s.applicationLength=appLength->text();s.fingerprintHex=fingerprint->text().trimmed();
         if(!bootAddress->hasAcceptableInput()||!bootLength->hasAcceptableInput()){error->setText("请输入有效的 Boot 地址和长度");error->show();return;}
         s.bootAddress=bootAddress->text();s.bootEraseLength=bootLength->text();
-        s.bootBAddress=bootBAddress->text().trimmed();s.applicationBAddress=appBAddress->text().trimmed();
-        s.calibAddress=calibAddress->text().trimmed();s.calibLength=calibLength->text().trimmed();
+        s.checkDriverAbi=driverVersion.first->isChecked();s.expectedDriverAbi=driverVersion.second->text().trimmed();
         s.checkAppVersion=appVersion.first->isChecked();s.expectedAppVersion=appVersion.second->text().trimmed();
-        if(s.checkAppVersion&&s.expectedAppVersion.isEmpty()){error->setText("请填写启用的版本值");error->show();return;}
+        s.checkMinimumBoot=minBootVersion.first->isChecked();s.expectedMinimumBoot=minBootVersion.second->text().trimmed();
+        if((s.checkDriverAbi&&s.expectedDriverAbi.isEmpty())||(s.checkAppVersion&&s.expectedAppVersion.isEmpty())||(s.checkMinimumBoot&&s.expectedMinimumBoot.isEmpty())){error->setText("请填写启用的版本值");error->show();return;}
         if(txId){s.downloadTxId=txId->text();s.downloadRxId=rxId->text();}
-        if(nad)s.nad=nad->text().trimmed().toUpper();
         profile.flow=flow->currentData().toString();profile.stepEnabled={};profile.negativeResponseChecks={};profile.timeoutChecks={};
         for(int i=0;i<stepEnables.size();++i){
             profile.stepEnabled[boot::downloadSteps()[i].id]=stepEnables[i]->isChecked();
@@ -563,19 +522,14 @@ void ChannelPage::render() {
     m_connectionStatus->setText(connectionText(m_vm->state()));m_connectionStatus->setToolTip(m_vm->healthDetail());
     m_images->setEnabled(!m_vm->busy());m_flashPath->setEnabled(!m_vm->busy());m_browseFlash->setEnabled(!m_vm->busy());
     m_flashInfo->setEnabled(!m_vm->busy());
-    const bool connected=m_vm->connected();
-    m_connectButton->setText(connected?"断开":"连接");
-    m_connectButton->setEnabled(!m_vm->pending()&&(connected?!m_vm->otherTaskBusy():m_vm->canConnect()));
-    const bool highlightConnect=!connected;
-    if(m_connectButton->property("primary").toBool()!=highlightConnect){
-        m_connectButton->setProperty("primary",highlightConnect);
-        m_connectButton->style()->unpolish(m_connectButton);
-        m_connectButton->style()->polish(m_connectButton);
-        m_connectButton->update();
+    m_connectButton->setText(m_vm->connected()?"断开":"连接");
+    m_connectButton->setEnabled(!m_vm->pending()&&(m_vm->connected()?!m_vm->otherTaskBusy():m_vm->canConnect()));
+    if(m_tasks&&m_tasks->count()>2){
+        m_tasks->setTabText(2,Language::text("信号发送"));
     }
     m_flashAddress->setEnabled(!m_vm->busy());
     m_appAddress->setEnabled(!m_vm->busy());
-    m_start->setEnabled(m_vm->canStart());
+    m_start->setText(s.simulation?"开始模拟下载":"开始下载");m_start->setEnabled(m_vm->canStart());
     const auto hint=m_vm->startHint();
     m_start->setToolTip(hint);m_cancel->setEnabled(m_vm->taskState()==TaskState::Running || m_vm->scanning());
     m_scan->setEnabled(m_vm->canScan());m_scan->setText(m_vm->scanning()?"正在扫描…":"扫描帧头");
@@ -604,81 +558,59 @@ void ChannelPage::browseImage(bool flash) {
     const QString path=QFileDialog::getOpenFileName(this,Language::text("选择镜像"),start,"Firmware (*.bin *.hex *.BIN *.HEX)");
     if(!path.isEmpty())m_vm->chooseImage(flash,path);
 }
-void ChannelPage::appendDownloadFile(const QString &role,const QString &path,const QString &identity){
-    const int row=m_imageTable->rowCount();m_imageTable->insertRow(row);
-    const QString title=role=="driver"?"Driver":role=="boot"?"Boot":role=="calib"?"Calib":"App";
-    const auto key=role+QChar(0)+path;auto stableId=identity;
-    if(stableId.isEmpty())stableId=m_downloadFileIds.value(key);
-    if(stableId.isEmpty())stableId=QUuid::createUuid().toString(QUuid::WithoutBraces);
-    m_downloadFileIds.insert(key,stableId);
-    auto type=new QTableWidgetItem(title);type->setData(Qt::UserRole,role);type->setData(Qt::UserRole+1,stableId);
-    type->setToolTip("双击修改类型；同类型最多一个文件，变更后自动排序。");m_imageTable->setItem(row,0,type);m_imageTable->setItem(row,1,new QTableWidgetItem(path));
-}
-void ChannelPage::changeDownloadRole(int row){
-    if(m_vm->busy()||row<0||row>=m_imageTable->rowCount())return;
-    const auto original=m_imageTable->item(row,0);const auto oldRole=original->data(Qt::UserRole).toString();
-    const auto identity=original->data(Qt::UserRole+1).toString(),path=m_imageTable->item(row,1)->text();
-    const QStringList titles={"Driver","Boot","Calib","App"},roles={"driver","boot","calib","app"};
-    bool ok=false;const auto chosen=QInputDialog::getItem(this,"修改下载文件类型",path,titles,roles.indexOf(oldRole),false,&ok);
-    if(!ok)return;
-    if(m_vm->busy()){QMessageBox::warning(this,"文件类型未更改","任务状态已变化，原文件及类型保持不变，请稍后重试。");return;}
-    // Settings can reload the table while the modal dialog runs. Re-find the file by its identity.
-    row=-1;for(int i=0;i<m_imageTable->rowCount();++i)if(m_imageTable->item(i,0)->data(Qt::UserRole+1).toString()==identity){row=i;break;}
-    if(row<0||m_imageTable->item(row,0)->data(Qt::UserRole).toString()!=oldRole||m_imageTable->item(row,1)->text()!=path){
-        QMessageBox::warning(this,"文件类型未更改","下载列表已变化，未修改任何其他文件，请重新选择。");return;
-    }
-    const auto role=roles.value(titles.indexOf(chosen));if(role==oldRole||role.isEmpty())return;
-    for(int i=0;i<m_imageTable->rowCount();++i)if(i!=row&&m_imageTable->item(i,0)->data(Qt::UserRole).toString()==role){
-        QMessageBox::warning(this,"下载类型冲突",chosen+" 已存在。原文件及类型保持不变，请先处理冲突文件。");return;
-    }
-    auto item=m_imageTable->item(row,0);item->setData(Qt::UserRole,role);item->setText(chosen);saveDownloadFiles();
-}
 void ChannelPage::addDownloadFiles(){
-    QSettings preferences("Qt-SimpleCN","DownloadFiles");
-    const auto saved=(preferences.contains("lastDirectory") ? preferences.value("lastDirectory") : QSettings("Qt-GeneralController","DownloadFiles").value("lastDirectory")).toString();
+    QSettings preferences("Qt-GeneralController","DownloadFiles");
+    const auto saved=preferences.value("lastDirectory").toString();
     const auto initial=QFileInfo(saved).isDir()?saved:QDir::homePath();
     const auto paths=QFileDialog::getOpenFileNames(this,"选择下载文件",initial,"Firmware (*.bin *.hex *.BIN *.HEX)");
     if(!paths.isEmpty())preferences.setValue("lastDirectory",QFileInfo(paths.last()).absolutePath());
+    bool changed=false;
     for(const auto &path:paths){
-        if(m_vm->busy())break;
-        QString suggestedRole,error;
-        if(!m_vm->inspectDownloadFile(path,suggestedRole,error)){QMessageBox::warning(this,"无法读取下载文件",QFileInfo(path).fileName()+": "+error);continue;}
-        QString choice;
-        if(suggestedRole=="driver")choice="Driver";
-        else if(suggestedRole=="app")choice="App";
-        else if(suggestedRole=="boot")choice="Boot";
-        else {bool ok=false;choice=QInputDialog::getItem(this,"无法自动识别文件类型",QFileInfo(path).fileName(),{"Driver","Boot","Calib","App"},0,false,&ok);if(!ok)continue;}
-        const auto role=choice=="Driver"?QString("driver"):choice=="Boot"?QString("boot"):choice=="Calib"?QString("calib"):QString("app");
-        bool conflict=false;for(int row=0;row<m_imageTable->rowCount();++row)conflict|=m_imageTable->item(row,0)->data(Qt::UserRole).toString()==role;
-        if(conflict){QMessageBox::warning(this,"下载类型冲突",choice+" 已有文件，未替换或删除任何已选内容。请先修改/删除冲突项后重新添加。");continue;}
-        if(m_vm->busy())break;
-        appendDownloadFile(role,path);
-        saveDownloadFiles(); // Persist before the next modal prompt can trigger a settings refresh.
+        boot::FirmwareImage image;QString error;
+        if(!boot::FirmwareImage::load(path,0x5000,image,error)){QMessageBox::warning(this,"无法读取下载文件",QFileInfo(path).fileName()+": "+error);continue;}
+        const auto kind=boot::FirmwareImage::identify(image);QString choice;
+        if(kind==boot::FirmwareImage::Kind::IncompleteBoot){QMessageBox::warning(this,"Boot 文件不完整",QFileInfo(path).fileName()+": 请选择包含两个完整槽镜像的文件。");continue;}
+        if(kind==boot::FirmwareImage::Kind::Driver)choice="Driver";
+        else if(kind==boot::FirmwareImage::Kind::Application)choice="App";
+        else if(kind==boot::FirmwareImage::Kind::BootBundle)choice="Boot";
+        else {bool ok=false;choice=QInputDialog::getItem(this,"无法自动识别文件类型",QFileInfo(path).fileName(),{"Driver","Boot","App"},0,false,&ok);if(!ok)continue;}
+        const auto role=choice=="Driver"?QString("driver"):choice=="Boot"?QString("boot"):QString("app");
+        if(role=="boot"&&!boot::FirmwareImage::loadBootBundle(path,image,error)){QMessageBox::warning(this,"Boot 文件不完整",QFileInfo(path).fileName()+": "+error);continue;}
+        for(int row=m_imageTable->rowCount()-1;row>=0;--row)
+            if(m_imageTable->item(row,0)->data(Qt::UserRole).toString()==role)m_imageTable->removeRow(row);
+        const int i=m_imageTable->rowCount();m_imageTable->insertRow(i);auto type=new QTableWidgetItem(choice);type->setData(Qt::UserRole,role);m_imageTable->setItem(i,0,type);m_imageTable->setItem(i,1,new QTableWidgetItem(path));
+        changed=true;
     }
+    if(changed)saveDownloadFiles();
 }
 void ChannelPage::removeDownloadFiles(){
     auto rows=m_imageTable->selectionModel()->selectedRows();std::sort(rows.begin(),rows.end(),[](const QModelIndex &a,const QModelIndex &b){return a.row()>b.row();});
     for(const auto &row:rows)m_imageTable->removeRow(row.row());if(!rows.isEmpty())saveDownloadFiles();
 }
 void ChannelPage::saveDownloadFiles(){
-    QJsonArray files;
-    for(const auto role:{"driver","boot","calib","app"})for(int i=0;i<m_imageTable->rowCount();++i){
+    auto settings=m_vm->settings();QJsonArray files;settings.flashPath.clear();settings.applicationPath.clear();
+    for(const auto role:{"driver","boot","app"})for(int i=0;i<m_imageTable->rowCount();++i){
         if(m_imageTable->item(i,0)->data(Qt::UserRole).toString()!=role)continue;
-        const auto path=m_imageTable->item(i,1)->text();files.append(QJsonObject{{"role",role},{"path",path},{"id",m_imageTable->item(i,0)->data(Qt::UserRole+1).toString()}});
+        const auto path=m_imageTable->item(i,1)->text();files.append(QJsonObject{{"role",role},{"path",path}});
+        if(QString(role)=="driver")settings.flashPath=path;else if(QString(role)=="app")settings.applicationPath=path;
     }
-    QString error;if(!m_vm->updateDownloadFiles(files,error)){loadSettings();QMessageBox::warning(this,"文件列表未更改",error.isEmpty()?QString("当前任务繁忙，原下载列表保持不变"):error);}
+    settings.downloadFiles=files;m_vm->setSettings(settings);
 }
 void ChannelPage::rememberDownloadFiles(){
     m_entryFiles={};
     for(int i=0;i<m_imageTable->rowCount();++i){
         const auto role=m_imageTable->item(i,0)->data(Qt::UserRole).toString();
-        m_entryFiles.append(QJsonObject{{"role",role},{"path",m_imageTable->item(i,1)->text()},{"id",m_imageTable->item(i,0)->data(Qt::UserRole+1).toString()}});
+        m_entryFiles.append(QJsonObject{{"role",role},{"path",m_imageTable->item(i,1)->text()}});
     }
     m_hasEntryFiles=true;
 }
 void ChannelPage::restoreDownloadFiles(){
     if(!m_hasEntryFiles||m_vm->busy())return;
-    QString error;m_vm->updateDownloadFiles(m_entryFiles,error);
+    auto settings=m_vm->settings();settings.downloadFiles=m_entryFiles;settings.flashPath.clear();settings.applicationPath.clear();
+    for(const auto &value:m_entryFiles){const auto row=value.toObject();const auto role=row.value("role").toString(),path=row.value("path").toString();
+        if(role=="driver")settings.flashPath=path;else if(role=="app")settings.applicationPath=path;
+    }
+    m_vm->setSettings(settings);
 }
 void ChannelPage::saveFrameFilter(){
     if(m_restoringMonitor||!m_frameProxy)return;
@@ -707,7 +639,6 @@ void ChannelPage::exportFrames(){
     const QStringList scopes={Language::text("筛选前全部缓存"),Language::text("筛选后全部缓存")};bool ok=false;
     const auto scope=QInputDialog::getItem(this,Language::text("导出报文"),Language::text("导出范围"),scopes,0,false,&ok);
     if(!ok)return;
-    m_vm->flushMonitorFrames();
     const FrameBatch frames=scope==scopes[1]?m_frameProxy->filteredHistory():m_vm->frames()->history();
     exportFrameBatch(frames,"导出当前缓存报文");
 }
@@ -715,10 +646,10 @@ void ChannelPage::exportFrameBatch(const FrameBatch &frames,const QString &title
     QString filter="BLF (*.blf)";
     auto user=qEnvironmentVariable("USERNAME");if(user.isEmpty())user=qEnvironmentVariable("USER");if(user.isEmpty())user="user";
     const auto epoch=m_vm->frames()->startedEpochMs();const auto stamp=QDateTime::fromMSecsSinceEpoch(epoch?epoch:QDateTime::currentMSecsSinceEpoch()).toString("yyyyMMdd_HHmmss_zzz");
-    QString name="Qt-SimpleCN_"+m_vm->settings().softwareId+"_"+user+"_"+stamp;name.replace(QRegularExpression("[<>:\"/\\\\|?*]"),"_");
+    QString name="Qt-GeneralController_"+m_vm->settings().softwareId+"_"+user+"_"+stamp;name.replace(QRegularExpression("[<>:\"/\\\\|?*]"),"_");
     auto file=QFileDialog::getSaveFileName(this,Language::text(title),name,"BLF (*.blf);;ASC (*.asc);;CSV (*.csv)",&filter);
     if(file.isEmpty())return;if(QFileInfo(file).suffix().isEmpty())file+=filter.startsWith("BLF")?".blf":filter.startsWith("CSV")?".csv":".asc";QString error;
-    m_vm->log(m_vm->exportFrames(file,frames,error)?"已导出报文："+file:error);
+    m_vm->log(TraceExporter::write(file,frames,error)?"已导出报文："+file:error);
 }
 void ChannelPage::exportLogs(){
     const auto file=QFileDialog::getSaveFileName(this,Language::text("导出运行日志"),m_vm->settings().softwareId+"-log.txt","Text (*.txt)");

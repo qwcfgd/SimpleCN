@@ -1,5 +1,4 @@
 #include <QtTest>
-#include "TestEventWait.h"
 #include <QTemporaryDir>
 #include <QFile>
 #include <QJsonDocument>
@@ -39,19 +38,18 @@ class ProtocolTest : public QObject {
         QByteArray b;b+=char(data.size());b+=char(offset>>8);b+=char(offset);b+=char(type);b+=data;
         int sum=0;for(unsigned char c:b)sum+=c;b+=char(-sum);return ":"+b.toHex().toUpper()+"\n";
     }
-    static FirmwareImage image(int count=4096,quint32 address=0x10000){
-        if(address<0x10000000)count=(count+4095)&~4095;
+    static FirmwareImage image(int count=4096,quint32 address=0xff00){
         FirmwareImage i;QByteArray b(count,0);for(int n=0;n<count;++n)b[n]=char(n*17+3);
         i.segments.append({address,b});i.size=count;return i;
     }
 private slots:
     void configuredResetWaitIsPreservedAndApplied(){
-        FlashProfile original;original.applicationEraseBase=0x10000;original.flow="boot";original.resetWaitMs=120;
+        FlashProfile original;original.flow="boot";original.resetWaitMs=120;
         for(const auto &step:downloadSteps())original.stepEnabled[step.id]=false;
         original.stepEnabled["reset"]=true;original.stepEnabled["post1003"]=true;
-        FlashProfile profile;profile.applicationEraseBase=0x10000;QString error;QVERIFY2(FlashProfile::fromJson(original.toJson(),profile,error),qPrintable(error));QCOMPARE(profile.resetWaitMs,120);
+        FlashProfile profile;QString error;QVERIFY2(FlashProfile::fromJson(original.toJson(),profile,error),qPrintable(error));QCOMPARE(profile.resetWaitMs,120);
         ManualTransport transport;UdsSession session(transport,{1000,1000,3000,0});FlashJob job(session,profile,std::make_unique<SimulationKey>());
-        QSignalSpy sent(&transport,&DiagnosticTransport::sent);QVERIFY2(job.start(image(8,profile.applicationEraseBase),{},error),qPrintable(error));
+        QSignalSpy sent(&transport,&DiagnosticTransport::sent);QVERIFY2(job.start(image(8),{},error),qPrintable(error));
         QTRY_COMPARE_WITH_TIMEOUT(transport.requests.size(),1,1000);QCOMPARE(transport.requests.first(),hex("1101"));QTRY_COMPARE(sent.size(),1);
         QElapsedTimer elapsed;elapsed.start();transport.reply(hex("5101"));QTest::qWait(60);QCOMPARE(transport.requests.size(),1);
         QTRY_COMPARE_WITH_TIMEOUT(transport.requests.size(),2,1000);QVERIFY(elapsed.elapsed()>=105);QCOMPARE(transport.requests.last(),hex("1003"));job.cancel();
@@ -167,7 +165,7 @@ private slots:
         }
     }
     void bootAdvancesOnlyAfterMatchingPositiveResponseAndZeroKey(){
-        ManualTransport transport;UdsSession session(transport,{100,100,1000,0});FlashProfile profile;profile.applicationEraseBase=0x10000;
+        ManualTransport transport;UdsSession session(transport,{100,100,1000,0});FlashProfile profile;
         profile.flow="boot";profile.resetWaitMs=0;
         for(const auto &step:downloadSteps()){
             profile.negativeResponseChecks[step.id]=true;
@@ -191,7 +189,7 @@ private slots:
     }
     void seedAsKeyWire(){
         QFETCH(int,level);QFETCH(QByteArray,seed);
-        ManualTransport transport;UdsSession session(transport,{1000,1000,2000,0});FlashProfile profile;profile.applicationEraseBase=0x10000;
+        ManualTransport transport;UdsSession session(transport,{1000,1000,2000,0});FlashProfile profile;
         profile.flow="boot";profile.keyProvider="seed-as-key";profile.simulationOnly=false;profile.securityLevel=quint8(level);
         profile.negativeResponseChecks["bootKey"]=true;
         FlashJob job(session,profile,std::make_unique<SeedAsKey>());QString error;
@@ -218,11 +216,11 @@ private slots:
         SeedAsKey key;QString error="stale";
         const auto seed=hex("0080ff");QCOMPARE(key.calculate(1,seed,error),seed);QVERIFY(error.isEmpty());
         QVERIFY(key.calculate(1,{},error).isEmpty());QVERIFY(!error.isEmpty());
-        ManualTransport transport;UdsSession session(transport,{1000,1000,2000,0});FlashProfile p;p.applicationEraseBase=0x10000;
+        ManualTransport transport;UdsSession session(transport,{1000,1000,2000,0});FlashProfile p;
         p.flow="boot";p.keyProvider="seed-as-key";p.simulationOnly=false;p.stepEnabled["bootSeed"]=false;
         FlashJob job(session,p,std::make_unique<SeedAsKey>());QSignalSpy finished(&job,&FlashJob::finished);
         QSignalSpy sent(&transport,&DiagnosticTransport::sent);
-        QVERIFY(job.start(image(8,p.applicationEraseBase),{},error));QTRY_COMPARE(transport.requests.size(),1);
+        QVERIFY(job.start(image(8),{},error));QTRY_COMPARE(transport.requests.size(),1);
         QTRY_COMPARE(sent.size(),1);
         transport.reply(hex("5002"));QTRY_COMPARE(finished.count(),1);
         QVERIFY(!finished[0][0].toBool());QVERIFY(finished[0][1].toString().contains("bootKey requires a valid security seed from bootSeed"));
@@ -236,7 +234,7 @@ private slots:
     }
     void seedAsKeyAppAndBoot(){
         QFETCH(int,appLevel);QFETCH(int,bootLevel);
-        ManualTransport transport;UdsSession session(transport,{1000,1000,2000,0});FlashProfile p;p.applicationEraseBase=0x10000;
+        ManualTransport transport;UdsSession session(transport,{1000,1000,2000,0});FlashProfile p;
         QString error;
         QVERIFY2(FlashProfile::fromJson({{"appSecurityLevel",appLevel},{"securityLevel",bootLevel}},p,error),qPrintable(error));
         p.flow="app";p.keyProvider="seed-as-key";p.simulationOnly=false;
@@ -244,7 +242,7 @@ private slots:
         for(const auto id:{"pre2701","pre2702","bootSeed","bootKey"})p.stepEnabled[id]=true;
         FlashJob job(session,p,std::make_unique<SeedAsKey>());
         QSignalSpy sent(&transport,&DiagnosticTransport::sent);
-        QVERIFY(job.start(image(8,p.applicationEraseBase),{},error));QTRY_COMPARE(transport.requests.size(),1);
+        QVERIFY(job.start(image(8),{},error));QTRY_COMPARE(transport.requests.size(),1);
         QCOMPARE(transport.requests[0],hex("27")+char(appLevel));
         QTRY_COMPARE(sent.size(),1);
         const auto appSeed=hex("0080ff12345678");transport.reply(hex("67")+char(appLevel)+appSeed);
@@ -320,7 +318,7 @@ private slots:
         QList<QByteArray> writes;
         LinTransport t(1,1,100,[&](quint8 id,const QByteArray &bytes,QString &){if(id==0x3c)writes.append(bytes);return true;});
         t.requireTransmitConfirmation(true,100);QSignalSpy sent(&t,&DiagnosticTransport::sent),failed(&t,&DiagnosticTransport::failed);QString error;
-        QVERIFY(t.send(hex("3400440001000000001000"),error));
+        QVERIFY(t.send(hex("3400440000ff0000001000"),error));
         QTRY_COMPARE(writes.size(),1);QCOMPARE(sent.size(),0);
         t.confirmTransmitted(hex("0000000000000000"));QCOMPARE(writes.size(),1);
         t.confirmTransmitted(writes[0]);QTRY_COMPARE(writes.size(),2);QCOMPARE(sent.size(),0);
@@ -340,60 +338,62 @@ private slots:
     }
     void eraseRangeValidationBeforeSend(){
         ManualTransport wire;UdsSession session(wire,SessionOptions{100,100,1000,0});QString error;
-        for(const auto range:QList<QPair<quint32,quint32>>{{0xff00,0},{0xfffffff0,0x20}}){
-            FlashProfile p;p.applicationEraseBase=0x10000;p.applicationEraseBase=range.first;p.applicationEraseLength=range.second;
+        for(const auto range:QList<QPair<quint32,quint32>>{{0xff00,0},{0xfffffff0,0x20},{0xff01,0x1000},{0xff00,0xfff}}){
+            FlashProfile p;p.applicationEraseBase=range.first;p.applicationEraseLength=range.second;
             FlashJob job(session,p,std::make_unique<SimulationKey>());QVERIFY(!job.start(image(),{},error));QVERIFY(wire.requests.isEmpty());
         }
     }
     void disabledEraseSendsNoErase(){
-        FlashProfile p;p.applicationEraseBase=0x10000;p.applicationEraseLength=0x1000;p.stepEnabled["erase"]=false;
+        FlashProfile p;p.applicationEraseBase=0xff00;p.applicationEraseLength=0x1000;p.stepEnabled["erase"]=false;
         LinBench bench(0x15,p);FlashJob job(bench.session,p,std::make_unique<SimulationKey>());QSignalSpy result(&job,&FlashJob::finished);QString error;
-        QVERIFY2(job.start(image(),{},error),qPrintable(error));QVERIFY(waitForTest([&]{return result.size()==1;},20000));QVERIFY(!result[0][0].toBool());
+        QVERIFY2(job.start(image(),{},error),qPrintable(error));QTRY_COMPARE_WITH_TIMEOUT(result.size(),1,20000);QVERIFY(!result[0][0].toBool());
         for(const auto &r:bench.ecu.requests)QVERIFY(!r.startsWith(hex("3101ff00")));
     }
-    void fullLinFlashDriverContinuousApplicationAndRepeat(){
-        FlashProfile profile;profile.applicationEraseBase=0x10000;profile.applicationEraseLength=0x2000;LinBench bench(0x15,profile);FlashJob job(bench.session,profile,std::make_unique<SimulationKey>());
+    void fullLinFlashDriverSparseApplicationAndRepeat(){
+        FlashProfile profile;profile.applicationEraseBase=0xff00;profile.applicationEraseLength=0x10105;LinBench bench(0x15,profile);FlashJob job(bench.session,profile,std::make_unique<SimulationKey>());
         QJsonArray transcript;
         connect(&bench.session,&UdsSession::trace,&job,[&](bool tx,const QByteArray &pdu){
             transcript.append(QJsonObject{{"direction",tx?"TX":"RX"},{"uds",QString::fromLatin1(pdu.toHex(' ')).toUpper()}});
         });
-        auto app=image();app.segments.append({0x11000,QByteArray(4096,char(0x55))});app.size+=4096;
+        auto app=image();app.segments.append({0x20000,hex("1234567890")});app.size+=5;
         const auto driver=image(64,0x10000000);QString error;QSignalSpy result(&job,&FlashJob::finished),progress(&job,&FlashJob::progress);
         QVERIFY2(job.start(app,driver,error),qPrintable(error));
-        QVERIFY(waitForTest([&]{return result.size()==1;},20000));QVERIFY2(result[0][0].toBool(),qPrintable(result[0][1].toString()));
+        QTRY_COMPARE_WITH_TIMEOUT(result.size(),1,20000);QVERIFY2(result[0][0].toBool(),qPrintable(result[0][1].toString()));
         QCOMPARE(bench.ecu.resets,1);
-        QCOMPARE(bench.ecu.memory(0x10000),app.segments[0].data+app.segments[1].data);
+        for(const auto &s:app.segments)QCOMPARE(bench.ecu.memory(s.address),s.data);
         QCOMPARE(bench.ecu.memory(driver.segments[0].address),driver.segments[0].data);
         QCOMPARE(progress.last()[0].toInt(),100);QVERIFY(bench.ecu.headers>0);
         QCOMPARE(bench.ecu.requests.first(),hex("1002"));QCOMPARE(bench.ecu.requests.last(),hex("22f180"));
         const auto &requests=bench.ecu.requests;
         // Independently assert the required complete service order, including every data block.
         QList<int> order={0x10,0x27,0x27,0x34,0x36,0x37,0x31,0x31,0x34};
-        for(int n=0;n<32;++n)order.append(0x36);order.append({0x37,0x31,0x31,0x11,0x22});
+        for(int n=0;n<16;++n)order.append(0x36);
+        order.append({0x37,0x31,0x34,0x36,0x37,0x31,0x31,0x11,0x22});
         QCOMPARE(requests.size(),order.size());
         for(int n=0;n<order.size();++n)QCOMPARE(int(quint8(requests[n][0])),order[n]);
         QCOMPARE(requests[3],hex("3400441000000000000040"));
-        QCOMPARE(requests[7],hex("3101ff00440001000000002000"));
-        QCOMPARE(requests[8],hex("3400440001000000002000"));
-        QVERIFY(job.start(app,driver,error));QVERIFY(waitForTest([&]{return result.size()==2;},20000));QVERIFY(result[1][0].toBool());QCOMPARE(bench.ecu.resets,2);
+        QCOMPARE(requests[7],hex("3101ff00440000ff0000010105"));
+        QCOMPARE(requests[8],hex("3400440000ff0000001000"));
+        QCOMPARE(requests[27],hex("3400440002000000000005"));
+        QVERIFY(job.start(app,driver,error));QTRY_COMPARE_WITH_TIMEOUT(result.size(),2,20000);QVERIFY(result[1][0].toBool());QCOMPARE(bench.ecu.resets,2);
         const auto directory=QCoreApplication::applicationDirPath()+"/artifacts";QDir().mkpath(directory);
         QFile flow(directory+"/lin-uds-flow.json");QVERIFY(flow.open(QIODevice::WriteOnly));
         flow.write(QJsonDocument(QJsonObject{{"backend","SimulatedLinEcu"},{"nad",21},{"completedRounds",bench.ecu.resets},{"memoryMatches",true},{"events",transcript}}).toJson());
     }
     void blockCounterWrapAndEcuMaximum(){
-        FlashProfile profile;profile.applicationEraseBase=0x10000;profile.consecutiveFrameByteLimit=102;LinBench bench(1,profile);bench.ecu.maxBlockLength=18;
+        FlashProfile profile;profile.consecutiveFrameByteLimit=102;LinBench bench(1,profile);bench.ecu.maxBlockLength=3;
         FlashJob job(bench.session,profile,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished);QString error;
-        QVERIFY(job.start(image(8192),{},error));QVERIFY(waitForTest([&]{return done.size()==1;},10000));QVERIFY2(done[0][0].toBool(),qPrintable(done[0][1].toString()));
+        QVERIFY(job.start(image(260),{},error));QTRY_COMPARE_WITH_TIMEOUT(done.size(),1,10000);QVERIFY2(done[0][0].toBool(),qPrintable(done[0][1].toString()));
         QList<QByteArray> blocks;for(const auto &r:bench.ecu.requests)if(quint8(r[0])==0x36)blocks.append(r);
-        QCOMPARE(blocks.size(),512);QCOMPARE(quint8(blocks[254][1]),quint8(255));QCOMPARE(quint8(blocks[255][1]),quint8(0));QCOMPARE(quint8(blocks[256][1]),quint8(1));
-        for(const auto &r:blocks)QCOMPARE(r.size(),18);
+        QCOMPARE(blocks.size(),260);QCOMPARE(quint8(blocks[254][1]),quint8(255));QCOMPARE(quint8(blocks[255][1]),quint8(0));QCOMPARE(quint8(blocks[256][1]),quint8(1));
+        for(const auto &r:blocks)QCOMPARE(r.size(),3);
     }
     void faultInjection_data(){
         QTest::addColumn<QString>("fault");
         for(const char *s:{"timeout","negative","echo","length","verify","sequence","pending"})QTest::newRow(s)<<QString(s);
     }
     void faultInjection(){
-        QFETCH(QString,fault);LinBench b;FlashProfile p;p.applicationEraseBase=0x10000;FlashJob job(b.session,p,std::make_unique<SimulationKey>());
+        QFETCH(QString,fault);LinBench b;FlashProfile p;FlashJob job(b.session,p,std::make_unique<SimulationKey>());
         if(fault=="timeout")b.ecu.faults.dropService=0x36;
         if(fault=="negative"){b.ecu.faults.negativeService=0x34;b.ecu.faults.negativeCode=0x31;}
         if(fault=="echo")b.ecu.faults.badBlockEcho=true;
@@ -402,7 +402,7 @@ private slots:
         if(fault=="sequence")b.ecu.faults.badResponseSequence=true;
         if(fault=="pending"){b.ecu.faults.pendingService=0x31;b.ecu.faults.pendingCount=3;}
         QSignalSpy result(&job,&FlashJob::finished),progress(&job,&FlashJob::progress);QString error;
-        QVERIFY(job.start(image(48),{},error));QVERIFY(waitForTest([&]{return result.size()==1;},3000));
+        QVERIFY(job.start(image(48),{},error));QTRY_COMPARE_WITH_TIMEOUT(result.size(),1,3000);
         QCOMPARE(result[0][0].toBool(),fault=="pending");
         if(fault!="pending"){
             QVERIFY(!result[0][1].toString().isEmpty());QVERIFY(progress.last()[0].toInt()<100);
@@ -411,19 +411,19 @@ private slots:
         }
     }
     void cancelMidTransferAndRestart(){
-        LinBench b;FlashProfile p;p.applicationEraseBase=0x10000;FlashJob job(b.session,p,std::make_unique<SimulationKey>());QString error;
+        LinBench b;FlashProfile p;FlashJob job(b.session,p,std::make_unique<SimulationKey>());QString error;
         QSignalSpy result(&job,&FlashJob::finished);
         QVERIFY(job.start(image(4096),{},error));QTRY_VERIFY_WITH_TIMEOUT(b.ecu.requests.size()>=5,1000);
         job.cancel();const int n=b.ecu.requests.size();QTest::qWait(50);QCOMPARE(b.ecu.requests.size(),n);QCOMPARE(result.size(),0);QCOMPARE(b.ecu.resets,0);
-        QVERIFY(job.start(image(32),{},error));QVERIFY(waitForTest([&]{return result.size()==1;},3000));QVERIFY(result[0][0].toBool());
+        QVERIFY(job.start(image(32),{},error));QTRY_COMPARE_WITH_TIMEOUT(result.size(),1,3000);QVERIFY(result[0][0].toBool());
     }
     void independentLinChannels(){
-        FlashProfile a,b;a.applicationEraseBase=b.applicationEraseBase=0x10000;b.session=3;b.securityLevel=1;b.eraseRoutine=0xfe00;b.verifyRoutine=0xfe01;b.dependencyRoutine=0xfe02;
+        FlashProfile a,b;b.session=3;b.securityLevel=1;b.eraseRoutine=0xfe00;b.verifyRoutine=0xfe01;b.dependencyRoutine=0xfe02;
         LinBench first(1,a),second(0x15,b);FlashJob x(first.session,a,std::make_unique<SimulationKey>()),y(second.session,b,std::make_unique<SimulationKey>());
         QSignalSpy xd(&x,&FlashJob::finished),yd(&y,&FlashJob::finished);QString error;
         auto ai=image(100),bi=image(200);QVERIFY(x.start(ai,{},error));QVERIFY(y.start(bi,{},error));
-        QVERIFY(waitForTest([&]{return xd.size()==1;},3000));QVERIFY(waitForTest([&]{return yd.size()==1;},3000));
-        QVERIFY(xd[0][0].toBool());QVERIFY(yd[0][0].toBool());QCOMPARE(first.ecu.memory(0x10000),ai.segments[0].data);QCOMPARE(second.ecu.memory(0x10000),bi.segments[0].data);
+        QTRY_COMPARE_WITH_TIMEOUT(xd.size(),1,3000);QTRY_COMPARE_WITH_TIMEOUT(yd.size(),1,3000);
+        QVERIFY(xd[0][0].toBool());QVERIFY(yd[0][0].toBool());QCOMPARE(first.ecu.memory(0xff00),ai.segments[0].data);QCOMPARE(second.ecu.memory(0xff00),bi.segments[0].data);
         QCOMPARE(first.ecu.requests.first(),hex("1002"));QCOMPARE(second.ecu.requests.first(),hex("1003"));
     }
 };

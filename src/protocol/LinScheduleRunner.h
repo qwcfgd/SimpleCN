@@ -20,7 +20,6 @@ public:
     bool switchTo(const QString&,qint64 nowUs,QString&);
     bool setEnabled(const QString&,bool,qint64 nowUs,QString&);
     bool update(const QString&,const AppliedPayload&,QString&);
-    bool replacePlan(const TxPlan&,QString&);
     bool tick(qint64 nowUs,QString&);
     void observe(const BusFrameEvent&);
     bool stop(QString&);
@@ -43,10 +42,6 @@ private:
     bool fault(QString&);
     QString validate(const Schedule&)const;
     LinDevice*m_device=nullptr;TxPlan m_plan;RunStatus m_status;QSet<QString> m_publish;
-    bool armRound(QString&);
-    bool hasChanges()const{return m_replace||!m_pendingEnabled.isEmpty()||!m_payloads.isEmpty();}
-    bool m_replace=false;TxPlan m_next;
-    QHash<QString,AppliedPayload> m_payloads;
     Schedule m_effective;QMap<QString,bool> m_pendingEnabled;bool m_enableBoundary=false,m_slaveBoundary=false;
     qint64 m_frameEnd=0;int m_observedSlot=0;
     int m_slot=0;int m_bitrate=19200;qint64 m_due=0,m_switchBegan=0,m_lastOldFrameUs=0;

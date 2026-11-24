@@ -9,17 +9,17 @@ inline const QVector<DownloadStep> &downloadSteps(){
         {"pre2701","27 xx · APP 获取 seed",true},{"pre2702","27 xx · APP 发送 key",true},
         {"pre220101","22 F1 80 · 读取信息",true},{"pre31010203","31 01 02 03 · 编程条件检查",true},
         {"pre1003control","10 83 · 通讯控制会话",true},{"pre8502","85 82 · 关闭 DTC",true},
-        {"pre2803","28 83 F1 · 关闭应用通讯",true},
+        {"pre2803","28 83 01 · 关闭应用通讯",true},
         {"boot1002","10 02 · 编程会话",false},{"bootSeed","27 xx · Boot 获取 seed",false},
         {"bootKey","27 xx · Boot 发送 key",false},{"fingerprint","2E F1 84 · 写入19字节指纹",false},
         {"driver34","34 · Driver 请求下载",false},{"driver36","36 · Driver 传输数据",false},
         {"driver37","37 · Driver 传输结束",false},{"driverVerify","31 · Driver 校验",false},
         {"erase","31 01 FF00 · 擦除 ROM",false},
-        {"app34","· 34 · ROM 请求下载",false},{"app36","· 36 · ROM 传输数据",false},
-        {"app37","· 37 · ROM 传输结束",false},{"appVerify","· 31 · ROM 安全性校验",false},
-        {"dependency","31 · 编程依赖性校验",false},{"reset","11 01 · ECU 复位",false},
+        {"app34","34 · ROM 请求下载",false},{"app36","36 · ROM 传输数据",false},
+        {"app37","37 · ROM 传输结束",false},{"appVerify","31 · ROM 校验",false},
+        {"dependency","31 · 依赖检查",false},{"reset","11 01 · ECU 复位",false},
         {"post1003","10 03 · 复位后扩展会话",false},{"post14","14 FF FF FF · 清除 DTC",false},
-        {"post2800","28 80 F1 · 恢复应用通讯",false},{"post8501","85 81 · 恢复 DTC",false},
+        {"post2800","28 80 01 · 恢复应用通讯",false},{"post8501","85 81 · 恢复 DTC",false},
         {"post1001","10 81 · 恢复默认会话",false},{"identity","22 · 最终身份读取",false}};
     return steps;
 }

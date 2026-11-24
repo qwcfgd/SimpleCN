@@ -39,7 +39,7 @@ static QIcon statusIcon(int state) {
 MainWindow::MainWindow(const QString &settingsPath,bool simulation,QWidget *parent):
     QMainWindow(parent),ui(new Ui::MainWindow),m_configuration(settingsPath),m_simulation(simulation) {
     connect(&m_replay,&ReplayViewModel::notice,this,[this](const QString &text){ui->statusbar->showMessage(text,10000);});
-    initHostResources();ui->setupUi(this);ui->heroSubtitle->hide();setStyleSheet(styleSheetText());setWindowIcon(QIcon(":/SimpleCN.ico"));
+    initHostResources();ui->setupUi(this);ui->heroSubtitle->hide();setStyleSheet(styleSheetText());setWindowIcon(QIcon(":/Bootloader.ico"));
     UiLanguageController::instance();
     auto *language=new QComboBox(this);language->setObjectName("languageSelector");language->addItem("简中","zh_CN");language->addItem("Eng","en");
     language->setMinimumWidth(82);language->setMaximumWidth(110);language->setToolTip("语言");language->setAccessibleName("语言");language->setCurrentIndex(Language::instance().english()?1:0);

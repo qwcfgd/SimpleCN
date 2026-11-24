@@ -1,8 +1,7 @@
 #include "ChannelModel.h"
 #include "infrastructure/ChannelWorker.h"
 namespace host {
-ChannelModel::ChannelModel(ChannelSettings settings,QObject *parent,ChannelWorker *worker):
-    QObject(parent),m_worker(worker?worker:new ChannelWorker(settings)) {
+ChannelModel::ChannelModel(ChannelSettings settings,QObject *parent):QObject(parent),m_worker(new ChannelWorker(settings)) {
     qRegisterMetaType<ChannelSettings>();qRegisterMetaType<FrameBatch>();qRegisterMetaType<TaskState>();
     qRegisterMetaType<diag::Request>();
     qRegisterMetaType<signal::TxPlan>();qRegisterMetaType<signal::PayloadUpdate>();qRegisterMetaType<signal::RunStatus>();qRegisterMetaType<signal::BusFrameEvents>();

@@ -179,4 +179,4 @@ LIN 待发送表上方增加与通信配置同步的调度选择框。手动切�
 
 ## 1.3 构建目录更新
 
-以上原构建记录保留为历史。1.3 起程序本体仍位于 `../build/Qt-SimpleCN-qt5` / `qt6`；CMake 构建树、测试、调试和验证工具统一改到 `../build/qttemp/Qt-SimpleCN-qt5` / `qt6`，详见根目录 README。
+以上原构建记录保留为历史。1.3 起程序本体仍位于 `../build/Qt-GeneralController-qt5` / `qt6`；CMake 构建树、测试、调试和验证工具统一改到 `../build/qttemp/Qt-GeneralController-qt5` / `qt6`，详见根目录 README。

@@ -9,13 +9,12 @@ class FrameTableModel : public QAbstractItemModel {
     Q_OBJECT
 public:
     static constexpr int Capacity=10000;
-    static constexpr int NameColumn=9;
-    enum { NibbleAgeRole=Qt::UserRole+1, RowKeyRole=Qt::UserRole+2, RelativeTimeSecondsRole=Qt::UserRole+3 };
+    enum { NibbleAgeRole=Qt::UserRole+1, RelativeTimeSecondsRole=Qt::UserRole+3 };
     explicit FrameTableModel(QObject *parent=nullptr):QAbstractItemModel(parent){}
     QModelIndex index(int,int,const QModelIndex &p={}) const override;
     QModelIndex parent(const QModelIndex &) const override;
     int rowCount(const QModelIndex &p={}) const override;
-    int columnCount(const QModelIndex & ={}) const override {return NameColumn+1;}
+    int columnCount(const QModelIndex & ={}) const override {return 9;}
     QVariant data(const QModelIndex &,int role=Qt::DisplayRole) const override;
     QVariant headerData(int,Qt::Orientation,int role=Qt::DisplayRole) const override;
     bool exportCsv(const QString &,QString &error) const;
@@ -30,13 +29,11 @@ public:
     int windowSize() const {return m_windowSize;}
     const FrameBatch &history() const {return m_history;}
     const FrameRecord *frameAt(const QModelIndex &) const;
-    const FrameRecord *firstFrameAt(const QModelIndex &) const;
     void setRolling(bool);
     void setPaused(bool);
     void setHistoryStart(qint64);
     void setDatabase(signal::Database);
-    void setCustomNames(signal::Bus,QHash<quint64,QString>);
-    void setDisplayFilter(std::function<bool(const FrameRecord&)>,bool defaultDirections=false);
+    void setDisplayFilter(std::function<bool(const FrameRecord&)>);
 public slots:
     void append(const host::FrameBatch &);
     void clear();
@@ -45,15 +42,14 @@ signals:
     void cleared();
     void historyChanged();
 private:
-    struct Detail { quintptr token=0;qint64 historyOrdinal=-1;QVariantList ages;QVector<QStringList> children;QString rowKey; };
+    struct Detail { quintptr token=0;qint64 historyOrdinal=-1;QVariantList ages;QVector<QStringList> children; };
     QString key(const FrameRecord &) const;
-    Detail detail(const FrameRecord &,quintptr token,const QString &rowKey={}) const;
+    Detail detail(const FrameRecord &,quintptr token) const;
     Detail updatedDetail(const FrameRecord &before,const FrameRecord &after,const Detail &) const;
     void rebuild(bool preserveUnchangedAges=false);
     bool merged()const{return m_rolling&&!m_paused;}
     const FrameRecord &viewHistoryAt(qint64 index)const{return m_history.at(m_viewFilter?m_filteredHistory.at(index):index);}
     FrameBatch m_rows,m_history;
-    QHash<QString,FrameRecord> m_firstFrames;
     std::function<bool(const FrameRecord&)> m_viewFilter;
     QVector<qint64> m_filteredHistory;
     qint64 m_pausedHistoryLimit=0;
@@ -61,13 +57,7 @@ private:
     QHash<QString,int> m_keys;
     QHash<quintptr,int> m_parentRows;
     signal::Database m_database;
-    const signal::FrameDefinition *databaseFrame(const FrameRecord &) const;
-    void updateNames();
     QHash<quint64,int> m_frameLookup;
-    QHash<quint64,QString> m_customNames;
-    signal::Bus m_customNameBus=signal::Bus::Can;
-    void indexFilteredHistory(qint64 first,qint64 end);
-    bool m_defaultDirections=false;
     bool m_rolling=false;
     bool m_paused=false;
     qint64 m_windowStart=0;

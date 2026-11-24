@@ -1,8 +1,5 @@
 #include "BusHardware.h"
 #include "TosunHardware.h"
-#include "VectorHardware.h"
-#include <QStringList>
-#include <QRegularExpression>
 namespace host {
 namespace {
 class PeakCan final:public CanHardware {
@@ -21,9 +18,8 @@ public:
     void *receiveEventHandle()const override{return driver.receiveEventHandle();}
     CanBusState classifyStatus(unsigned long status)const override{
         const auto allowed=PCAN_ERROR_ANYBUSERR|PCAN_ERROR_QRCVEMPTY;
-        const auto queueErrors=PCAN_ERROR_XMTFULL|PCAN_ERROR_OVERRUN|PCAN_ERROR_QOVERRUN|PCAN_ERROR_QXMTFULL;
-        if((status & PCAN_ERROR_BUSOFF) && !(status & ~(allowed|queueErrors)))return CanBusState::BusOff;
         if(status & ~allowed)return CanBusState::Fatal;
+        if(status & PCAN_ERROR_BUSOFF)return CanBusState::BusOff;
         if(status & PCAN_ERROR_ANYBUSERR)return CanBusState::Warning;
         return CanBusState::Ready;
     }
@@ -47,7 +43,6 @@ public:
     bool open(const communication::HardwareChannel&h,const communication::SoftwareChannelConfiguration&c,QString&e)override{return backend.open(h,c,e);}
     bool close(QString&e)override{return backend.close(e);}
     communication::Health health(QString&e)override{return backend.health(e);}
-    LinWakeResult wakeUp()override{return driver.wakeUp()?LinWakeResult::Sent:LinWakeResult::Failed;}
     bool sendRaw(TLINMsg m)override{return driver.sendRaw(m);}
     DWORD recvRaw(DWORD n,TLINRcvMsg*m)override{return driver.recvRaw(n,m);}
     unsigned long lastErrorCode()const override{return driver.lastErrorCode();}
@@ -66,21 +61,20 @@ public:
 };
 template<class Interface> class Selection {
 public:
-    std::unique_ptr<Interface> peak,tosun,vector;Interface *active=nullptr;bool opened=false;
-    Selection(std::unique_ptr<Interface>a,std::unique_ptr<Interface>b,std::unique_ptr<Interface>c):peak(std::move(a)),tosun(std::move(b)),vector(std::move(c)),active(peak.get()){}
-    communication::HardwareChannels scan(QString&e){QString a,b,c;auto result=peak->scan(a);result+=tosun->scan(b);result+=vector->scan(c);e=result.isEmpty()?QStringList{a,b,c}.filter(QRegularExpression(".+")).join("; "):QString();return result;}
-    bool open(const communication::HardwareChannel&h,const communication::SoftwareChannelConfiguration&c,QString&e){Interface *next=h.key.startsWith("vector:")?vector.get():h.key.startsWith("tosun:")?tosun.get():peak.get();if(opened&&!close(e))return false;active=next;opened=true;return active->open(h,c,e);}
-    bool close(QString&e){const bool ok=active->close(e);if(ok)opened=false;return ok;}
+    std::unique_ptr<Interface> peak,tosun;Interface *active=nullptr;
+    Selection(std::unique_ptr<Interface>a,std::unique_ptr<Interface>b):peak(std::move(a)),tosun(std::move(b)),active(peak.get()){}
+    communication::HardwareChannels scan(QString&e){QString a,b;auto result=peak->scan(a);result+=tosun->scan(b);e=result.isEmpty()&&!a.isEmpty()&&!b.isEmpty()?a+"; "+b:QString();return result;}
+    bool open(const communication::HardwareChannel&h,const communication::SoftwareChannelConfiguration&c,QString&e){active=h.key.startsWith("tosun:")?tosun.get():peak.get();return active->open(h,c,e);}
 };
 #define COMMON_IO \
     communication::HardwareChannels scan(QString&e)override{return choice.scan(e);} \
     bool open(const communication::HardwareChannel&h,const communication::SoftwareChannelConfiguration&c,QString&e)override{return choice.open(h,c,e);} \
-    bool close(QString&e)override{return choice.close(e);} \
+    bool close(QString&e)override{return choice.active->close(e);} \
     communication::Health health(QString&e)override{return choice.active->health(e);} \
     unsigned long lastErrorCode()const override{return choice.active->lastErrorCode();} \
     QString lastErrorText()const override{return choice.active->lastErrorText();}
 class CombinedCan final:public CanHardware {
-    Selection<CanHardware> choice{std::make_unique<PeakCan>(),createTosunCan(tosun::sharedRuntime()),createVectorCan(vectorxl::sharedRuntime())};
+    Selection<CanHardware> choice{std::make_unique<PeakCan>(),createTosunCan(tosun::sharedRuntime())};
 public:
     COMMON_IO
     bool sendRaw(TPCANMsg m)override{return choice.active->sendRaw(m);}
@@ -92,10 +86,9 @@ public:
     CanBusState statusFrame(const TPCANMsg &frame)const override{return choice.active->statusFrame(frame);}
 };
 class CombinedLin final:public LinHardware {
-    Selection<LinHardware> choice{std::make_unique<PeakLin>(),createTosunLin(tosun::sharedRuntime()),createVectorLin(vectorxl::sharedRuntime())};
+    Selection<LinHardware> choice{std::make_unique<PeakLin>(),createTosunLin(tosun::sharedRuntime())};
 public:
     COMMON_IO
-    LinWakeResult wakeUp()override{return choice.active->wakeUp();}
     bool sendRaw(TLINMsg m)override{return choice.active->sendRaw(m);}
     DWORD recvRaw(DWORD n,TLINRcvMsg*m)override{return choice.active->recvRaw(n,m);}
     bool clearMsg()override{return choice.active->clearMsg();}
