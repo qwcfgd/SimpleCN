@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Qt-SimpleCN VERSION 1.61 LANGUAGES CXX)
+project(Qt-SimpleCN VERSION 1.63 LANGUAGES CXX)
 if(MINGW)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
 endif()

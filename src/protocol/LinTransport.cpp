@@ -31,6 +31,19 @@ LinCodec::Result LinCodec::accept(quint8 nad,const QByteArray &f,QByteArray &pdu
     }
     return bad("Unsupported LIN PCI");
 }
+int LinTransport::automaticDownloadRequestSlotMs(int bitrate, int configuredSlotMs){
+    // Zero leaves the existing periodic scheduler in control.
+    return bitrate == 19200 && configuredSlotMs == 0 ? 10 : 0;
+}
+void LinTransport::setDownloadRequestSlot(int intervalMs){
+    m_downloadSlotMs=intervalMs;
+    m_responseSlotMs=qMax(m_slot.interval(),intervalMs);
+    m_slot.setSingleShot(true);
+}
+void LinTransport::scheduleDownloadSlot(){
+    const int interval=m_tx.isEmpty()?m_responseSlotMs:m_downloadSlotMs;
+    m_slot.start(int(qMax<qint64>(0,interval-m_lastSlot.elapsed())));
+}
 LinTransport::LinTransport(quint8 nad,int slotMs,int crMs,Write write,QObject *parent)
  :DiagnosticTransport(parent),m_nad(nad),m_write(std::move(write)){
     m_slot.setInterval(qMax(1,slotMs));m_slot.setTimerType(Qt::PreciseTimer);
@@ -45,7 +58,9 @@ bool LinTransport::send(const QByteArray &pdu,QString &error){
     const auto frames=LinCodec::encode(m_nad,pdu);
     if(frames.isEmpty()){error="Invalid NAD or PDU length (1..4095)";return false;}
     m_decoder.reset();for(const auto &f:frames)m_tx.enqueue(f);
-    m_active=true;m_confirm=false;m_slot.start();return true;
+    m_active=true;m_confirm=false;
+    if(m_downloadSlotMs)m_slot.start(m_downloadSlotMs);else m_slot.start();
+    return true;
 }
 void LinTransport::cancel(){m_active=m_confirm=m_awaitTx=false;m_as.stop();m_lastTx.clear();m_slot.stop();m_cr.stop();m_tx.clear();m_decoder.reset();emit cancelled();}
 void LinTransport::fail(const QString &error){cancel();emit failed(error);}
@@ -60,12 +75,17 @@ void LinTransport::tick(){
         else if(m_tx.isEmpty())m_confirm=true;
     }
     emit trace(true,id,bytes);
+    if(m_downloadSlotMs){
+        m_lastSlot.start();
+        if(!m_awaitTx)scheduleDownloadSlot();
+    }
     QString error;if(!m_write(id,bytes,error))fail(error.isEmpty()?"LIN write failed":error);
 }
 void LinTransport::confirmTransmitted(const QByteArray &bytes,bool success){
     if(!m_active||!m_awaitTx||bytes!=m_lastTx)return;
     if(!success){fail("LIN transmit confirmation error");return;}
     m_as.stop();m_awaitTx=false;if(m_tx.isEmpty())m_confirm=true;
+    if(m_downloadSlotMs)scheduleDownloadSlot();
 }
 void LinTransport::receiveFrame(quint8 id,const QByteArray &bytes,bool noResponse,bool bad){
     if(!m_active||id!=0x3d||noResponse)return;

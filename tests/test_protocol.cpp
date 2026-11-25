@@ -45,6 +45,59 @@ class ProtocolTest : public QObject {
         i.segments.append({address,b});i.size=count;return i;
     }
 private slots:
+    void linAutomaticDownloadSlot_data(){
+        QTest::addColumn<int>("bitrate");
+        QTest::addColumn<int>("configuredMs");
+        QTest::addColumn<int>("expectedMs");
+        QTest::newRow("19200-auto") << 19200 << 0 << 10;
+        QTest::newRow("19200-explicit") << 19200 << 25 << 0;
+        QTest::newRow("9600-auto") << 9600 << 0 << 0;
+        QTest::newRow("10400-auto") << 10400 << 0 << 0;
+        QTest::newRow("20000-auto") << 20000 << 0 << 0;
+    }
+    void linAutomaticDownloadSlot(){
+        QFETCH(int, bitrate);
+        QFETCH(int, configuredMs);
+        QFETCH(int, expectedMs);
+        QCOMPARE(LinTransport::automaticDownloadRequestSlotMs(bitrate, configuredMs), expectedMs);
+    }
+    void linDownloadSeparatesRequestAndResponseCadence(){
+        QElapsedTimer clock;clock.start();
+        QList<qint64> requests,replies;QList<QByteArray> payloads;
+        LinTransport *link=nullptr;
+        LinTransport transport(0x5f,20,1000,[&](quint8 id,const QByteArray &data,QString &){
+            const auto now=clock.nsecsElapsed()/1000;
+            if(id==0x3c){
+                requests.append(now);payloads.append(data);
+                const int echoMs=payloads.size()==2?23:7;
+                QTimer::singleShot(echoMs,link,[link,data]{link->confirmTransmitted(data);});
+            }else replies.append(now);
+            return true;
+        });
+        link=&transport;
+        transport.requireTransmitConfirmation(true);
+        transport.setDownloadRequestSlot(LinTransport::automaticDownloadRequestSlotMs(19200, 0));
+        QSignalSpy sent(&transport,&DiagnosticTransport::sent);
+        QSignalSpy errorSpy(&transport,&DiagnosticTransport::failed);
+        QString error;const QByteArray pdu(24,'d');
+        QVERIFY(transport.send(pdu,error));
+        QTRY_VERIFY_WITH_TIMEOUT(replies.size()>=3,900);
+        QCOMPARE(payloads,LinCodec::encode(0x5f,pdu));
+        QCOMPARE(sent.size(),1);QVERIFY(errorSpy.isEmpty());
+        QList<qint64> requestGaps,replyGaps;
+        for(int i=1;i<requests.size();++i){
+            const auto elapsed=requests[i]-requests[i-1];
+            QVERIFY(elapsed>=(i==2?23000:10000));
+            requestGaps.append(elapsed);
+        }
+        QVERIFY(replies.first()-requests.last()>=20000);
+        for(int i=1;i<replies.size();++i){
+            const auto elapsed=replies[i]-replies[i-1];QVERIFY(elapsed>=20000);replyGaps.append(elapsed);
+        }
+        qInfo()<<"19200 mock request gaps us"<<requestGaps<<"response-header gaps us"<<replyGaps;
+        transport.cancel();const auto count=replies.size();QTest::qWait(40);QCOMPARE(replies.size(),count);
+    }
+
     void configuredResetWaitIsPreservedAndApplied(){
         FlashProfile original;original.applicationEraseBase=0x10000;original.flow="boot";original.resetWaitMs=120;
         for(const auto &step:downloadSteps())original.stepEnabled[step.id]=false;

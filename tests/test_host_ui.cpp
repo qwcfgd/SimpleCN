@@ -500,12 +500,14 @@ private slots:
         row("SNR",MSG_ERR_SLAVE_NOT_RESPONDING,0xa5,dirSubscriber,false,true,0);
         row("SNR/suppressed",MSG_ERR_SLAVE_NOT_RESPONDING,0xa5,dirSubscriber,true,true,0);
         row("SNR/autolength",MSG_ERR_SLAVE_NOT_RESPONDING,0xa5,dirSubscriberAutoLength,true,true,0);
-        for(int count:{0,3,8}){
+        for(int count:{0,1,3,8}){
             const auto suffix=QByteArray::number(count);
             row("TIMEOUT/"+suffix,MSG_ERR_TIMEOUT,count,dirSubscriber,false,false,count);
             row("TIMEOUT/suppressed/"+suffix,MSG_ERR_TIMEOUT,count,dirSubscriber,true,false,count);
             row("publisher/TIMEOUT/"+suffix,MSG_ERR_TIMEOUT,count,dirPublisher,true,false,count);
         }
+        row("empty PEAK diagnostic slot",0x18,0,dirSubscriber,false,true,0);
+        row("bad checksum",MSG_ERR_CHECKSUM,0,dirSubscriber,false,false,8);
         row("SNR+TIMEOUT",MSG_ERR_SLAVE_NOT_RESPONDING|MSG_ERR_TIMEOUT,3,dirSubscriber,true,false,3);
         row("publisher/SNR",MSG_ERR_SLAVE_NOT_RESPONDING,0xa5,dirPublisher,true,false,0);
         row("generic-adapter-error",0x10000,0xa5,dirSubscriber,true,false,8);
@@ -639,6 +641,36 @@ private slots:
         onDialog(can,"downloadSettingsDialog",[](QDialog *dialog){QVERIFY(!dialog->findChild<QLineEdit*>("downloadNad"));QVERIFY(dialog->findChild<QLineEdit*>("downloadTxId"));dialog->reject();});
         can->findChild<QPushButton*>("downloadSettings")->click();
     }
+    void linDownloadWireTimingAndEcho(){
+        auto settings=realWakeSettings();settings.nad="5F";settings.bitrate=19200;
+        settings.linSlotMs=0;settings.linAsMs=1000;settings.p2Ms=500;
+        WakeFakeLin *fake=nullptr;
+        ChannelWorker worker(settings,{},[&]{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
+        QSignalSpy tasks(&worker,&ChannelWorker::taskChanged);
+        worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);
+        worker.startPreview(settings);QTRY_COMPARE_WITH_TIMEOUT(fake->writes.size(),1,1000);
+        const auto request=fake->writes.first();
+        QCOMPARE(request.FrameId,BYTE(0x3c));QCOMPARE(request.Data[2],BYTE(0x10));
+        TLINRcvMsg message={};message.Type=mstStandard;message.FrameId=0x3c;message.Direction=dirPublisher;
+        message.Length=8;message.ChecksumType=cstClassic;
+        std::copy_n(request.Data,8,message.Data);fake->frames.enqueue(message);
+        QTRY_VERIFY_WITH_TIMEOUT(fake->writes.size()>=2,400);
+        QCOMPARE(fake->writes[1].FrameId,BYTE(0x3d));
+        QVERIFY(fake->writeMs[1]-fake->writeMs[0]>=19);
+        message.FrameId=0x7d;message.Direction=dirSubscriber;message.ErrorFlags=0x18;message.Checksum=0;
+        const auto before=fake->writes.size();fake->frames.enqueue(message);
+        QTRY_VERIFY_WITH_TIMEOUT(fake->writes.size()>before,400);
+        QCOMPARE(qvariant_cast<TaskState>(tasks.last()[0]),TaskState::Running);
+        message.ErrorFlags=0;
+        const auto reply=QByteArray::fromHex("5f065001003201f4");
+        std::copy(reply.begin(),reply.end(),message.Data);message.Data[3]=request.Data[3];
+        fake->frames.enqueue(message);
+        const auto next=[&]{return std::count_if(fake->writes.cbegin(),fake->writes.cend(),[](const TLINMsg&m){return m.FrameId==0x3c;});};
+        QTRY_VERIFY_WITH_TIMEOUT(next()>1,450);
+        QCOMPARE(qvariant_cast<TaskState>(tasks.last()[0]),TaskState::Running);
+        worker.cancelTask();worker.shutdown();
+    }
+
     void linDownloadWakePrecedesFirstFrameAndProtocolTimers(){
         auto settings=realWakeSettings();WakeFakeLin *fake=nullptr;
         ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});

@@ -473,7 +473,10 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
         const auto nad=quint8(m_settings.nad.toUInt(nullptr,16));
         if(m_settings.simulation)m_ecu.reset(new boot::SimulatedLinEcu(nad,profile));
         const int slotMs=m_settings.linSlotMs>0?m_settings.linSlotMs:(m_settings.simulation?1:qMax(20,(150000+m_settings.bitrate-1)/m_settings.bitrate));
-        m_transport.reset(new boot::LinTransport(nad,slotMs,m_settings.linCrMs,[this](quint8 id,const QByteArray &data,QString &error){
+        const int requestSlotMs = (!manual && !m_settings.simulation)
+            ? boot::LinTransport::automaticDownloadRequestSlotMs(m_settings.bitrate, m_settings.linSlotMs)
+            : 0;
+        m_transport.reset(new boot::LinTransport(nad,slotMs,m_settings.linCrMs,[this,requestSlotMs](quint8 id,const QByteArray &data,QString &error){
             if(m_ecu){
                 if(!m_ecu->write(id,data,error))return false;
                 if(id==0x3d){const auto frame=m_ecu->takeResponseFrame();if(!frame.isEmpty())m_transport->receiveFrame(id,frame);}
@@ -483,8 +486,14 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
             TLINMsg message={};message.FrameId=id;message.Length=8;message.ChecksumType=cstClassic;
             message.Direction=id==0x3c?dirPublisher:dirSubscriber;
             for(int i=0;i<8;++i)message.Data[i]=i<data.size()?BYTE(data[i]):BYTE(0xff);
-            if(!m_lin->sendRaw(message)){error=m_lin->lastErrorText();return false;}return true;
+            if(!m_lin->sendRaw(message)){error=m_lin->lastErrorText();return false;}
+            if(requestSlotMs > 0 && id == 0x3c && !m_receivePump->isActive()){
+                const int bitrate=m_settings.bitrate;
+                m_receivePump->start((boot::LinTransport::diagnosticFrameBits*1000+bitrate-1)/bitrate);
+            }
+            return true;
         }));
+        if(requestSlotMs > 0) m_transport->setDownloadRequestSlot(requestSlotMs);
         m_transport->requireTransmitConfirmation(!m_settings.simulation,m_settings.linAsMs);
         connect(m_transport.get(),&boot::DiagnosticTransport::cancelled,this,[this]{if(m_ecu)m_ecu->clearWire();});
         connect(m_transport.get(),&boot::LinTransport::trace,this,[this](bool tx,quint8 id,const QByteArray &bytes){
@@ -748,11 +757,15 @@ void ChannelWorker::receive() {
             const bool timeout=m.ErrorFlags&MSG_ERR_TIMEOUT;
             const bool noData=m.ErrorFlags&MSG_ERR_SLAVE_NOT_RESPONDING;
             const bool subscriber=m.Direction==dirSubscriber||m.Direction==dirSubscriberAutoLength;
-            const bool absent=subscriber&&m.ErrorFlags==MSG_ERR_SLAVE_NOT_RESPONDING;
-            // PLIN TIMEOUT means incomplete data/checksum; Checksum is a byte
-            // count, while Length remains the expected response length.
-            const int dataLength=timeout?qMin(int(m.Checksum),8):noData?0:qMin(int(m.Length),8);
             const auto frameId=quint8(m.FrameId&0x3f);
+            // Fixed-length PLIN subscribers report the received byte count in Checksum on TIMEOUT.
+            const bool emptyDiagnosticSlot = m.ErrorFlags == (MSG_ERR_SLAVE_NOT_RESPONDING | MSG_ERR_TIMEOUT)
+                && m.Direction == dirSubscriber && frameId == 0x3d && m.Length == 8
+                && m.ChecksumType == cstClassic && m.Checksum == 0 && m_uds && m_uds->hasActiveRequest()
+                && m_session->configuration().hardwareKey.startsWith(QLatin1String("lin:"));
+            const bool absent = (subscriber && m.ErrorFlags == MSG_ERR_SLAVE_NOT_RESPONDING) || emptyDiagnosticSlot;
+            // Length remains the expected size when TIMEOUT is set.
+            const int dataLength=timeout?qMin(int(m.Checksum),8):noData?0:qMin(int(m.Length),8);
             const bool malformedLength=m.Length<1||m.Length>8||(frameId==0x3c&&m.Length!=8);
             const bool bad=(m.ErrorFlags!=0&&!absent)||(!m.ErrorFlags&&malformedLength);
             const bool valid=!m.ErrorFlags&&!malformedLength;
@@ -871,6 +884,9 @@ void ChannelWorker::receive() {
     if(!batch.isEmpty())publishFrames(batch);
     if(!events.isEmpty()){if(m_signal&&!m_canBlocked)m_signal->observe(events);emit busEvents(events);}
     if(!m_receiveDrained){if(!m_receivePump->isActive())m_receivePump->start(0);}
+    else if(m_running&&m_lin&&m_transport&&m_transport->awaitingDownloadTransmit()){
+        if(!m_receivePump->isActive())m_receivePump->start(1);
+    }
     else if(!m_canNotifier&&!m_canEchoes.isEmpty()&&m_canTransport&&m_canTransport->busy()){
         if(!m_receivePump->isActive())m_receivePump->start(1);
     }
