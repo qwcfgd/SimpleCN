@@ -6,7 +6,7 @@
 
 简体中文 · [English](README.en.md) · [GitHub：SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.63-2563eb)
+![Version](https://img.shields.io/badge/version-1.64-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
@@ -18,6 +18,11 @@
 </div>
 
 实物 LIN 下载在 19,200 bit/s 且诊断调度间隔设为自动时，以 10 ms 为请求帧头（0x3C）的目标间隔，以 20 ms 轮询响应帧头（0x3D）。发送确认和主机调度可能延长实际间隔。
+
+## V1.64
+
+- 同一 CAN ID 的多个 DBC 定义可分别保留。遇到歧义时可在报文树选择定义，修正无法表示的信号初值后可启用该帧发送。
+- 待发送列表支持右键多选删除和 Delete 键。从左树添加报文时保留节点位置。信号发送页的报文监视区可拖至约 85%。
 
 ## V1.60
 

@@ -97,6 +97,7 @@ bool SignalCodec::encode(const FrameDefinition&f,const QVector<RawValue>&values,
     }bytes=next;error.clear();return true;
 }
 bool SignalCodec::decode(const FrameDefinition&f,const QByteArray &bytes,QVector<RawValue>&values,QString &error){
+    if(!f.decodeIssue.isEmpty()){error=f.decodeIssue;return false;}
     if(bytes.size()!=f.length){error="接收/编辑帧长度与数据库不符";return false;}
     values.resize(f.fields.size());
     auto extract=[&](int i){const auto &s=f.fields[i];RawValue value;if(s.array)value.bytes.fill(0,s.width/8);
@@ -111,7 +112,9 @@ bool SignalCodec::decode(const FrameDefinition&f,const QByteArray &bytes,QVector
 }
 bool SignalCodec::initialize(const FrameDefinition&f,Bus bus,TxDraft&draft,QString&error){
     TxDraft out;out.cycleMs=f.cycleMs>0?f.cycleMs:100;out.applied.bytes.fill(bus==Bus::Can?0:char(0xff),f.length);
-    for(const auto &s:f.fields){auto value=defaults(s);if(!s.initial.isEmpty()){const auto parsed=parseRaw(s,s.initial);if(!parsed.ok()){error=s.name+": 文件初始值无效："+parsed.error;return false;}value=parsed.raw;}out.values.append(value);}
+    for(const auto &s:f.fields){auto value=defaults(s);
+        if(!s.unrepresentableInitial.isEmpty()){out.pendingInitial.insert(out.values.size());out.sendEnabled=false;value={};}
+        if(!s.initial.isEmpty()){const auto parsed=parseRaw(s,s.initial);if(!parsed.ok()){error=s.name+": 文件初始值无效："+parsed.error;return false;}value=parsed.raw;}out.values.append(value);}
     if(f.issue.isEmpty()&&!encode(f,out.values,out.applied.bytes,error))return false;
     for(int i=0;i<f.fields.size();++i)out.warnings[i]=rangeWarning(f.fields[i],out.values[i]);
     out.applied.revision=1;out.appliedValues=out.values;draft=out;return true;
@@ -119,7 +122,7 @@ bool SignalCodec::initialize(const FrameDefinition&f,Bus bus,TxDraft&draft,QStri
 QString SignalCodec::validateFrame(const FrameDefinition&f){
     if(f.length<0||f.length>8)return "首版仅支持 0–8 字节经典 CAN / 1–8 字节 LIN";
     int selectors=0;QSet<QString> names;
-    for(int i=0;i<f.fields.size();++i){const auto &s=f.fields[i];if(names.contains(s.name))return "重复信号名称："+s.name;names.insert(s.name);
+    for(int i=0;i<f.fields.size();++i){const auto &s=f.fields[i];if(names.contains(s.identity()))return "重复信号名称："+s.name;names.insert(s.identity());
         selectors+=s.selector;if(s.width<1||s.width>64||s.start<0||(s.array&&(s.width%8||s.start%8)))return "无效信号布局："+s.name;
         auto positions=bitPositions(s);for(int b:positions)if(b<0||b>=f.length*8)return "信号越过帧边界："+s.name;
         for(int j=0;j<i;++j){const auto &other=f.fields[j];if(s.multiplexed&&other.multiplexed&&s.muxValue!=other.muxValue)continue;

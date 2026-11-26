@@ -103,8 +103,8 @@ void SignalPlotDialog::addSignals(){
     auto *layout=new QVBoxLayout(&dialog);auto *search=new QLineEdit;search->setPlaceholderText("搜索报文、ID 或信号");search->setObjectName("plotSignalSearch");layout->addWidget(search);
     auto *tree=new QTreeWidget;tree->setObjectName("plotSignalTree");tree->setHeaderLabels({"报文 / 信号","ID / 单位"});tree->setSelectionMode(QAbstractItemView::ExtendedSelection);tree->setColumnWidth(0,370);layout->addWidget(tree);
     const auto database=m_vm->database();
-    for(const auto &frame:database->frames){auto *root=new QTreeWidgetItem(tree,{frame.name,"0x"+QString::number(frame.id,16).toUpper()});root->setFlags(root->flags()&~Qt::ItemIsSelectable);
-        for(const auto &field:frame.fields){auto *leaf=new QTreeWidgetItem(root,{field.name,field.unit});leaf->setData(0,Qt::UserRole,frame.key);leaf->setData(0,Qt::UserRole+1,field.name);leaf->setToolTip(0,field.array?"数组信号可查看值，无法直接绘制数值曲线":field.comment);}}
+    for(const auto &frame:database->frames){auto *root=new QTreeWidgetItem(tree,{frame.displayName(),"0x"+QString::number(frame.id,16).toUpper()});root->setFlags(root->flags()&~Qt::ItemIsSelectable);
+        for(const auto &field:frame.fields){auto *leaf=new QTreeWidgetItem(root,{field.displayName(),field.unit});leaf->setData(0,Qt::UserRole,frame.key);leaf->setData(0,Qt::UserRole+1,field.identity());leaf->setToolTip(0,field.array?"数组信号可查看值，无法直接绘制数值曲线":field.comment);}}
     tree->expandAll();
     connect(search,&QLineEdit::textChanged,&dialog,[tree](const QString &text){for(int n=0;n<tree->topLevelItemCount();++n){auto *root=tree->topLevelItem(n);bool any=false;const bool match=(root->text(0)+" "+root->text(1)).contains(text,Qt::CaseInsensitive);for(int c=0;c<root->childCount();++c){auto *leaf=root->child(c);bool show=match||leaf->text(0).contains(text,Qt::CaseInsensitive);leaf->setHidden(!show);any|=show;}root->setHidden(!any);}});
     auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel);buttons->button(QDialogButtonBox::Ok)->setText("添加选中信号");layout->addWidget(buttons);

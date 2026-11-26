@@ -1,7 +1,7 @@
 #pragma once
 #include <QWidget>
 #include "viewmodels/SignalTransmitViewModel.h"
-class QSpinBox;class QDialog;class QLabel;class QLineEdit;class QPushButton;class QComboBox;class QTreeView;class QTableView;
+class QPlainTextEdit;class QSpinBox;class QDialog;class QLabel;class QLineEdit;class QPushButton;class QComboBox;class QTreeView;class QTableView;
 namespace host {
 class SignalValueTableModel;class CanTxTableModel;class LinScheduleTableModel;
 class SignalPlotDialog;
@@ -20,6 +20,8 @@ private:
     QDialog*m_configurationDialog;
     SignalPlotDialog *m_plotDialog=nullptr;
     QLabel*m_configurationFeedback;
+    bool m_addingFromTree=false;
+    QPlainTextEdit *m_databaseDiagnostics;
     QLabel*m_summary,*m_validation;
     QPushButton*m_import,*m_reload,*m_newSchedule,*m_removeSchedule,*m_once,*m_start,*m_back,*m_restore;
     QComboBox*m_role,*m_node,*m_schedule,*m_canNode,*m_canDirection;

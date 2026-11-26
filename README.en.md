@@ -6,7 +6,7 @@
 
 [简体中文](README.md) · English · [GitHub: SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.63-2563eb)
+![Version](https://img.shields.io/badge/version-1.64-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
@@ -18,6 +18,11 @@ Developed with assistance from OpenAI Codex.
 </div>
 
 For physical LIN downloads at 19,200 bit/s with automatic diagnostic scheduling, the target interval is 10 ms for request headers (0x3C) and 20 ms for response headers (0x3D). Transmit confirmation and host scheduling can extend the observed interval.
+
+## V1.64
+
+- DBC imports retain multiple definitions of the same CAN ID. Select a definition in the message tree to resolve ambiguity. Correct an unrepresentable initial signal value before enabling that frame for transmission.
+- Use the context menu or Delete to remove selected queue entries. Adding messages preserves the source tree position. On the signal transmission tab, the frame monitor can occupy about 85% of the available height.
 
 ## V1.60
 

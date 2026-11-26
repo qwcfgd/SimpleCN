@@ -42,6 +42,35 @@ private slots:
         const auto result=DatabaseImporter::dbc(independent);QVERIFY2(result.database,qPrintable(result.error));QCOMPARE(result.database->frames.size(),1);QCOMPARE(result.database->frames.first().fields.first().name,QString("Detached"));QVERIFY(!result.database->frames.first().issue.isEmpty());
         auto invalid=independent;invalid.replace("VECTOR__INDEPENDENT_SIG_MSG","Normal");QVERIFY(!DatabaseImporter::dbc(invalid).database);
     }
+    void fractionalDbcStartRequiresAValueBeforeTransmission(){
+        const QByteArray source="VERSION \"\"\nNS_ :\nBS_:\nBU_: ECU\n"
+            "BO_ 880 Valve: 8 ECU\n SG_ Position : 7|10@0+ (0.26367188,-45) [-45|224.73633324] \"\" ECU\n"
+            "BA_DEF_ SG_ \"GenSigStartValue\" HEX 0 80000000;\n"
+            "BA_ \"GenSigStartValue\" SG_ 880 Position 170.666663;\n";
+        const auto imported=DatabaseImporter::dbc(source);
+        QVERIFY2(imported.database,qPrintable(imported.error));
+        const auto &frame=imported.database->frames.first();
+        QVERIFY(frame.issue.isEmpty());QCOMPARE(frame.fields.first().unrepresentableInitial,QString("170.666663"));
+        TxDraft draft;QString why;QVERIFY(SignalCodec::initialize(frame,Bus::Can,draft,why));QVERIFY(draft.pendingInitial.contains(0));QVERIFY(!draft.sendEnabled);
+        QString error;QVector<RawValue> values;
+        QByteArray bytes=QByteArray::fromHex("2a80000000000000");
+        QVERIFY(SignalCodec::decode(frame,bytes,values,error));QCOMPARE(values.first().bits,quint64(170));
+        QVERIFY(SignalCodec::encode(frame,values,bytes,error));QCOMPARE(bytes,QByteArray::fromHex("2a80000000000000"));
+    }
+    void ambiguousSignalTypeDoesNotDecodeAsInteger(){
+        const QByteArray source="VERSION \"\"\nNS_ :\nBS_:\nBU_: ECU\n"
+            "BO_ 20 A: 8 ECU\n SG_ Shared : 0|32@1+ (1,0) [0|0] \"\" ECU\n"
+            "BO_ 20 B: 8 ECU\n SG_ Shared : 0|32@1+ (1,0) [0|0] \"\" ECU\n"
+            "SIG_VALTYPE_ 20 Shared : 1;\n";
+        const auto imported=DatabaseImporter::dbc(source);
+        QVERIFY2(imported.database,qPrintable(imported.error));
+        QCOMPARE(imported.database->frames.size(),2);
+        for(const auto &frame:imported.database->frames){
+            QString error;QVector<RawValue> values;QByteArray bytes(8,0);
+            QVERIFY(!SignalCodec::decode(frame,bytes,values,error));QVERIFY(error.contains("无法唯一归属"));
+            QVERIFY(!frame.issue.isEmpty());
+        }
+    }
     void unusedInvalidLinEncodingIsDiagnosed(){
         auto hex=bytes("ldf");hex.replace("physical_value, 0, 100,","physical_value, 0x00, 0x64,");QVERIFY(DatabaseImporter::ldf(hex).database);
         auto source=bytes("ldf");source.replace("Signal_encoding_types {","Signal_encoding_types { Unused { physical_value, -2560, 2559, 0.1, 0, \"degC\"; }");

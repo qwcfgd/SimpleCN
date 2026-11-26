@@ -21,10 +21,15 @@ void ReplayViewModel::start(SignalTransmitViewModel *owner,bool periodic,const Q
         if(!vm->connected()||vm->busy()){report("回放目标未连接或正在执行任务："+target);return;}
         auto *svm=vm->signalTransmission();TxPlan plan;plan.bus=can?Bus::Can:Bus::Lin;plan.role=svm->working().role;plan.node=svm->working().node;plan.replay=true;plan.periodic=periodic;plan.repeatCount=owner->working().repeatCount;plan.replayDurationUs=owner->replayLog().durationUs;plans[vm]=plan;
         const auto selectedNode=can?svm->working().canNode:svm->working().node;
-        for(const auto &f:svm->database()->frames){definitions[vm][f.key]=f;if(!vm->settings().simulation&&!selectedNode.isEmpty()&&(f.publisher==selectedNode||f.transmitters.contains(selectedNode)))exclude[vm].insert(f.key);}
+        for(const auto &f:svm->database()->frames){const auto wire=frameKey(plan.bus,f.id,f.extended);
+            if(svm->database()->sharedCanIds.contains(wire)&&svm->resolvedFrameKey(wire)!=f.key)continue;
+            definitions[vm][wire]=f;if(!vm->settings().simulation&&!selectedNode.isEmpty()&&(f.publisher==selectedNode||f.transmitters.contains(selectedNode)))exclude[vm].insert(wire);}
     }
     if(plans.isEmpty()){report("请先配置至少一个日志通道映射");return;}
     for(const auto &r:owner->replayLog().frames){const auto target=mapping.value(r.channel).toString();auto *vm=targets.value(target,nullptr);if(!vm||!plans.contains(vm))continue;auto &plan=plans[vm];const auto key=frameKey(plan.bus,r.id,r.extended);
+        if(vm->signalTransmission()->resolvedFrameKey(key).isEmpty()){
+            report(QString("回放 ID 0x%1 有多个候选，请先在报文树中选择使用的定义").arg(r.id,0,16));return;
+        }
         if(exclude[vm].contains(key))continue;
         if(!vm->settings().simulation&&r.fd){report("当前经典 CAN 硬件驱动不支持 CAN FD 回放："+target);return;}
         if(plan.bus==Bus::Lin&&(r.length<1||(r.id>=60&&r.length!=8))){report("日志包含无效 LIN 帧长度");return;}

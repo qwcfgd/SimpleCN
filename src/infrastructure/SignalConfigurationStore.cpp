@@ -14,10 +14,19 @@ QJsonObject SignalConfigurationStore::serialize(const Database&db,const WorkingS
     auto path=db->path;if(!directory.isEmpty()&&!path.isEmpty())path=QDir(directory).relativeFilePath(path);root["source"]=path;root["sha256"]=db->sha256;
     root["repeatCount"]=work.repeatCount;root["uiSettings"]=work.uiSettings;root["replaySettings"]=work.replaySettings;
     root["role"]=int(work.role);root["node"]=work.node;root["schedule"]=work.schedule;
-    if(db->bus==Bus::Can){root["canOrder"]=QJsonArray::fromStringList(work.canOrder);root["canNode"]=work.canNode;root["canDirection"]=work.canDirection;}
-    QJsonArray custom;for(const auto&f:work.customFrames)custom.append(QJsonObject{{"name",f.name},{"extended",f.extended},{"databaseBound",f.databaseBound},{"id",QString::number(f.id)},{"length",f.length},{"publisher",f.publisher},{"classicChecksum",f.classicChecksum},{"key",f.key},{"source",f.custom?QString():frameKey(db->bus,f.id,f.extended)}});root["custom"]=custom;
+    if(db->bus==Bus::Can){QJsonObject choices;for(auto it=work.canDefinitions.cbegin();it!=work.canDefinitions.cend();++it)choices[it.key()]=it.value();
+        if(!choices.isEmpty())root["canDefinitions"]=choices;
+        root["canOrder"]=QJsonArray::fromStringList(work.canOrder);root["canNode"]=work.canNode;root["canDirection"]=work.canDirection;}
+    QJsonArray custom;for(const auto&f:work.customFrames)custom.append(QJsonObject{{"name",f.name},{"extended",f.extended},{"databaseBound",f.databaseBound},{"id",QString::number(f.id)},{"length",f.length},{"publisher",f.publisher},{"classicChecksum",f.classicChecksum},{"key",f.key},{"source",!f.sourceKey.isEmpty()?f.sourceKey:(f.custom?QString():frameKey(db->bus,f.id,f.extended))}});root["custom"]=custom;
     QJsonArray frames;for(const auto&f:definitions(db,work)){const auto d=work.frames.value(f.key);QJsonArray values;for(int i=0;i<f.fields.size();++i)values.append(SignalCodec::rawText(f.fields[i],d.appliedValues.value(i)));
-        frames.append(QJsonObject{{"key",f.key},{"alias",d.alias},{"dlc",int(d.applied.bytes.size())},{"payload",QString::fromLatin1(d.applied.bytes.toHex())},{"values",values},{"enabled",d.enabled},{"sendEnabled",d.sendEnabled},{"cycleMs",d.cycleMs}});}root["frames"]=frames;
+        QJsonObject entry{{"key",f.key},{"alias",d.alias},{"dlc",int(d.applied.bytes.size())},{"payload",QString::fromLatin1(d.applied.bytes.toHex())},{"values",values},{"enabled",d.enabled},{"sendEnabled",d.sendEnabled},{"cycleMs",d.cycleMs}};
+        QJsonArray confirmed;bool needsConfirmation=false;
+        for(int i=0;i<f.fields.size();++i)if(!f.fields[i].unrepresentableInitial.isEmpty()){
+            needsConfirmation=true;if(!d.pendingInitial.contains(i))confirmed.append(f.fields[i].identity());
+        }
+        if(needsConfirmation)entry["confirmedInitial"]=confirmed;
+        frames.append(entry);
+    }root["frames"]=frames;
     QJsonArray schedules;for(const auto&s:work.schedules){QJsonArray entries;for(const auto&slot:s.entries)entries.append(QJsonObject{{"frame",slot.frame},{"alias",slot.alias},{"delayMs",slot.delayMs},{"issue",slot.issue}});schedules.append(QJsonObject{{"name",s.name},{"issue",s.issue},{"slots",entries}});}root["schedules"]=schedules;return root;
 }
 bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QString&directory,ConfigurationSnapshot&snapshot,QString&error){
@@ -33,6 +42,15 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
     }else if(!root["sha256"].toString().isEmpty())return reject("配置缺少关联数据库路径");
     auto&work=next.working;work.repeatCount=root.value("repeatCount").toInt(1);if(work.repeatCount<1||work.repeatCount>1000000)return reject("无效发送次数");work.uiSettings=root.value("uiSettings").toObject();work.replaySettings=root.value("replaySettings").toObject();QSet<QString> keys,names;
     for(const auto&f:next.database->frames){TxDraft d;if(!SignalCodec::initialize(f,bus,d,error))return false;work.frames[f.key]=d;keys.insert(f.key);names.insert(f.name);}
+    if(!next.database->sharedCanIds.isEmpty() && root.contains("canDefinitions")){
+        if(bus!=Bus::Can||!root["canDefinitions"].isObject())return reject("无效 CAN 定义选择");
+        const auto choices=root["canDefinitions"].toObject();
+        for(auto it=choices.begin();it!=choices.end();++it){
+            const auto key=it.value().toString();
+            if(!next.database->sharedCanIds.value(it.key()).contains(key))return reject("CAN 候选不属于所选 ID");
+            work.canDefinitions[it.key()]=key;
+        }
+    }
     for(const auto&value:root["custom"].toArray()){
         const auto o=value.toObject();bool ok=false;const auto id=o["id"].toString().toULongLong(&ok);const auto name=o["name"].toString();
         const bool extended=bus==Bus::Can&&o["extended"].toBool(id>0x7ff||o["key"].toString().startsWith("CAN:EXT:"));
@@ -40,7 +58,11 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
         const bool scoped=(bus==Bus::Lin&&savedKey.startsWith(frameKey(bus,quint32(id))+"@"))||(bus==Bus::Can&&savedKey.startsWith(frameKey(bus,quint32(id),extended)+"@"));
         if(!ok||id>(bus==Bus::Can?0x1fffffff:61)||!length.isDouble()||length.toDouble()!=length.toInt(-1)||length.toInt(-1)<0||length.toInt()>8||name.trimmed().isEmpty()||(!scoped&&(savedKey!=frameKey(bus,quint32(id),extended)||names.contains(name)))||keys.contains(savedKey))return reject("自建帧 ID/名称重复或结构无效");
         FrameDefinition f;f.custom=true;f.id=quint32(id);f.extended=extended;f.key=frameKey(bus,f.id,f.extended);f.name=name;f.length=length.toInt();f.publisher=o["publisher"].toString();f.classicChecksum=o["classicChecksum"].toBool(bus==Bus::Lin&&id>=60);if(bus==Bus::Lin&&(f.length<1||(id>=60&&(f.length!=8||!f.classicChecksum))))return reject("LIN 帧长度或校验无效");
-        if(!o["source"].toString().isEmpty()){bool found=false;for(const auto &definition:next.database->frames)if(definition.key==o["source"].toString()&&definition.id==f.id&&definition.extended==f.extended){f=definition;found=true;break;}if(!found)return reject("调度帧的源定义不存在");}else{
+        if(!o["source"].toString().isEmpty()){bool found=false;for(const auto &definition:next.database->frames)if(definition.key==o["source"].toString()&&definition.id==f.id&&definition.extended==f.extended){f=definition;
+                if(next.database->sharedCanIds.value(frameKey(bus,f.id,f.extended)).contains(definition.key)){
+                    f.sourceKey=definition.key;f.name=name;f.qualifiedName.clear();f.custom=true;f.databaseBound=o["databaseBound"].toBool();
+                }
+                found=true;break;}if(!found)return reject("调度帧的源定义不存在");}else{
             const FrameDefinition *match=nullptr;
             for(const auto &candidate:next.database->frames)if(candidate.id==id&&candidate.extended==extended){
                 if(match){match=nullptr;break;}match=&candidate;
@@ -57,11 +79,30 @@ bool SignalConfigurationStore::parse(const QJsonObject&root,Bus bus,const QStrin
         if(!o["payload"].isString()||!SignalCodec::parseBytes(o["payload"].toString(),length,bytes,error))return reject(error.isEmpty()?"缺少帧 payload":error);
         if(!o["values"].isArray())return reject("缺少信号使用值数组");const auto values=o["values"].toArray();const bool legacyCustom=values.isEmpty()&&f.custom&&!f.fields.isEmpty();if(!legacyCustom&&values.size()!=f.fields.size())return reject("配置信号数量不一致");
         QVector<RawValue> raw;for(int i=0;i<values.size();++i){if(!values[i].isString())return reject("64 位/raw 值必须使用字符串");const auto r=SignalCodec::parseRaw(f.fields[i],values[i].toString());if(!r.ok())return reject(r.error);raw.append(r.raw);d.warnings[i]=r.warning;}
+        const bool legacyInitial=!d.pendingInitial.isEmpty()&&!o.contains("confirmedInitial");
+        if(legacyInitial){
+            // The earlier importer retained these frames as read-only and never applied their drafts.
+            raw=d.appliedValues;bytes=d.applied.bytes;
+        }else if(!d.pendingInitial.isEmpty()&&o.contains("confirmedInitial")){
+            if(!o["confirmedInitial"].isArray())return reject("初值确认记录无效");
+            QMap<QString,int> fields;for(int i:d.pendingInitial)fields.insert(f.fields[i].identity(),i);
+            for(const auto &v:o["confirmedInitial"].toArray()){
+                const auto field=fields.value(v.toString(),-1);
+                if(!v.isString()||field<0||!d.pendingInitial.remove(field))
+                    return reject("初值确认记录与源信号不匹配");
+            }
+        }
         if(legacyCustom&&!TransmitPayload::decode(f,bytes,raw,error))return false;
         if(f.issue.isEmpty()){auto check=bytes;if(!TransmitPayload::encode(f,raw,check,error))return false;if(check!=bytes)return reject("配置 payload 与信号使用值不一致");}
         const auto cycle=o["cycleMs"];if(!cycle.isDouble()||cycle.toDouble()!=cycle.toInt(-1)||cycle.toInt(-1)<0||!o["enabled"].isBool())return reject("无效周期/启用字段");
         if(o.contains("sendEnabled")&&!o["sendEnabled"].isBool())return reject("无效发送使能");d.sendEnabled=o.value("sendEnabled").toBool(true);
+        if(legacyInitial)d.sendEnabled=false;
+        else if(d.sendEnabled&&!d.pendingInitial.isEmpty())return reject("未确认初值的报文不能使能发送");
         d.alias=o["alias"].toString();d.values=d.appliedValues=raw;d.applied.bytes=bytes;d.enabled=o["enabled"].toBool();d.cycleMs=cycle.toInt();
+        const auto wire=frameKey(bus,f.id,f.extended);
+        const auto chosen=work.canDefinitions.value(wire);
+        if(d.enabled && next.database->sharedCanIds.contains(wire) && (chosen.isEmpty()||(chosen!=f.key&&chosen!=f.sourceKey)))
+            return reject("配置中已加入发送列表的帧与 CAN 候选选择不符");
         // For CAN, enabled is persisted queue membership; unsupported entries remain visible, but start rejects them.
         if(bus==Bus::Lin&&d.enabled&&!f.issue.isEmpty())return reject("不支持的帧不能启用发送");
     }

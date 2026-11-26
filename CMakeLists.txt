@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Qt-SimpleCN VERSION 1.63 LANGUAGES CXX)
+project(Qt-SimpleCN VERSION 1.64 LANGUAGES CXX)
 if(MINGW)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
 endif()
@@ -23,7 +23,7 @@ add_library(signal_database STATIC
     src/domain/SignalTypes.h src/model/SignalCodec.h src/model/SignalCodec.cpp
     src/model/TransmitPayload.h src/model/TransmitPayload.cpp
     src/model/DatabaseImporter.h src/model/DatabaseImporter.cpp
-    src/model/DbcImporter.cpp src/model/LdfImporter.cpp
+    src/model/DbcImporter.cpp src/model/DbcDefinitionScope.cpp src/model/LdfImporter.cpp
     src/infrastructure/SignalConfigurationStore.cpp src/infrastructure/SignalConfigurationStore.h)
 target_include_directories(signal_database PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(signal_database PUBLIC Qt${QT_VERSION_MAJOR}::Core PRIVATE signal_dbcppp signal_exact_decimal)

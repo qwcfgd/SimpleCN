@@ -56,8 +56,7 @@ QVariant FrameTableModel::data(const QModelIndex &i,int role) const {
     if(role==Qt::ToolTipRole||role==Qt::DisplayRole){
         if(i.column()==NameColumn){
             if(r.hardwareStatus)return {};
-            if(const auto *frame=databaseFrame(r))return frame->name;
-            return r.bus==m_customNameBus?m_customNames.value(signal::frameIndexKey(r.id,r.extended)):QString();
+            return name_lookup_.name(r);
         }
         switch(i.column()){case 0:return r.timestamp;case 1:return r.relativeTime;case 2:return r.intervalSeconds;
         case 3:return r.channel;case 4:return r.direction;case 5:return r.identifier;case 6:return r.length;case 7:return r.data;case 8:return Language::text(r.status);}
@@ -83,14 +82,14 @@ const FrameRecord *FrameTableModel::firstFrameAt(const QModelIndex &index) const
 }
 FrameTableModel::Detail FrameTableModel::detail(const FrameRecord &r,quintptr token,const QString &rowKey) const {
     Detail d;d.token=token;d.rowKey=rowKey;if(!merged())return d;for(int n=0;n<r.payload.size()*2;++n)d.ages.append(0);
-    if(const auto *frame=databaseFrame(r)){const auto &f=*frame;
+    if(const auto *frame=name_lookup_.definition(r)){const auto &f=*frame;
         QVector<signal::RawValue> values;QString error;
         const bool ok=!r.error&&!r.noResponse&&!r.rtr&&signal::SignalCodec::decode(f,r.payload,values,error);
         for(int n=0;n<f.fields.size();++n){const auto &s=f.fields[n];
             const bool active=ok&&signal::SignalCodec::isActive(f,n,values);
             QString unit=s.unit;
             if(active)for(const auto &range:s.ranges)if(values.value(n).bits>=range.first&&values.value(n).bits<=range.last){unit=range.unit;break;}
-            d.children.append({s.name,active?signal::SignalCodec::rawText(s,values.value(n)):QString("—"),
+            d.children.append({s.displayName(),active?signal::SignalCodec::rawText(s,values.value(n)):QString("—"),
                 active?signal::SignalCodec::physicalText(s,values.value(n)):(ok?QString("非活动分支"):QString("无有效数据")),unit});
         }
     }return d;
@@ -107,23 +106,74 @@ FrameTableModel::Detail FrameTableModel::updatedDetail(const FrameRecord &before
     }
     return d;
 }
-const signal::FrameDefinition *FrameTableModel::databaseFrame(const FrameRecord &r) const {
-    if(!m_database||m_database->bus!=r.bus)return nullptr;
-    const int n=m_frameLookup.value(signal::frameIndexKey(r.id,r.extended),-1);
-    return n<0?nullptr:&m_database->frames[n];
+const signal::FrameDefinition *FrameTableModel::NameLookup::definition(
+    const FrameRecord &record) const {
+  if (!database_ || database_->bus != record.bus) {
+    return nullptr;
+  }
+  const int row =
+      frame_rows_.value(signal::frameIndexKey(record.id, record.extended), -1);
+  return row < 0 ? nullptr : &database_->frames[row];
 }
-void FrameTableModel::updateNames(){
-    if(rowCount())emit dataChanged(index(0,NameColumn),index(rowCount()-1,NameColumn),{Qt::DisplayRole,Qt::ToolTipRole});
+QString FrameTableModel::NameLookup::name(const FrameRecord &record) const {
+  if (record.hardwareStatus) {
+    return {};
+  }
+  if (const auto *frame = definition(record)) {
+    return frame->displayName();
+  }
+  if(database_ && database_->bus==record.bus) {
+    const auto it=ambiguous_names_.constFind(signal::frameIndexKey(record.id,record.extended));
+    if(it!=ambiguous_names_.cend()) return it.value();
+  }
+  return record.bus == custom_bus_ ? custom_names_.value(signal::frameIndexKey(
+                                         record.id, record.extended))
+                                   : QString();
 }
-void FrameTableModel::setCustomNames(signal::Bus bus,QHash<quint64,QString> names){
-    if(m_customNameBus==bus&&m_customNames==names)return;
-    m_customNameBus=bus;
-    m_customNames=std::move(names);
-    updateNames();
+void FrameTableModel::NotifyFrameNamesChanged() {
+  emit frameNamesChanged();
+  if (rowCount()) {
+    emit dataChanged(index(0, NameColumn), index(rowCount() - 1, NameColumn),
+                     {Qt::DisplayRole, Qt::ToolTipRole});
+  }
 }
-void FrameTableModel::setDatabase(signal::Database db){if(m_database==db)return;m_database=std::move(db);m_frameLookup.clear();
-    if(m_database)for(int n=0;n<m_database->frames.size();++n){const auto &f=m_database->frames[n];m_frameLookup[signal::frameIndexKey(f.id,f.extended)]=n;}
-    if(!m_paused&&m_rolling)rebuild();else updateNames();
+void FrameTableModel::setCustomNames(signal::Bus bus,
+                                     QHash<quint64, QString> names) {
+  if (name_lookup_.custom_bus_ == bus && name_lookup_.custom_names_ == names) {
+    return;
+  }
+  name_lookup_.custom_bus_ = bus;
+  name_lookup_.custom_names_ = std::move(names);
+  NotifyFrameNamesChanged();
+}
+void FrameTableModel::setDatabase(signal::Database database,const QMap<QString,QString> &choices) {
+  if (name_lookup_.database_ == database && name_lookup_.choices_ == choices) {
+    return;
+  }
+  name_lookup_.database_ = std::move(database);
+  name_lookup_.frame_rows_.clear();
+  name_lookup_.ambiguous_names_.clear();
+  name_lookup_.choices_=choices;
+  if (name_lookup_.database_) {
+    const auto &frames = name_lookup_.database_->frames;
+    for (int row = 0; row < frames.size(); ++row) {
+      const auto &frame = frames[row];
+      const auto wire=signal::frameKey(name_lookup_.database_->bus,frame.id,frame.extended);
+      const auto key=signal::frameIndexKey(frame.id,frame.extended);
+      if(name_lookup_.database_->sharedCanIds.contains(wire) && choices.value(wire)!=frame.key) {
+        auto &names=name_lookup_.ambiguous_names_[key];
+        if(names.isEmpty()) names="多个候选，请选择定义：";
+        else names+=", ";
+        names+=frame.displayName();
+      } else name_lookup_.frame_rows_[key]=row;
+    }
+  }
+  if (merged()) {
+    rebuild();
+    emit frameNamesChanged();
+  } else {
+    NotifyFrameNamesChanged();
+  }
 }
 void FrameTableModel::setRolling(bool on){if(on==m_rolling)return;m_rolling=on;if(!m_paused)rebuild();}
 void FrameTableModel::indexFilteredHistory(qint64 first,qint64 end){

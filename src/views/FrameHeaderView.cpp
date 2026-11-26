@@ -4,36 +4,141 @@
 #include <QPainterPath>
 #include <QStyleOptionHeader>
 namespace host {
-FrameHeaderView::FrameHeaderView(QWidget*parent):QHeaderView(Qt::Horizontal,parent){setObjectName("frameColumnHeader");setSectionsClickable(true);setSectionsMovable(true);setMouseTracking(true);viewport()->setMouseTracking(true);setMinimumSectionSize(32);setSortIndicatorShown(true);}
-void FrameHeaderView::setFilteredColumns(const QSet<int>&columns){m_filtered=columns;viewport()->update();}
-void FrameHeaderView::setOpenColumn(int column){m_open=column;viewport()->update();}
-QRect FrameHeaderView::filterButtonRect(int column)const{return QRect(sectionViewportPosition(column)+sectionSize(column)-24,2,20,qMax(0,height()-4));}
-bool FrameHeaderView::filterButtonVisible(int column)const{return column>=0&&column!=m_unfilterable&&!isSectionHidden(column)&&(m_hover==column||m_open==column||m_filtered.contains(column));}
-void FrameHeaderView::paintSection(QPainter*p,const QRect&rect,int column)const{
-    if(!rect.isValid())return;QStyleOptionHeader option;initStyleOption(&option);option.rect=rect;option.section=column;option.text.clear();option.sortIndicator=QStyleOptionHeader::None;
-    if(m_hover==column)option.state|=QStyle::State_MouseOver;style()->drawControl(QStyle::CE_Header,&option,p,this);
-    p->save();p->setClipRect(rect);p->setPen(palette().color(QPalette::ButtonText));
-    const int padding=column==m_unfilterable?6:27;
-    const int right=rect.right()-padding+1;auto textRect=rect.adjusted(5,0,-padding,0);
-    const bool sorted=isSortIndicatorShown()&&sortIndicatorSection()==column;if(sorted)textRect.setRight(textRect.right()-12);
-    const auto text=model()?model()->headerData(column,Qt::Horizontal).toString():QString();p->drawText(textRect,Qt::AlignLeft|Qt::AlignVCenter,fontMetrics().elidedText(text,Qt::ElideRight,qMax(0,textRect.width())));
-    if(sorted){const int x=right-5,y=rect.center().y();QPolygon arrow;
-        if(sortIndicatorOrder()==Qt::AscendingOrder)arrow<<QPoint(x-4,y+3)<<QPoint(x+4,y+3)<<QPoint(x,y-3);
-        else arrow<<QPoint(x-4,y-3)<<QPoint(x+4,y-3)<<QPoint(x,y+3);
-        p->setBrush(p->pen().color());p->drawPolygon(arrow);
+FrameHeaderView::FrameHeaderView(QWidget* parent)
+    : QHeaderView(Qt::Horizontal, parent) {
+  setObjectName("frameColumnHeader");
+  setSectionsClickable(true);
+  setSectionsMovable(true);
+  setMouseTracking(true);
+  viewport()->setMouseTracking(true);
+  setMinimumSectionSize(32);
+  setSortIndicatorShown(true);
+}
+void FrameHeaderView::setFilteredColumns(const QSet<int>& columns) {
+  filtered_columns_ = columns;
+  viewport()->update();
+}
+void FrameHeaderView::setOpenColumn(int column) {
+  open_column_ = column;
+  viewport()->update();
+}
+QRect FrameHeaderView::filterButtonRect(int column) const {
+  return QRect(sectionViewportPosition(column) + sectionSize(column) - 24, 2,
+               20, qMax(0, height() - 4));
+}
+bool FrameHeaderView::filterButtonVisible(int column) const {
+  return column >= 0 && !isSectionHidden(column) &&
+         (hover_column_ == column || open_column_ == column ||
+          filtered_columns_.contains(column));
+}
+void FrameHeaderView::paintSection(QPainter* p, const QRect& rect,
+                                   int column) const {
+  if (!rect.isValid()) {
+    return;
+  }
+  QStyleOptionHeader option;
+  initStyleOption(&option);
+  option.rect = rect;
+  option.section = column;
+  option.text.clear();
+  option.sortIndicator = QStyleOptionHeader::None;
+  if (hover_column_ == column) {
+    option.state |= QStyle::State_MouseOver;
+  }
+  style()->drawControl(QStyle::CE_Header, &option, p, this);
+  p->save();
+  p->setClipRect(rect);
+  p->setPen(palette().color(QPalette::ButtonText));
+  constexpr int padding = 27;
+  const int right = rect.right() - padding + 1;
+  auto textRect = rect.adjusted(5, 0, -padding, 0);
+  const bool sorted =
+      isSortIndicatorShown() && sortIndicatorSection() == column;
+  if (sorted) {
+    textRect.setRight(textRect.right() - 12);
+  }
+  const auto text = model()
+                        ? model()->headerData(column, Qt::Horizontal).toString()
+                        : QString();
+  p->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter,
+              fontMetrics().elidedText(text, Qt::ElideRight,
+                                       qMax(0, textRect.width())));
+  if (sorted) {
+    const int x = right - 5, y = rect.center().y();
+    QPolygon arrow;
+    if (sortIndicatorOrder() == Qt::AscendingOrder) {
+      arrow << QPoint(x - 4, y + 3) << QPoint(x + 4, y + 3) << QPoint(x, y - 3);
+    } else {
+      arrow << QPoint(x - 4, y - 3) << QPoint(x + 4, y - 3) << QPoint(x, y + 3);
     }
-    if(filterButtonVisible(column)){const auto button=filterButtonRect(column);if(m_hover==column||m_open==column)p->fillRect(button,palette().color(QPalette::Midlight));
-        const auto center=button.center();p->setPen(m_filtered.contains(column)?QColor("#087F99"):palette().color(QPalette::ButtonText));p->setBrush(p->pen().color());
-        if(m_filtered.contains(column)){QPainterPath funnel;funnel.moveTo(center.x()-5,center.y()-4);funnel.lineTo(center.x()+5,center.y()-4);funnel.lineTo(center.x()+1,center.y());funnel.lineTo(center.x()+1,center.y()+5);funnel.lineTo(center.x()-1,center.y()+4);funnel.lineTo(center.x()-1,center.y());funnel.closeSubpath();p->drawPath(funnel);}
-        else p->drawPolygon(QPolygon()<<QPoint(center.x()-4,center.y()-2)<<QPoint(center.x()+4,center.y()-2)<<QPoint(center.x(),center.y()+3));
-    }p->restore();
+    p->setBrush(p->pen().color());
+    p->drawPolygon(arrow);
+  }
+  if (filterButtonVisible(column)) {
+    const auto button = filterButtonRect(column);
+    if (hover_column_ == column || open_column_ == column) {
+      p->fillRect(button, palette().color(QPalette::Midlight));
+    }
+    const auto center = button.center();
+    p->setPen(filtered_columns_.contains(column)
+                  ? QColor("#087F99")
+                  : palette().color(QPalette::ButtonText));
+    p->setBrush(p->pen().color());
+    if (filtered_columns_.contains(column)) {
+      QPainterPath funnel;
+      funnel.moveTo(center.x() - 5, center.y() - 4);
+      funnel.lineTo(center.x() + 5, center.y() - 4);
+      funnel.lineTo(center.x() + 1, center.y());
+      funnel.lineTo(center.x() + 1, center.y() + 5);
+      funnel.lineTo(center.x() - 1, center.y() + 4);
+      funnel.lineTo(center.x() - 1, center.y());
+      funnel.closeSubpath();
+      p->drawPath(funnel);
+    } else {
+      p->drawPolygon(QPolygon() << QPoint(center.x() - 4, center.y() - 2)
+                                << QPoint(center.x() + 4, center.y() - 2)
+                                << QPoint(center.x(), center.y() + 3));
+    }
+  }
+  p->restore();
 }
-void FrameHeaderView::mouseMoveEvent(QMouseEvent*event){const int column=logicalIndexAt(event->pos());if(column!=m_hover){m_hover=column;viewport()->update();}QHeaderView::mouseMoveEvent(event);}
-void FrameHeaderView::leaveEvent(QEvent*event){m_hover=-1;viewport()->update();QHeaderView::leaveEvent(event);}
-void FrameHeaderView::mousePressEvent(QMouseEvent*event){
-    const int column=logicalIndexAt(event->pos());if(event->button()==Qt::LeftButton&&column>=0&&filterButtonVisible(column)&&filterButtonRect(column).contains(event->pos())){m_filterPressed=true;event->accept();return;}QHeaderView::mousePressEvent(event);
+void FrameHeaderView::mouseMoveEvent(QMouseEvent* event) {
+  const int column = logicalIndexAt(event->pos());
+  if (column != hover_column_) {
+    hover_column_ = column;
+    viewport()->update();
+  }
+  QHeaderView::mouseMoveEvent(event);
 }
-void FrameHeaderView::mouseReleaseEvent(QMouseEvent*event){
-    if(m_filterPressed){m_filterPressed=false;const int column=logicalIndexAt(event->pos());if(filterButtonVisible(column)&&filterButtonRect(column).contains(event->pos()))emit filterRequested(column,viewport()->mapToGlobal(QPoint(sectionViewportPosition(column),height())));event->accept();return;}QHeaderView::mouseReleaseEvent(event);
+void FrameHeaderView::leaveEvent(QEvent* event) {
+  hover_column_ = -1;
+  viewport()->update();
+  QHeaderView::leaveEvent(event);
 }
+void FrameHeaderView::mousePressEvent(QMouseEvent* event) {
+  const int column = logicalIndexAt(event->pos());
+  if (event->button() == Qt::LeftButton && column >= 0 &&
+      filterButtonVisible(column) &&
+      filterButtonRect(column).contains(event->pos())) {
+    filter_pressed_ = true;
+    event->accept();
+    return;
+  }
+  QHeaderView::mousePressEvent(event);
 }
+void FrameHeaderView::mouseReleaseEvent(QMouseEvent* event) {
+  if (filter_pressed_) {
+    filter_pressed_ = false;
+    const int column = logicalIndexAt(event->pos());
+    if (filterButtonVisible(column) &&
+        filterButtonRect(column).contains(event->pos())) {
+      emit filterRequested(
+          column, viewport()->mapToGlobal(
+                      QPoint(sectionViewportPosition(column), height())));
+    }
+    event->accept();
+    return;
+  }
+  QHeaderView::mouseReleaseEvent(event);
+}
+}  // namespace host

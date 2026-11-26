@@ -11,7 +11,7 @@ class SignalPlotModel : public QAbstractTableModel {
 public:
     struct Point {qint64 us=0;double value=0;QString exact,unit;bool valid=false;};
     struct Series {
-        QString key,frameKey,name,frameName,unit,raw,physical,status,group,groupName;
+        QString key,frameKey,signalKey,name,frameName,unit,raw,physical,status,group,groupName;
         QMap<double,QString> labels;
         quint32 id=0;bool extended=false;int field=-1;
         QColor color;bool marked=false;
@@ -52,6 +52,7 @@ private:
     void ingest(const FrameBatch &,int onlyRow=-1,bool replay=false);
     SignalTransmitViewModel *m_vm;
     signal::Database m_database;
+    QMap<QString,QString> m_choices;
     QHash<QString,int> m_frameLookup;
     QVector<Series> m_series;
     QHash<QString,QVector<FrameRecord>> m_pending;

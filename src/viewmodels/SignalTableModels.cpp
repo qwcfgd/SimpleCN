@@ -45,15 +45,19 @@ QVariant SignalValueTableModel::data(const QModelIndex&i,int role)const{
     if((i.column()==2||i.column()==3)&&(!f->issue.isEmpty()||(isRx&&!d.rx.valid)||i.row()>=values.size()||
        (length<f->length&&!TransmitPayload::containsSignal(*f,i.row(),length))||(s.multiplexed&&!SignalCodec::isActive(*f,i.row(),values))))return QString("NA");
     if(i.column()==6&&!isRx&&!TransmitPayload::containsSignal(*f,i.row(),length))return Language::text("信号超出当前 DLC");
+    if(!isRx && d.pendingInitial.contains(i.row()) && (i.column()==2||i.column()==3))
+        return role==Qt::EditRole?QString():Language::text("待设置");
     const auto raw=values.value(i.row());const auto input=d.inputs.value(i.row());
     switch(i.column()){
-    case 0:return s.name+(SignalCodec::isActive(*f,i.row(),values)?QString():Language::text("（非活动分支）"));
-    case 1:return (s.initial.isEmpty()?Language::text("未定义 / 程序默认"):s.initial);
+    case 0:return s.displayName()+(SignalCodec::isActive(*f,i.row(),values)?QString():Language::text("（非活动分支）"));
+    case 1:if(!s.unrepresentableInitial.isEmpty())return s.unrepresentableInitial;
+        return (s.initial.isEmpty()?Language::text("未定义 / 程序默认"):s.initial);
     case 2:if(!isRx&&d.errors.contains(i.row())&&input.startsWith("raw "))return input.mid(4);return SignalCodec::rawText(s,raw);
     case 3:if(!isRx&&role==Qt::EditRole&&!s.labels.isEmpty()&&!s.conversion)return SignalCodec::rawText(s,raw);if(!isRx&&role==Qt::EditRole&&input.startsWith("物理 "))return input.mid(3);if(role==Qt::DisplayRole&&!s.labels.isEmpty())return s.labels.value(raw.bits,"NA");return Language::text(SignalCodec::physicalText(s,raw,"NA"));
     case 4:{QStringList labels;for(auto it=s.labels.begin();it!=s.labels.end();++it)labels.append(QString::number(it.key())+"="+it.value());return s.unit+(labels.isEmpty()?QString():" · "+labels.join(", "));}
     case 5:return s.comment;
-    case 6:return isRx?(d.rx.received?(d.rx.valid?Language::text("有效"):Language::text("无效/校验失败")):(d.rx.detail.isEmpty()?QString():d.rx.detail)):Language::text(d.errors.contains(i.row())?d.inputs.value(i.row())+"；"+d.errors.value(i.row()):d.warnings.value(i.row()));
+    case 6:if(!isRx&&d.pendingInitial.contains(i.row()))return Language::text("初值不是整数，请设置有效值后勾选发送");
+        return isRx?(d.rx.received?(d.rx.valid?Language::text("有效"):Language::text("无效/校验失败")):(d.rx.detail.isEmpty()?QString():d.rx.detail)):Language::text(d.errors.contains(i.row())?d.inputs.value(i.row())+"；"+d.errors.value(i.row()):d.warnings.value(i.row()));
     }return {};
 }
 Qt::ItemFlags SignalValueTableModel::flags(const QModelIndex&i)const{auto flags=QAbstractTableModel::flags(i);const auto*f=m_vm->frame(m_key);if(!f||!i.isValid())return flags;
@@ -105,7 +109,7 @@ QVariant CanTxTableModel::data(const QModelIndex&i,int role)const{
     if(role==Qt::ForegroundRole&&!d.sendEnabled)return QBrush(QColor("#8C9BA8"));
     if(role!=Qt::DisplayRole&&role!=Qt::EditRole)return {};
     switch(i.column()){
-    case 1:return i.row()+1;case 2:return d.alias.isEmpty()?f.name:d.alias;case 3:return "0x"+QString::number(f.id,16).toUpper();case 4:return f.transmitters.isEmpty()?f.publisher:f.transmitters.join(", ");case 5:return QString(f.extended?"29 bit":"11 bit")+(f.custom?Language::text(" · 自建"):QString(" · DBC"));case 6:return d.applied.bytes.size();case 7:return d.cycleMs;
+    case 1:return i.row()+1;case 2:return d.alias.isEmpty()?f.displayName():d.alias;case 3:return "0x"+QString::number(f.id,16).toUpper();case 4:return f.transmitters.isEmpty()?f.publisher:f.transmitters.join(", ");case 5:return QString(f.extended?"29 bit":"11 bit")+(f.custom?Language::text(" · 自建"):QString(" · DBC"));case 6:return d.applied.bytes.size();case 7:return d.cycleMs;
     case 8:return role==Qt::EditRole&&!d.frameError.isEmpty()?d.frameInput:QString::fromLatin1(d.applied.bytes.toHex(' ')).toUpper();
     }return {};
 }
@@ -133,7 +137,7 @@ void SignalTreeModel::rebuild(){
     auto all=new QStandardItem((m_vm->database()->bus==Bus::Can?"DBC":"LDF"));all->setEditable(false);appendRow(all);
     QMap<QString,QStandardItem*> tx,rx;
     for(const auto&node:m_vm->database()->nodes){auto item=new QStandardItem(node);item->setEditable(false);nodes[node]=item;appendRow(item);if(m_vm->database()->bus==Bus::Can){rx[node]=new QStandardItem("Rx");tx[node]=new QStandardItem("Tx");rx[node]->setEditable(false);tx[node]->setEditable(false);item->appendRow(rx[node]);item->appendRow(tx[node]);}}
-    auto append=[&](QStandardItem*parent,const FrameDefinition&f){auto label=new QStandardItem(f.name);label->setEditable(false);label->setData(f.key,Qt::UserRole);auto id=new QStandardItem(QString("0x%1").arg(f.id,0,16));id->setEditable(false);parent->appendRow({label,id});};
+    auto append=[&](QStandardItem*parent,const FrameDefinition&f){auto label=new QStandardItem(f.displayName());label->setEditable(false);label->setData(f.key,Qt::UserRole);auto id=new QStandardItem(QString("0x%1").arg(f.id,0,16));id->setEditable(false);parent->appendRow({label,id});};
     for(const auto&f:m_vm->database()->frames){if(m_vm->database()->bus==Bus::Lin&&f.line==0)continue;append(all,f);QSet<QString> publishers;publishers.insert(f.publisher);for(const auto&n:f.transmitters)publishers.insert(n);for(const auto&n:publishers)if(nodes.contains(n))append(tx.contains(n)?tx[n]:nodes[n],f);QSet<QString> receivers;for(const auto&s:f.fields)for(const auto&r:s.receivers)receivers.insert(r);for(const auto&r:receivers)if(nodes.contains(r))append(rx.contains(r)?rx[r]:nodes[r],f);}
 }
 LinScheduleTableModel::LinScheduleTableModel(SignalTransmitViewModel*vm,QObject*p):QAbstractTableModel(p),m_vm(vm),m_schedule(vm->working().schedule){

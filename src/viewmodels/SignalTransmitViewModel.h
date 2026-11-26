@@ -18,8 +18,11 @@ public:
     QVector<signal::FrameDefinition> definitions()const;
     QVector<signal::FrameDefinition> queuedDefinitions()const;
     QHash<quint64,QString> monitorCustomNames()const;
+    bool chooseCanDefinition(const QString &key,bool select,QString &error);
+    QString resolvedFrameKey(const QString &wire)const;
     bool selectCanNode(const QString&,const QString &direction,QString&error);
     bool removeQueuedFrame(const QString&,QString&error);
+    bool removeQueuedFrames(const QStringList&,QString&error);
     const signal::FrameDefinition *frame(const QString&)const;
     bool running()const{return signal::active(m_status.state)||m_status.cleanupPending||m_replayGroupRunning;}
     bool periodicRun()const{return m_periodic;}
@@ -96,6 +99,7 @@ signals:
     void scheduleRequested(quint64,QString);
     void notice(QString);
 private:
+    bool matchesCanChoice(const signal::FrameDefinition &)const;
     bool install(signal::Database,QString&error);
     void remember();void changedFrame(const QString&);
     void publishPayload(const QString&,signal::TxDraft,const QByteArray&);

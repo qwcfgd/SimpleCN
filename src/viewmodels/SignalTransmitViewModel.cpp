@@ -1,4 +1,5 @@
 #include "SignalTransmitViewModel.h"
+#include <QRegularExpression>
 #include "model/DatabaseImporter.h"
 #include "model/SignalCodec.h"
 #include "model/TransmitPayload.h"
@@ -69,20 +70,67 @@ QHash<quint64,QString> SignalTransmitViewModel::monitorCustomNames()const{
     }
     return names;
 }
+QString SignalTransmitViewModel::resolvedFrameKey(const QString &wire)const{
+    return m_database->sharedCanIds.contains(wire)?m_work.canDefinitions.value(wire):wire;
+}
+bool SignalTransmitViewModel::matchesCanChoice(const FrameDefinition &f)const{
+    const auto wire=frameKey(m_bus,f.id,f.extended);
+    if(!m_database->sharedCanIds.contains(wire))return true;
+    const auto chosen=m_work.canDefinitions.value(wire);
+    return !chosen.isEmpty() && (f.key==chosen || f.sourceKey==chosen);
+}
+bool SignalTransmitViewModel::chooseCanDefinition(const QString &key,bool select,QString &error){
+    const auto *f=frame(key);
+    if(!canStructure()||!f){error="停止后才能选择 CAN 定义";return false;}
+    const auto wire=frameKey(m_bus,f->id,f->extended);
+    if(!m_database->sharedCanIds.value(wire).contains(key)){error="该报文没有多个候选定义";return false;}
+    const auto next=select?key:QString();
+    if(m_work.canDefinitions.value(wire)==next)return true;
+    remember();
+    if(select)m_work.canDefinitions[wire]=key;else m_work.canDefinitions.remove(wire);
+    for(const auto &candidate:definitions())if(candidate.id==f->id&&candidate.extended==f->extended){
+        auto &d=m_work.frames[candidate.key]; d.rx={};
+        if(!matchesCanChoice(candidate))d.enabled=false;
+    }
+    emit structureChanged();emit changed();return true;
+}
 bool SignalTransmitViewModel::selectCanNode(const QString&node,const QString&direction,QString&error){
     if(!canStructure()||m_bus!=Bus::Can||(!node.isEmpty()&&!m_database->nodes.contains(node))||
        (direction!="Tx"&&direction!="Rx"&&direction!="Tx/Rx")){error="当前不能选择 DBC 节点或方向";return false;}
     remember();m_work.canNode=node;m_work.canDirection=direction;
     for(const auto&f:m_database->frames){
         bool receive=false;for(const auto&s:f.fields)if(s.receivers.contains(node)){receive=true;break;}
-        m_work.frames[f.key].enabled=!node.isEmpty()&&((direction!="Rx"&&(f.publisher==node||f.transmitters.contains(node)))||(direction!="Tx"&&receive));
+        m_work.frames[f.key].enabled=matchesCanChoice(f)&&!node.isEmpty()&&((direction!="Rx"&&(f.publisher==node||f.transmitters.contains(node)))||(direction!="Tx"&&receive));
     }
     emit structureChanged();emit changed();return true;
 }
 bool SignalTransmitViewModel::removeQueuedFrame(const QString&key,QString&error){
-    if(!canStructure()||m_bus!=Bus::Can||!frame(key)||!m_work.frames.value(key).enabled){error="停止后才能删除待发送报文";return false;}
-    if(frame(key)->custom)return removeCustom(key,error);
-    remember();m_work.frames[key].enabled=false;emit structureChanged();emit changed();return true;
+    return removeQueuedFrames({key},error);
+}
+bool SignalTransmitViewModel::removeQueuedFrames(const QStringList &keys,QString &error){
+    if(!canStructure() || m_bus!=Bus::Can || keys.isEmpty()){
+        error="停止后才能删除待发送报文";
+        return false;
+    }
+    const QSet<QString> selected(keys.cbegin(),keys.cend());
+    for(const auto &key:selected){
+        if(!frame(key) || !m_work.frames.value(key).enabled){
+            error="停止后才能删除待发送报文";
+            return false;
+        }
+    }
+    remember();
+    for(const auto &key:selected)m_work.frames[key].enabled=false;
+    for(int i=m_work.customFrames.size()-1;i>=0;--i){
+        const auto key=m_work.customFrames.at(i).key;
+        if(selected.contains(key)){
+            m_work.customFrames.removeAt(i);
+            m_work.frames.remove(key);
+        }
+    }
+    emit structureChanged();
+    emit changed();
+    return true;
 }
 const FrameDefinition* SignalTransmitViewModel::frame(const QString&key)const{for(const auto&f:m_database->frames)if(f.key==key)return &f;for(const auto&f:m_work.customFrames)if(f.key==key)return &f;return nullptr;}
 QString SignalTransmitViewModel::protocolInfo(const QString&key)const{const auto*f=frame(key);if(!f)return {};if(m_bus==Bus::Can)return f->extended?"经典 CAN · 扩展 29 bit":"经典 CAN · 标准 11 bit";
@@ -123,7 +171,7 @@ void SignalTransmitViewModel::publishPayload(const QString&key,TxDraft next,cons
     const auto payload=next.applied;const auto*f=frame(key);
     const auto runtimeKey=m_replaying?frameKey(m_bus,f->id,f->extended):key;
     remember();m_work.frames[key]=std::move(next);
-    if(running())emit payloadRequested({runtimeKey,payload,m_status.run,m_connection});
+    if(running() && m_work.frames[key].pendingInitial.isEmpty() && matchesCanChoice(*f))emit payloadRequested({runtimeKey,payload,m_status.run,m_connection});
     changedFrame(key);
 }
 bool SignalTransmitViewModel::editSignal(const QString&key,int field,const QString&input,bool physical,QString&error,int range){
@@ -134,6 +182,7 @@ bool SignalTransmitViewModel::editSignal(const QString&key,int field,const QStri
     else{next.errors.remove(field);next.warnings[field]=value.warning;next.values[field]=value.raw;error.clear();}
     auto bytes=next.applied.bytes;
     if(value.ok()&&next.errors.isEmpty()&&next.frameError.isEmpty()&&TransmitPayload::encode(*f,next.values,bytes,error)){
+        next.pendingInitial.remove(field);
         publishPayload(key,std::move(next),bytes);return true;
     }
     if(error.isEmpty())error="此帧仍有错误草稿；继续上一有效 payload";
@@ -144,6 +193,11 @@ bool SignalTransmitViewModel::editPayload(const QString&key,const QString&input,
     auto next=m_work.frames.value(key);QByteArray bytes;
     if(!TransmitPayload::parse(input,next.applied.bytes.size(),bytes,error)||!TransmitPayload::decode(*f,bytes,next.values,error)){
         next.frameInput=input;next.frameError=error;remember();m_work.frames[key]=std::move(next);changedFrame(key);return false;
+    }
+    if(!next.pendingInitial.isEmpty()){
+        auto digits=input;digits.remove(QRegularExpression("\\s"));
+        if(digits.size()!=2*f->length||bytes.size()!=f->length){error="请填写完整帧或逐项设置待确认的信号初值";return false;}
+        next.pendingInitial.clear();
     }
     // A complete raw frame replaces all signal drafts in the same transaction.
     next.frameInput.clear();next.frameError.clear();next.inputs.clear();next.errors.clear();next.warnings.clear();
@@ -163,13 +217,19 @@ bool SignalTransmitViewModel::setFrameLength(const QString&key,int length,QStrin
 }
 bool SignalTransmitViewModel::setFrameEnabled(const QString&key,bool enabled,QString&error){
     const auto*f=frame(key);if(!canData()||!f||(enabled&&!f->issue.isEmpty())){error="当前不能修改发送使能";return false;}
+    if(enabled&&!m_work.frames.value(key).pendingInitial.isEmpty()){error="发送前请先设置有效的信号初值";return false;}
+    if(enabled&&!matchesCanChoice(*f)){error="请先选择此 CAN 定义";return false;}
     if(running()&&m_periodic&&enabled&&m_bus==Bus::Can&&m_work.frames[key].cycleMs<1){error="周期发送需先设置有效周期";return false;}
     if(running()&&enabled&&m_bus==Bus::Lin){auto next=m_work;next.frames[key].sendEnabled=true;for(const auto&table:next.schedules)if(table.name==next.schedule||table.name==m_status.pending){error=validateEnabled(table,definitions(),next,m_bitrate);if(!error.isEmpty())return false;}}
     if(m_work.frames[key].sendEnabled==enabled)return true;remember();m_work.frames[key].sendEnabled=enabled;
-    if(running())emit payloadRequested({m_replaying?frameKey(m_bus,f->id,f->extended):key,m_work.frames[key].applied,m_status.run,m_connection,enabled,true});changedFrame(key);return true;
+    if(running() && matchesCanChoice(*f))emit payloadRequested({m_replaying?frameKey(m_bus,f->id,f->extended):key,m_work.frames[key].applied,m_status.run,m_connection,enabled,true});changedFrame(key);return true;
 }
 bool SignalTransmitViewModel::setCanOptions(const QString&key,bool enabled,int period,QString&error){
     if(!canStructure()||m_bus!=Bus::Can||!frame(key)||period<0){error="停止后才能修改发送选择/周期（整数 ms）";return false;}
+    const auto *candidate=frame(key);
+    if(enabled && !matchesCanChoice(*candidate)){
+        error="该 ID 有多个候选，请先在报文树中选择使用的定义";return false;
+    }
     if(enabled&&!frame(key)->issue.isEmpty()){error=frame(key)->issue;return false;}
     const bool membershipChanged=m_work.frames[key].enabled!=enabled;
     remember();m_work.frames[key].enabled=enabled;m_work.frames[key].cycleMs=period;if(membershipChanged)emit structureChanged();changedFrame(key);return true;
@@ -177,6 +237,8 @@ bool SignalTransmitViewModel::setCanOptions(const QString&key,bool enabled,int p
 bool SignalTransmitViewModel::putCustom(const QString&oldKey,const QString&name,quint32 id,int length,int cycle,QString&error,bool allowSameId){
     if(!canStructure()||name.trimmed().isEmpty()||id>(m_bus==Bus::Can?0x1fffffff:61)||length<(m_bus==Bus::Can?0:1)||length>8||cycle<0||(m_bus==Bus::Lin&&id>=60&&length!=8)){error="自建帧需要有效名称、0–0x1FFFFFFF ID、0–8 字节及非负整数周期";return false;}
     if(!oldKey.isEmpty()&&(!frame(oldKey)||!frame(oldKey)->custom)){error="只能修改自建帧结构";return false;}
+    const bool newBinding=oldKey.isEmpty()||frame(oldKey)->id!=id;
+    if(newBinding&&!oldKey.isEmpty()&&!m_work.frames.value(oldKey).pendingInitial.isEmpty()){error="更改 ID 前请先设置有效的信号初值";return false;}
     QString finalName = name.trimmed();
     if(allowSameId){
         int dupCount = 1;
@@ -194,6 +256,7 @@ bool SignalTransmitViewModel::putCustom(const QString&oldKey,const QString&name,
         }
     }
     const QString baseKey=frameKey(m_bus,id,id>0x7ff);
+    if(m_database->sharedCanIds.contains(baseKey)){error="该 ID 有多个候选，请在数据库树中选择源定义后添加或复制";return false;}
     QString newKey;
     if(!oldKey.isEmpty()&&frame(oldKey)->id==id){
         newKey=oldKey;
@@ -213,6 +276,11 @@ bool SignalTransmitViewModel::putCustom(const QString&oldKey,const QString&name,
     TxDraft draft;if(!oldKey.isEmpty()){draft=m_work.frames.take(oldKey);for(int i=0;i<m_work.customFrames.size();++i)if(m_work.customFrames[i].key==oldKey){m_work.customFrames.removeAt(i);break;}}
     if(draft.applied.bytes.size()!=length){draft.applied.bytes=QByteArray(length,0);draft.frameError.clear();draft.frameInput.clear();}draft.cycleMs=cycle;++draft.applied.revision;
     if(const auto *match=uniqueDefinition(m_database,id,f.extended)){
+        if(newBinding){
+            draft.pendingInitial.clear();
+            for(int i=0;i<match->fields.size();++i)if(!match->fields[i].unrepresentableInitial.isEmpty())draft.pendingInitial.insert(i);
+            if(!draft.pendingInitial.isEmpty())draft.sendEnabled=false;
+        }
         f.fields=match->fields;f.length=match->length;f.issue=match->issue;
         if(!TransmitPayload::decode(f,draft.applied.bytes,draft.values,error))return false;
         draft.appliedValues=draft.values;
@@ -239,7 +307,11 @@ bool SignalTransmitViewModel::duplicateFrame(const QString &sourceKey, QString &
         for(const auto&f:definitions()){if(f.name==newName){nameExists=true;break;}}
         if(nameExists)newName=QString("%1_copy%2").arg(source->name).arg(++nameCounter);
     }
+    if(!matchesCanChoice(*source)){
+        error="请先在报文树中选择要复制的候选定义";return false;
+    }
     FrameDefinition copy=*source;
+    if(!source->custom&&m_database->sharedCanIds.contains(baseKey))copy.sourceKey=source->key;
     copy.key=newKey;
     copy.name=newName;
     copy.custom=true;copy.databaseBound=!source->custom||source->databaseBound;
@@ -309,6 +381,10 @@ bool SignalTransmitViewModel::start(bool periodic,QString&error){
         if(!m_database->path.isEmpty()&&((plan.role==LinRole::Master&&plan.node!=m_database->master)||(plan.role==LinRole::Slave&&(!m_database->nodes.contains(plan.node)||plan.node==m_database->master)))){error="请选择有效的实际节点";return false;}
     }
     if(!isCanRx)for(const auto&f:(m_bus==Bus::Can?queuedDefinitions():definitions())){const auto &draft=m_work.frames[f.key];if(m_bus==Bus::Can&&!draft.enabled)continue;
+        if(draft.sendEnabled&&!draft.pendingInitial.isEmpty()){error="发送前请先设置有效的信号初值";return false;}
+        if(!matchesCanChoice(f)){
+            error="发送定义与选定的 CAN 候选不匹配";return false;
+        }
         if(m_bus==Bus::Can&&draft.sendEnabled&&(!f.issue.isEmpty()||(periodic&&draft.cycleMs<1))){error=f.issue.isEmpty()?"周期发送的每一项必须设置至少 1 ms":f.issue;return false;}
         if(!f.issue.isEmpty())continue;
         plan.items.append({f.key,f.id,f.extended,draft.applied.bytes,draft.cycleMs,draft.applied.revision,m_bus==Bus::Lin?(publishesLin(f.key)?m_work.node:QString()):f.publisher,f.classicChecksum,draft.sendEnabled});
@@ -354,8 +430,11 @@ void SignalTransmitViewModel::receive(BusFrameEvents events){
         if(e.bus!=m_bus||e.source==EventSource::RequestAccepted||e.source==EventSource::HardwareEcho||e.source==EventSource::Simulated)continue;
         const auto baseKey=frameKey(e.bus,e.id,e.extended);
         auto matchedKeys=m_rxCopies.value(baseKey);
-        if(m_work.frames.contains(baseKey))matchedKeys.append(baseKey);
+        const auto resolved=resolvedFrameKey(baseKey);
+        if(resolved.isEmpty())continue;
+        if(m_work.frames.contains(resolved))matchedKeys.append(resolved);
         for(const auto &key:matchedKeys){
+            if(m_database->sharedCanIds.contains(baseKey) && key!=resolved && (!frame(key)||frame(key)->sourceKey!=resolved))continue;
             auto &rx=m_work.frames[key].rx;
             rx.bytes=e.bytes;rx.hardwareUs=e.hardwareUs;rx.arrivalUs=e.arrivalUs;
             rx.received=true;rx.valid=e.valid;rx.detail=e.detail;
@@ -364,7 +443,10 @@ void SignalTransmitViewModel::receive(BusFrameEvents events){
                 QString err;
                 QVector<RawValue> values;
                 if(e.valid&&TransmitPayload::decode(*f,e.bytes,values,err))rx.values=std::move(values);
-                else rx.values.clear();
+                else {
+                    rx.values.clear();
+                    if(m_database->requiresDbcCompatibility&&e.valid&&!err.isEmpty()){rx.valid=false;rx.detail=err;}
+                }
             }
             updated.insert(key);
         }
@@ -450,6 +532,10 @@ bool SignalTransmitViewModel::addImported(const QStringList &keys,QString &error
     for(const auto &f:m_database->frames)if(can||f.line>0)imported.insert(f.key);
     for(const auto &key:keys){
         if(!imported.contains(key)||present.contains(key))continue;
+        const auto *f=frame(key);
+        if(can && !matchesCanChoice(*f)){
+            error="该 ID 有多个候选，请先在报文树中选择使用的定义";return false;
+        }
         const auto &d=m_work.frames.value(key);
         if(running()&&(!frame(key)->issue.isEmpty()||(can&&m_periodic&&d.sendEnabled&&d.cycleMs<1))){
             error="报文不能加入当前运行计划";return false;
@@ -535,13 +621,19 @@ bool SignalTransmitViewModel::changeId(const QString &oldKey,quint32 id,QString 
     auto draft=m_work.frames.value(oldKey);
     if(!TransmitPayload::validLength(m_bus,id,draft.applied.bytes.size())){error="当前 DLC 与目标 ID 不兼容";return false;}
     if(!allowSameId&&can)for(const auto &f:queuedDefinitions())if(f.id==id&&f.extended==extended){error="发送列表中已有相同 ID";return false;}
-    const auto *match=uniqueDefinition(m_database,id,extended);
+    const auto wire=frameKey(m_bus,id,extended);
+    const auto *match=m_database->sharedCanIds.contains(wire)?frame(resolvedFrameKey(wire)):uniqueDefinition(m_database,id,extended);
+    if(!match&&m_database->sharedCanIds.contains(wire)){error="目标 ID 有多个候选，请先选择使用的定义";return false;}
     FrameDefinition replacement=match?*match:FrameDefinition{};
+    if(match&&m_database->sharedCanIds.contains(wire))replacement.sourceKey=match->key;
     replacement.databaseBound=bool(match);replacement.id=id;replacement.extended=extended;replacement.custom=true;
     if(!match){replacement.length=draft.applied.bytes.size();replacement.publisher=m_work.node;replacement.name=QString("Frame_%1").arg(id,0,16);replacement.classicChecksum=!can&&id>=60;}
     const QString base=frameKey(m_bus,id,extended);
     int suffix=0;
     do{replacement.key=base+"@"+QString::number(++suffix);}while(frame(replacement.key));
+    if(!draft.pendingInitial.isEmpty()){error="更改 ID 前请先设置有效的信号初值";return false;}
+    for(int i=0;i<replacement.fields.size();++i)if(!replacement.fields[i].unrepresentableInitial.isEmpty())draft.pendingInitial.insert(i);
+    if(!draft.pendingInitial.isEmpty())draft.sendEnabled=false;
     if(!TransmitPayload::decode(replacement,draft.applied.bytes,draft.values,error))return false;
     draft.appliedValues=draft.values;draft.inputs.clear();draft.errors.clear();draft.warnings.clear();draft.rx={};
     draft.frameInput.clear();draft.frameError.clear();++draft.applied.revision;

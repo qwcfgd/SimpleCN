@@ -55,6 +55,35 @@
 #include <QtMath>
 #include "protocol/FlashJob.h"
 namespace host {
+namespace {
+class SignalScrollArea final : public QScrollArea {
+public:
+    explicit SignalScrollArea(SignalTransmitPage *page){
+        setObjectName("signalScrollArea");
+        setFrameShape(QFrame::NoFrame);
+        setFocusPolicy(Qt::NoFocus);
+        setWidget(page);
+    }
+    QSize minimumSizeHint() const override {
+        return widget()?widget()->minimumSizeHint():QScrollArea::minimumSizeHint();
+    }
+protected:
+    void resizeEvent(QResizeEvent *event) override {
+        QScrollArea::resizeEvent(event);
+        fitPage();
+    }
+    bool event(QEvent *event) override {
+        const bool handled=QScrollArea::event(event);
+        if(event->type()==QEvent::LayoutRequest)fitPage();
+        return handled;
+    }
+private:
+    void fitPage(){
+        // Use the same minimum as the standalone tab. Scroll only when its controls no longer fit.
+        if(auto *page=widget())page->resize(viewport()->size().expandedTo(page->minimumSizeHint()));
+    }
+};
+}
 static QLabel *label(const QString &text,QWidget *parent=nullptr){auto w=new QLabel(text,parent);w->setTextFormat(Qt::PlainText);return w;}
 static QFrame *card(const QString &title,QVBoxLayout *&layout) {
     auto frame=new QFrame;frame->setProperty("card",true);
@@ -153,7 +182,8 @@ void ChannelPage::build() {
     auto diagnosticScroll=new QScrollArea;diagnosticScroll->setObjectName("udsScrollArea");diagnosticScroll->setWidgetResizable(true);
     diagnosticScroll->setFrameShape(QFrame::NoFrame);diagnosticScroll->setWidget(new UdsDiagnosticPage(m_vm));
     tasks->addTab(diagnosticScroll,"UDS 诊断");
-    tasks->addTab(new SignalTransmitPage(m_vm->signalTransmission()),"信号发送");m_regions->addWidget(tasks);
+    auto *signalScroll=new SignalScrollArea(new SignalTransmitPage(m_vm->signalTransmission()));
+    tasks->addTab(signalScroll,"信号发送");m_regions->addWidget(tasks);
 
     auto outputs=new QSplitter(Qt::Horizontal);m_outputs=outputs;outputs->setObjectName("outputSplit");outputs->setChildrenCollapsible(false);outputs->setMinimumHeight(150);
     QVBoxLayout *frameLayout,*logLayout;auto frameCard=card("报文监视",frameLayout);auto logCard=card("运行日志",logLayout);
@@ -184,11 +214,20 @@ void ChannelPage::build() {
     auto*frameHeader=new FrameHeaderView(m_table);m_table->setHeader(frameHeader);m_table->setModel(proxy);frameHeader->setStretchLastSection(true);
     // Keep the saved logical column numbers stable. Only the visual order changes.
     frameHeader->moveSection(frameHeader->visualIndex(FrameTableModel::NameColumn),6);
-    frameHeader->setUnfilterableColumn(FrameTableModel::NameColumn);
     m_table->setSortingEnabled(true);m_table->sortByColumn(0,Qt::AscendingOrder);
     connect(frameHeader,&FrameHeaderView::filterRequested,this,&ChannelPage::configureColumnFilter);
     connect(frameHeader,&QHeaderView::sortIndicatorChanged,this,[this]{saveFrameFilter();});
-    connect(proxy,&FrameFilterProxy::filtersChanged,this,[this,proxy,frameHeader]{QSet<int>active;for(int c=0;c<9;++c)if(proxy->columnActive(c))active.insert(c);frameHeader->setFilteredColumns(active);saveFrameFilter();});
+    connect(proxy, &FrameFilterProxy::filtersChanged, this,
+            [this, proxy, frameHeader] {
+              QSet<int> active_columns;
+              for (int column = 0; column < proxy->columnCount(); ++column) {
+                if (proxy->columnActive(column)) {
+                  active_columns.insert(column);
+                }
+              }
+              frameHeader->setFilteredColumns(active_columns);
+              saveFrameFilter();
+            });
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_table,&QWidget::customContextMenuRequested,this,[this,proxy](const QPoint &point){
         const auto index=m_table->indexAt(point);if(!index.isValid())return;
@@ -329,7 +368,9 @@ void ChannelPage::updateRegionSizes(){
     const bool uds=m_tasks->currentIndex()==1;
     m_outputs->setMinimumHeight(uds?qMax(150,qCeil(window()->height()*0.30)):150);
     const int total=qMax(1,m_regions->height()-m_regions->handleWidth());
-    const int top=qRound(total*(m_tasks->currentIndex()==2?m_signalRatio:uds?m_udsRatio:m_downloadRatio));
+    const bool signalPage=m_tasks->currentIndex()==2;
+    m_tasks->setMinimumHeight(signalPage?qRound(total*0.15):0);
+    const int top=qRound(total*(signalPage?m_signalRatio:uds?m_udsRatio:m_downloadRatio));
     m_regions->setSizes({top,total-top});
 }
 void ChannelPage::resizeEvent(QResizeEvent *event){
@@ -681,23 +722,41 @@ void ChannelPage::restoreDownloadFiles(){
     if(!m_hasEntryFiles||m_vm->busy())return;
     QString error;m_vm->updateDownloadFiles(m_entryFiles,error);
 }
-void ChannelPage::saveFrameFilter(){
-    if(m_restoringMonitor||!m_frameProxy)return;
-    auto ui=m_vm->signalTransmission()->working().uiSettings;auto monitor=ui["monitor"].toObject();
-    monitor.remove("filter");monitor.remove("idFilter");monitor["columnFilters"]=m_frameProxy->saveFilters();
-    monitor["sortColumn"]=m_table->header()->sortIndicatorSection();monitor["sortOrder"]=int(m_table->header()->sortIndicatorOrder());
-    ui["monitor"]=monitor;m_vm->signalTransmission()->setUiSettings(ui);
+void ChannelPage::saveFrameFilter() {
+  if (m_restoringMonitor || !m_frameProxy) {
+    return;
+  }
+  auto ui = m_vm->signalTransmission()->working().uiSettings;
+  auto monitor = ui["monitor"].toObject();
+  monitor.remove("filter");
+  monitor.remove("idFilter");
+  monitor["columnFilters"] = m_frameProxy->saveFilters();
+  monitor["sortColumn"] = m_table->header()->sortIndicatorSection();
+  monitor["sortOrder"] = int(m_table->header()->sortIndicatorOrder());
+  ui["monitor"] = monitor;
+  m_vm->signalTransmission()->setUiSettings(ui);
 }
-void ChannelPage::configureColumnFilter(int column,QPoint position){
-    auto*header=static_cast<FrameHeaderView*>(m_table->header());header->setOpenColumn(column);
-    FrameColumnMenu menu(m_frameProxy,column,this);const auto*action=menu.exec(position);
-    if(menu.applied())m_frameProxy->setColumnFilter(column,menu.result());
-    else if(action&&action->property("clearColumnFilter").toBool())m_frameProxy->setColumnFilter(column,{});
-    else if(action&&action->property("frameRuleOperation").isValid()){
-        FrameRuleDialog dialog(column,m_frameProxy->headerData(column,Qt::Horizontal).toString(),m_frameProxy->columnFilter(column),FrameFilterOp(action->property("frameRuleOperation").toInt()),m_vm->settings().bus==communication::Bus::Lin?0x3f:0x1fffffff,this);
-        if(dialog.exec()==QDialog::Accepted)m_frameProxy->setColumnFilter(column,dialog.result());
+void ChannelPage::configureColumnFilter(int column, QPoint position) {
+  auto *header = static_cast<FrameHeaderView *>(m_table->header());
+  header->setOpenColumn(column);
+  FrameColumnMenu menu(m_frameProxy, column, this);
+  const auto *action = menu.exec(position);
+  if (menu.applied()) {
+    m_frameProxy->setColumnFilter(column, menu.result());
+  } else if (action && action->property("clearColumnFilter").toBool()) {
+    m_frameProxy->setColumnFilter(column, {});
+  } else if (action && action->property("frameRuleOperation").isValid()) {
+    FrameRuleDialog dialog(
+        column, m_frameProxy->headerData(column, Qt::Horizontal).toString(),
+        m_frameProxy->columnFilter(column),
+        FrameFilterOp(action->property("frameRuleOperation").toInt()),
+        m_vm->settings().bus == communication::Bus::Lin ? 0x3f : 0x1fffffff,
+        this);
+    if (dialog.exec() == QDialog::Accepted) {
+      m_frameProxy->setColumnFilter(column, dialog.result());
     }
-    header->setOpenColumn(-1);
+  }
+  header->setOpenColumn(-1);
 }
 void ChannelPage::followLatestFrame(){
     if(!m_frameProxy||!m_vm->frames()->rowCount())return;

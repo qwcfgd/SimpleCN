@@ -2,6 +2,7 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QMap>
+#include <QHash>
 #include <QJsonObject>
 #include <QMetaType>
 #include <QSet>
@@ -30,6 +31,9 @@ struct SignalDefinition {
     QMap<quint64,QString> labels;
     QString initial,initialSource,issue;
     QMap<QString,QString> attributes;
+    QString scopedName,unrepresentableInitial;
+    QString identity()const{return scopedName.isEmpty()?name:scopedName;}
+    QString displayName()const{return scopedName.isEmpty()?name:QString("%1 [bit %2, L%3]").arg(name).arg(start).arg(line);}
 };
 struct FrameDefinition {
     QString key,name,publisher,comment,issue;
@@ -39,6 +43,9 @@ struct FrameDefinition {
     QVector<SignalDefinition> fields;
     QMap<QString,QString> attributes;
     bool databaseBound=false;
+    QString sourceKey,decodeIssue;
+    QString displayName()const{return qualifiedName.isEmpty()?name:qualifiedName;}
+    QString qualifiedName;
 };
 struct ScheduleSlot { QString frame,delayMs="100",issue;int line=0;QString alias; };
 struct Schedule { QString name,issue;QVector<ScheduleSlot> entries; };
@@ -50,6 +57,8 @@ struct DatabaseDefinition {
     QMap<QString,QMap<QString,QString>> nodeAttributes;
     QVector<FrameDefinition> frames;
     QVector<Schedule> schedules;
+    QHash<QString,QStringList> sharedCanIds;
+    bool requiresDbcCompatibility=false;
 };
 using Database=QSharedPointer<const DatabaseDefinition>;
 struct ImportResult { Database database;QString error; };
@@ -73,6 +82,7 @@ struct LastRxState {
 struct TxDraft {
     QVector<RawValue> values;
     QVector<RawValue> appliedValues;
+    QSet<int> pendingInitial; // Imported raw defaults that need an explicit representable replacement.
     QMap<int,QString> inputs,errors,warnings;
     QString frameInput,frameError,alias;
     AppliedPayload applied;
@@ -83,6 +93,7 @@ struct WorkingSet {
     int repeatCount=1;
     QJsonObject uiSettings,replaySettings;
     QStringList canOrder;
+    QMap<QString,QString> canDefinitions;
     QString canNode,canDirection="Tx";
     QVector<FrameDefinition> customFrames;
     QMap<QString,TxDraft> frames;

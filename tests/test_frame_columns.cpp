@@ -15,6 +15,11 @@
 #include <QTemporaryDir>
 #include <QFile>
 #include <QTreeView>
+#include <QElapsedTimer>
+#include <QFileDialog>
+#include <QInputDialog>
+#include <QMouseEvent>
+#include <QTimer>
 #include "model/FramePresentation.h"
 #include "model/FrameFilterProxy.h"
 #include "model/DatabaseImporter.h"
@@ -87,7 +92,7 @@ private slots:
             if(header->isSectionHidden(c))continue;
             const auto caption=table->model()->headerData(c,Qt::Horizontal).toString();
             QVERIFY(header->sectionViewportPosition(c)+header->sectionSize(c)<=table->viewport()->width());
-            QVERIFY2(header->fontMetrics().horizontalAdvance(caption)+(c==nameColumn?11:32)<=header->sectionSize(c),qPrintable(caption));
+            QVERIFY2(header->fontMetrics().horizontalAdvance(caption)+32<=header->sectionSize(c),qPrintable(caption));
         }
 
         const auto bus=lin?signal::Bus::Lin:signal::Bus::Can;
@@ -136,6 +141,183 @@ private slots:
         table->setColumnWidth(5,111);
         channel->frames()->append({known});
         QCOMPARE(table->columnWidth(5),111);
+    }
+    void monitorNameFilterAndSort_data(){monitorNameColumn_data();}
+    void monitorNameFilterAndSort(){
+        QFETCH(bool,lin);
+        auto config=ChannelSettings::defaults(lin?communication::Bus::Lin:communication::Bus::Can);
+        config.simulation=true;
+        ChannelViewModel channel(config);
+        ChannelPage page(&channel);
+        page.resize(1440,1000);
+        page.show();
+        auto *table=page.findChild<QTreeView*>("frameTable");
+        QVERIFY(table);
+        auto *header=qobject_cast<FrameHeaderView*>(table->header());
+        auto *proxy=qobject_cast<FrameFilterProxy*>(table->model());
+        QVERIFY(header&&proxy);
+        const int column=FrameTableModel::NameColumn;
+        const auto bus=lin?signal::Bus::Lin:signal::Bus::Can;
+        const auto fixture=QString(TEST_SOURCE_DIR)+(lin?"/fixtures/signals-synthetic.ldf":"/fixtures/signals-synthetic.dbc");
+        auto *signalVm=channel.signalTransmission();
+        QString error;
+        QVERIFY2(signalVm->importFile(fixture,error),qPrintable(error));
+        const quint32 knownId=lin?0x10:0x123;
+        const quint32 alphaId=lin?0x2a:0x55a;
+        const quint32 zuluId=lin?0x2b:0x55b;
+        const quint32 blankId=lin?0x2c:0x55c;
+        QVERIFY2(signalVm->putCustom({},"AlphaLocal",alphaId,2,100,error),qPrintable(error));
+        QVERIFY2(signalVm->putCustom({},"ZuluLocal",zuluId,2,100,error),qPrintable(error));
+        auto localFrame=[&](qint64 time,quint32 id){
+            auto frame=record(time,id);
+            frame.bus=bus;
+            return frame;
+        };
+        channel.frames()->append({localFrame(1,zuluId),localFrame(2,blankId),
+                                  localFrame(3,knownId),localFrame(4,alphaId)});
+        auto displayedNames=[&]{
+            QStringList result;
+            for(int row=0;row<proxy->rowCount();++row)
+                result.append(proxy->index(row,column).data().toString());
+            return result;
+        };
+        QCOMPARE(proxy->rowCount(),4);
+        QVERIFY(displayedNames().contains(QString()));
+        QCoreApplication::processEvents();
+        const QPoint caption(header->sectionViewportPosition(column)+8,header->height()/2);
+        QTest::mouseClick(header->viewport(),Qt::LeftButton,Qt::NoModifier,caption);
+        QCOMPARE(header->sortIndicatorSection(),column);
+        const auto firstSort=header->sortIndicatorOrder();
+        const auto firstNames=displayedNames();
+        QVERIFY((firstNames.indexOf("AlphaLocal")<firstNames.indexOf("ZuluLocal"))==(firstSort==Qt::AscendingOrder));
+        QTest::mouseClick(header->viewport(),Qt::LeftButton,Qt::NoModifier,caption);
+        QCOMPARE(header->sortIndicatorSection(),column);
+        QVERIFY(header->sortIndicatorOrder()!=firstSort);
+        const auto secondNames=displayedNames();
+        QVERIFY((secondNames.indexOf("AlphaLocal")<secondNames.indexOf("ZuluLocal"))!=(firstSort==Qt::AscendingOrder));
+
+        const QPoint button=header->filterButtonRect(column).center();
+        QMouseEvent hover(QEvent::MouseMove,QPointF(button),QPointF(header->viewport()->mapToGlobal(button)),
+                          Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+        QApplication::sendEvent(header->viewport(),&hover);
+        QVERIFY(header->filterButtonVisible(column));
+
+        // Drive the asynchronous menu that opens from the real header button.
+        bool confirmed=false;
+        bool clearing=false;
+        bool cleared=false;
+        bool sawBlank=false;
+        bool sawAlpha=false;
+        QElapsedTimer deadline;
+        deadline.start();
+        QTimer menuInput;
+        menuInput.setInterval(10);
+        connect(&menuInput,&QTimer::timeout,&page,[&]{
+            auto *menu=page.findChild<FrameColumnMenu*>("frameColumnMenu");
+            if(!menu)return;
+            auto *buttons=menu->findChild<QDialogButtonBox*>("frameColumnButtons");
+            if(deadline.elapsed()>3000){menu->close();return;}
+            if(clearing){
+                auto *action=menu->findChild<QAction*>("clearColumnFilter");
+                if(action&&action->isEnabled()){
+                    cleared=true;
+                    QTest::mouseClick(menu,Qt::LeftButton,Qt::NoModifier,menu->actionGeometry(action).center());
+                }
+                return;
+            }
+            if(!buttons->button(QDialogButtonBox::Ok)->isEnabled())return;
+            auto *list=menu->findChild<QListView*>("frameColumnValues");
+            for(int row=0;row<list->model()->rowCount();++row){
+                const auto value=list->model()->index(row,0).data(Qt::UserRole).toString();
+                sawBlank|=value.isEmpty();
+                sawAlpha|=value=="AlphaLocal";
+            }
+            menu->findChild<QLineEdit*>("frameColumnSearch")->setText("alpha");
+            confirmed=true;
+            buttons->button(QDialogButtonBox::Ok)->click();
+        });
+        menuInput.start();
+        QTest::mouseClick(header->viewport(),Qt::LeftButton,Qt::NoModifier,button);
+        menuInput.stop();
+        QVERIFY(confirmed&&sawBlank&&sawAlpha);
+        QCOMPARE(displayedNames(),QStringList{"AlphaLocal"});
+        QCOMPARE(header->sortIndicatorSection(),column);
+        QCOMPARE(proxy->filteredHistory().size(),1);
+        QCOMPARE(proxy->filteredHistory().first().id,alphaId);
+
+        QTemporaryDir exportDir;
+        QVERIFY(exportDir.isValid());
+        const auto exportPath=exportDir.filePath("filtered.csv");
+        auto *exportButton=page.findChild<QPushButton*>("exportFrames");
+        QVERIFY(exportButton);
+        const bool nativeDisabled=QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs,true);
+        QTimer exportInput;
+        exportInput.setInterval(15);
+        deadline.restart();
+        connect(&exportInput,&QTimer::timeout,&page,[&]{
+            if(auto *input=page.findChild<QInputDialog*>();input&&input->isVisible()){
+                if(deadline.elapsed()>3000){input->reject();return;}
+                if(auto *scope=input->findChild<QComboBox*>()){
+                    scope->setCurrentIndex(1);
+                    input->accept();
+                }
+            }else if(auto *file=page.findChild<QFileDialog*>();file&&file->isVisible()){
+                if(deadline.elapsed()>3000){file->reject();return;}
+                file->selectNameFilter("CSV (*.csv)");
+                if(auto *name=file->findChild<QLineEdit*>("fileNameEdit")){
+                    name->setText(exportPath);
+                    QMetaObject::invokeMethod(file,"accept");
+                }
+            }
+        });
+        exportInput.start();
+        exportButton->click();
+        exportInput.stop();
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs,nativeDisabled);
+        QFile file(exportPath);
+        QVERIFY2(file.open(QIODevice::ReadOnly),qPrintable(channel.logs().join('\n')));
+        const auto csv=file.readAll();
+        QCOMPARE(csv.count('\n'),2);
+        QVERIFY(csv.contains(("0x"+QByteArray::number(alphaId,16).toUpper()).constData()));
+
+        auto candidates=proxy->candidateValues(column);
+        const auto key=signal::frameKey(bus,alphaId);
+        QVERIFY2(signalVm->putCustom(key,"ChangedLocal",alphaId,2,100,error),qPrintable(error));
+        QCOMPARE(proxy->rowCount(),0);
+        QTRY_VERIFY(candidates.isFinished());
+        bool keptOldName=false;
+        for(const auto &candidate:candidates.result())
+            keptOldName|=candidate.first=="AlphaLocal";
+        QVERIFY(keptOldName);
+        clearing=true;
+        deadline.restart();
+        menuInput.start();
+        QTest::mouseClick(header->viewport(),Qt::LeftButton,Qt::NoModifier,button);
+        menuInput.stop();
+        QVERIFY(cleared);
+        QCOMPARE(proxy->rowCount(),4);
+        QVERIFY(displayedNames().contains("ChangedLocal"));
+
+        QVERIFY(proxy->setColumnFilter(column,rule(FrameFilterOp::Contains,"CHANGED")));
+        QCOMPARE(displayedNames(),QStringList{"ChangedLocal"});
+        channel.frames()->setRolling(true);
+        channel.frames()->append({localFrame(5,blankId),localFrame(6,alphaId)});
+        QCOMPARE(displayedNames(),QStringList{"ChangedLocal"});
+        QCOMPARE(proxy->filteredHistory().size(),2);
+
+        ChannelViewModel reopened(channel.snapshotSettings());
+        ChannelPage reopenedPage(&reopened);
+        reopened.frames()->append(channel.frames()->history());
+        auto *reopenedTable=reopenedPage.findChild<QTreeView*>("frameTable");
+        auto *reopenedProxy=qobject_cast<FrameFilterProxy*>(reopenedTable->model());
+        QVERIFY(reopenedProxy);
+        QTRY_COMPARE(reopenedTable->header()->sortIndicatorSection(),column);
+        QCOMPARE(reopenedTable->header()->sortIndicatorOrder(),header->sortIndicatorOrder());
+        QVERIFY(reopenedProxy->columnActive(column));
+        QCOMPARE(reopenedProxy->filteredHistory().size(),2);
+        QVERIFY(reopenedProxy->setColumnFilter(column,rule(FrameFilterOp::Equal,QString())));
+        QCOMPARE(reopenedProxy->filteredHistory().size(),2);
     }
     void oldMonitorColumnsKeepLogicalNumbers(){
         const QJsonArray lengthFilter{QJsonObject{{"column",6},{"valuesEnabled",true},{"values",QJsonArray{"2"}}}};

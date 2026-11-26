@@ -37,16 +37,16 @@ QVariant SignalPlotModel::data(const QModelIndex &i,int role) const {
 bool SignalPlotModel::addSignal(const QString &key,const QString &name){
     const auto id=QUuid::createUuid().toString(QUuid::WithoutBraces);
     const FrameDefinition *frame=nullptr;int field=-1;
-    for(const auto &f:m_database->frames)if(f.key==key){frame=&f;for(int n=0;n<f.fields.size();++n)if(f.fields[n].name==name){field=n;break;}break;}
+    for(const auto &f:m_database->frames)if(f.key==key){frame=&f;for(int n=0;n<f.fields.size();++n)if(f.fields[n].identity()==name){field=n;break;}break;}
     if(!frame||field<0)return false;
-    Series s;s.key=id;s.frameKey=key;s.name=name;s.frameName=frame->name;s.id=frame->id;s.extended=frame->extended;s.field=field;s.unit=frame->fields[field].unit;
+    Series s;s.key=id;s.frameKey=key;s.signalKey=name;s.name=frame->fields[field].displayName();s.frameName=frame->displayName();s.id=frame->id;s.extended=frame->extended;s.field=field;s.unit=frame->fields[field].unit;
     // Maximize distance from colors already in use; deterministic candidates avoid near duplicates.
     int bestHue=210;double bestDistance=-1;
     for(int hue=0;hue<360;hue+=7){const auto candidate=QColor::fromHsv(hue,200,185);double distance=1e12;
         for(const auto &existing:m_series){const double dr=candidate.red()-existing.color.red(),dg=candidate.green()-existing.color.green(),db=candidate.blue()-existing.color.blue();distance=qMin(distance,dr*dr+dg*dg+db*db);}
         if(distance>bestDistance){bestDistance=distance;bestHue=hue;}}
     s.color=QColor::fromHsv(bestHue,200,185);
-    for(auto it=frame->fields[field].labels.begin();it!=frame->fields[field].labels.end();++it){bool ok=false;const auto &definition=frame->fields[field];const double value=(definition.conversion?SignalCodec::physicalText(definition,{it.key(),{}}):SignalCodec::rawText(definition,{it.key(),{}})).toDouble(&ok);if(ok)s.labels[value]=it.value();}s.raw=s.physical="—";s.status="等待采样";
+    for(auto it=frame->fields[field].labels.begin();it!=frame->fields[field].labels.end();++it){bool ok=false;const auto &definition=frame->fields[field];const double value=(definition.conversion?SignalCodec::physicalText(definition,{it.key(),{}}):SignalCodec::rawText(definition,{it.key(),{}})).toDouble(&ok);if(ok)s.labels[value]=it.value();}s.raw=s.physical="—";s.status=m_vm->resolvedFrameKey(frameKey(m_database->bus,s.id,s.extended))==key?"等待采样":"多个候选，请先在报文树中选择使用的定义";
     if(0.2126*s.color.red()+0.7152*s.color.green()+0.0722*s.color.blue()>140)s.color=s.color.darker(135);
     beginInsertRows({},m_series.size(),m_series.size());m_series.append(s);endInsertRows();
     // Backfill only the newly added series, without replaying existing samples.
@@ -81,7 +81,8 @@ void SignalPlotModel::ingest(const FrameBatch &batch,int onlyRow,bool replay){
     bool changed=false;
     for(const auto &r:batch){
         if(r.bus!=m_database->bus||r.rtr)continue;
-        const auto key=frameKey(r.bus,r.id,r.extended);
+        const auto key=m_vm->resolvedFrameKey(frameKey(r.bus,r.id,r.extended));
+        if(key.isEmpty())continue;
         bool wanted=false;for(int n=0;n<m_series.size();++n)if((onlyRow<0||onlyRow==n)&&m_series[n].frameKey==key){wanted=true;break;}if(!wanted)continue;
         auto &pending=queues[key];
         while(!pending.isEmpty()&&r.captureUs-pending.first().captureUs>100000)pending.removeFirst();
@@ -112,10 +113,21 @@ void SignalPlotModel::refresh(){if(!m_series.isEmpty())emit dataChanged(index(0,
 void SignalPlotModel::clearSamples(){for(auto &s:m_series){s.points.clear();s.raw=s.physical="—";s.status="等待采样";}m_pending.clear();++m_revision;refresh();}
 void SignalPlotModel::setCapacity(int n){m_capacity=qBound(1000,n,1000000);const int limit=qMin(m_capacity,qMax(1,1000000/qMax(1,int(m_series.size()))));for(auto &s:m_series)while(int(s.points.size())>limit)s.points.pop_front();++m_revision;}
 void SignalPlotModel::rebind(){
-    if(m_database==m_vm->database())return;m_database=m_vm->database();clearSamples();
+    const auto choices=m_vm->working().canDefinitions;
+    if(m_database==m_vm->database()&&choices==m_choices)return;
+    if(m_database==m_vm->database()){
+        for(auto &s:m_series){
+            const auto wire=frameKey(m_database->bus,s.id,s.extended);
+            if(choices.value(wire)==m_choices.value(wire))continue;
+            m_pending.remove(s.frameKey);s.points.clear();s.raw=s.physical="—";
+            s.status=choices.value(wire)==s.frameKey?"等待采样":"多个候选，请先在报文树中选择使用的定义";
+        }
+        m_choices=choices;++m_revision;refresh();return;
+    }
+    m_choices=choices;m_database=m_vm->database();clearSamples();
     m_frameLookup.clear();for(int n=0;n<m_database->frames.size();++n)m_frameLookup[m_database->frames[n].key]=n;
     for(auto &s:m_series){s.field=-1;s.status="数据库中已无此信号";
-        for(const auto &f:m_database->frames)if(f.key==s.frameKey)for(int n=0;n<f.fields.size();++n)if(f.fields[n].name==s.name){s.field=n;s.unit=f.fields[n].unit;s.frameName=f.name;s.status="等待采样";}}
+        for(const auto &f:m_database->frames)if(f.key==s.frameKey)for(int n=0;n<f.fields.size();++n)if(f.fields[n].identity()==s.signalKey){s.field=n;s.unit=f.fields[n].unit;s.frameName=f.displayName();s.status=m_vm->resolvedFrameKey(frameKey(m_database->bus,f.id,f.extended))==f.key?"等待采样":"多个候选，请先在报文树中选择使用的定义";}}
     refresh();
 }
 }
@@ -123,12 +135,12 @@ void SignalPlotModel::rebind(){
 namespace host {
 int SignalPlotModel::representative(int row)const{if(row<0||row>=m_series.size())return row;const auto group=m_series[row].group;if(group.isEmpty())return row;for(int n=0;n<m_series.size();++n)if(m_series[n].group==group)return n;return row;}
 void SignalPlotModel::saveConfiguration(){
-    if(m_restoring)return;QJsonArray list;for(const auto &s:m_series)list.append(QJsonObject{{"id",s.key},{"frame",s.frameKey},{"signal",s.name},{"color",s.color.name()},{"group",s.group},{"groupName",s.groupName},{"marked",s.marked}});
+    if(m_restoring)return;QJsonArray list;for(const auto &s:m_series)list.append(QJsonObject{{"id",s.key},{"frame",s.frameKey},{"signal",s.signalKey},{"color",s.color.name()},{"group",s.group},{"groupName",s.groupName},{"marked",s.marked}});
     auto ui=m_vm->working().uiSettings;ui["plotSeries"]=list;m_vm->setUiSettings(ui);
 }
 void SignalPlotModel::restoreConfiguration(){
     const auto list=m_vm->working().uiSettings.value("plotSeries").toArray();m_restoring=true;
-    beginResetModel();m_series.clear();m_pending.clear();m_active=-1;m_database=m_vm->database();m_frameLookup.clear();
+    beginResetModel();m_series.clear();m_pending.clear();m_active=-1;m_database=m_vm->database();m_choices=m_vm->working().canDefinitions;m_frameLookup.clear();
     for(int n=0;n<m_database->frames.size();++n)m_frameLookup[m_database->frames[n].key]=n;endResetModel();
     for(const auto &v:list){const auto o=v.toObject();if(!addSignal(o["frame"].toString(),o["signal"].toString()))continue;auto &s=m_series.last();
         s.key=o["id"].toString(s.key);const QColor color(o["color"].toString());if(color.isValid())s.color=color;s.group=o["group"].toString();s.groupName=o["groupName"].toString();s.marked=o["marked"].toBool();}

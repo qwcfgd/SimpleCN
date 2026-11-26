@@ -20,7 +20,7 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent,Chan
     connect(m_model,&ChannelModel::observedFrames,m_signals,&SignalTransmitViewModel::observeFrames);
     connect(&m_frames,&FrameTableModel::cleared,m_signals,&SignalTransmitViewModel::clearTrace);
     const auto updateMonitorNames=[this]{
-        m_frames.setDatabase(m_signals->database());
+        m_frames.setDatabase(m_signals->database(),m_signals->working().canDefinitions);
         m_frames.setCustomNames(m_signals->database()->bus,m_signals->monitorCustomNames());
     };
     connect(m_signals,&SignalTransmitViewModel::structureChanged,this,updateMonitorNames);
