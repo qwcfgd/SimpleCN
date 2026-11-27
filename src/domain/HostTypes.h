@@ -16,8 +16,6 @@ struct ChannelSettings : ChannelPageInitialValues {
     QString bootAddress="00005000",bootEraseLength="00014000";
     QString calibAddress="0007E000",calibLength="00001000";
     QString bootBAddress="00068000",applicationBAddress; // Empty B disables an unconfigured alternate slot.
-    bool checkAppVersion=false;
-    QString expectedAppVersion="";
     QString cddPath,cddEcu,cddVariant;
     int udsRepeatCount=1,udsRepeatDelayMs=1000;
     bool udsRepeatEnabled=false;

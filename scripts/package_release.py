@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 import zipfile
@@ -46,6 +47,7 @@ def main():
     args = parser.parse_args()
     if not (args.local_use_only or args.redistribution_rights_reviewed):
         parser.error("Vendor/Microsoft runtime redistribution rights are not verified. Use --local-use-only for the local build, or review all applicable rights before --redistribution-rights-reviewed.")
+    version = re.search(r"project\(Qt-SimpleCN VERSION ([\d.]+) ", (ROOT/"CMakeLists.txt").read_text(encoding="utf-8")).group(1)
     build, output = args.build.resolve(), args.output.resolve()
     archive = output.parent/(output.name+".zip")
     if output.exists() or archive.exists():
@@ -79,14 +81,16 @@ def main():
         shutil.copy2(bridge, output/"seedkey/SeedkeyBridge32.exe")
     (output/"qt.conf").write_text("[Paths]\nPrefix=.\nPlugins=.\n", encoding="utf-8")
     (output/"docs").mkdir()
-    for name in ("Download-Slots.md", "Release-1.50.md", "User-Guide.md", "Driver-Packaging.md", "Vector-Hardware.md", "Release-1.45.md", "Release-1.44.md", "Tosun-Hardware.md", "Trace-and-Graphics.md", "Signal-Workbench-Replay.md",
+    for name in ("User-Guide.md", "Driver-Packaging.md", "Vector-Hardware.md", "Release-1.45.md", "Release-1.44.md", "Tosun-Hardware.md", "Trace-and-Graphics.md", "Signal-Workbench-Replay.md",
                  "CDD-UDS.md", "Default-Configuration.md", "Licensing.md", "Signal-Transmission-Implementation.md", "Logic-Review-Fixes.md",
                  "Online-SeedKey-1.44.md", "Startup-Review-1.44.md", "MVVM-Audit.md"):
         shutil.copy2(ROOT/"docs"/name, output/"docs"/name)
+    for name in ("README.md", "README.en.md"):
+        shutil.copy2(ROOT/name, output/name)
     shutil.copytree(ROOT/"docs/licenses", output/"docs/licenses")
     (output/"README.txt").write_text(
         ("LOCAL USE ONLY: vendor/Microsoft runtime redistribution rights have not been verified.\n\n" if args.local_use_only else "") +
-        "SimpleCN V1.50\n\n"
+        f"SimpleCN V{version}\n\n"
         "启动 SimpleCN.exe。首次包含 CAN01 和 LIN01，不自动连接。\n"
         "完整说明：docs/User-Guide.md\n"
         "发布包仅包含应用及运行依赖；测试、调试与模拟素材保存在 build/qttemp。\n"
@@ -95,9 +99,9 @@ def main():
         "请保留整个目录；不要只复制 exe。保存配置需要目录可写。\n",
         encoding="utf-8-sig")
     inventory = {
-        "releaseStatus": "candidate-awaiting-manual-validation",
-        "romAlignmentBytes": 4096, "slotFallback": "erase NRC31 with validated alternate image only",
-        "applicationLicense": "LGPL-3.0-only", "applicationVersion": "1.50", "uiVersion": "SimpleCN V1.50",
+        "releaseStatus": "release",
+        "destinationRangeValidation": "ECU", "slotFallback": "erase NRC31 with validated alternate image only",
+        "applicationLicense": "LGPL-3.0-only", "applicationVersion": version, "uiVersion": f"SimpleCN V{version}",
         "qtMajor": int(args.qt_major), "architecture": "Windows x64",
         "buildType": "Release", "physicalDownloadEnabled": True, "physicalDownloadBuses": ["CAN", "LIN"], "physicalECUValidated": False,
         "defaultOnlineKeyProvider": "seed-as-key", "externalKeyBridgeIncluded": bridge.is_file(),

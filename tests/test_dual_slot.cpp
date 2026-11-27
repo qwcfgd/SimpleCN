@@ -139,8 +139,8 @@ private slots:
         if(origin!=2)QVERIFY(!vm.settings().defaultMemoryLayout);
         QVERIFY(vm.flashProfile(profile,error));profile.applicationEraseBase=vm.settings().applicationAddress.toUInt(nullptr,16);profile.applicationEraseLength=vm.settings().applicationLength.toUInt(nullptr,16);profile.applicationBBase=vm.settings().applicationBAddress.toUInt(nullptr,16);profile.applicationHasB=!vm.settings().applicationBAddress.isEmpty();
         FirmwareImage app,driver;QVERIFY(FirmwareImage::load(appPath,profile.applicationEraseBase,app,error));QVERIFY(FirmwareImage::load(driverPath,0x20001400,driver,error));
-        SlotWire wire(profile);UdsSession session(wire,{});FlashJob job(session,profile,std::make_unique<SimulationKey>());QVERIFY(!job.start(app,driver,error));QVERIFY(wire.requests.isEmpty());
-        if(origin!=1)QVERIFY(error.contains("conflicts"));
+        SlotWire wire(profile);UdsSession session(wire,{});FlashJob job(session,profile,std::make_unique<SimulationKey>());if(origin==1){QVERIFY2(job.start(app,driver,error),qPrintable(error));job.cancel();}
+        else{QVERIFY(!job.start(app,driver,error));QVERIFY(wire.requests.isEmpty());QVERIFY(error.contains("conflicts"));}
     }
     void singleApp60And80Transfer_data(){QTest::addColumn<bool>("new80");QTest::newRow("legacy60")<<false;QTest::newRow("unified80")<<true;}
     void singleApp60And80Transfer(){
@@ -166,6 +166,179 @@ private slots:
         QCOMPARE(wire.ecu.memory(selected),useB?payloadB:payloadA);QCOMPARE(image.segments[0].data,bytes);
         QVector<Segment> primary,alternate;FirmwareImage single;single.binary=true;single.segments={{a,payloadB}};QVERIFY(FirmwareImage::planSlots(single,a,b,true,capacity,primary,alternate,error));QCOMPARE(primary[0].address,b);
         FirmwareImage hex;QVERIFY(FirmwareImage::load(file("app-pair.hex",intelHex({{a,payloadA},{b,payloadB}})),a,hex,error));QVERIFY(FirmwareImage::planSlots(hex,a,b,true,capacity,primary,alternate,error));QCOMPARE(primary[0].address,a);QCOMPARE(alternate[0].address,b);
+    }
+    void rom88Transfer_data(){
+        QTest::addColumn<QString>("form");QTest::addColumn<bool>("fallback");
+        QTest::newRow("paired-bin-A")<<QString("app.bin")<<false;
+        QTest::newRow("paired-bin-B")<<QString("app.bin")<<true;
+        QTest::newRow("linked-hex-A")<<QString("app-a.hex")<<false;
+        QTest::newRow("linked-hex-B")<<QString("app-b.hex")<<false;
+        for(const QString &variant:{QString("CAN_ONLY"),QString("LIN_ONLY")}){
+            for(bool fallback:{false,true})
+                QTest::newRow(qPrintable(variant+(fallback?"-B":"-A")))<<variant+"/app.bin"<<fallback;
+        }
+    }
+    void rom88Transfer(){
+        QFETCH(QString,form);QFETCH(bool,fallback);
+        const auto root=qEnvironmentVariable("SIMPLECN_ROM88_SNAPSHOT");
+        if(root.isEmpty())QSKIP("Set SIMPLECN_ROM88_SNAPSHOT to the pinned T010 output");
+        const QDir files(root);QString error;FirmwareImage driver,app,cal,container;
+        FlashProfile p;p.flow="boot";p.resetWaitMs=0;p.applicationEraseBase=0x18000;p.applicationBBase=0x4b000;
+        p.applicationEraseLength=0x32000;p.applicationHasB=true;p.calibBase=0x7e000;p.calibLength=8192;
+        QVERIFY2(FirmwareImage::loadTarget(files.filePath(form),p.applicationEraseBase,p.applicationBBase,true,p.applicationEraseLength,app,error),qPrintable(error));
+        const bool isHex=form.endsWith(".hex");
+        QVERIFY2(FirmwareImage::loadTarget(files.filePath(isHex?"driver.hex":"driver.bin"),0x20001400,0,false,0,driver,error),qPrintable(error));
+        QVERIFY2(FirmwareImage::loadCalibration(files.filePath(isHex?"calib.hex":"calib.bin"),p.calibBase,p.calibLength,cal,error),qPrintable(error));
+        QVERIFY(FirmwareImage::load(files.filePath(isHex?"app.bin":form),0,container,error));
+        const auto bytes=container.segments.first().data;
+        const QMap<QString,QByteArray> digests{
+            {"CAN_ONLY/app.bin","3c2d3da44cded5db6af349a18edb59e518eda3015f758be3dcab216aee11dbfb"},
+            {"LIN_ONLY/app.bin","df4122edb3213741a7b63db3c56df579d703d1f484d7e7516f5da96ff6e9a9d6"}};
+        QCOMPARE(QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex(),
+            digests.value(form,"5a15d4238e2ac6ee5c08dde255b88cdaa60a0cf7b263242b17fe2da6cee3b0d8"));
+        QCOMPARE(FirmwareImage::identify(app),FirmwareImage::Kind::Application);
+        QCOMPARE(FirmwareImage::identify(driver),FirmwareImage::Kind::Driver);
+        QCOMPARE(FirmwareImage::identify(cal),FirmwareImage::Kind::Calibration);
+        auto config=host::ChannelSettings::defaults(communication::Bus::Can);config.simulation=true;
+        host::ChannelViewModel vm(config);QString role;
+        QVERIFY2(vm.inspectDownloadFile(files.filePath(form),role,error),qPrintable(error));QCOMPARE(role,QString("app"));
+        SlotWire wire(p);wire.ecu.maxBlockLength=1026;
+        if(fallback)wire.intercept=[p](const QByteArray &r){
+            return r==QByteArray::fromHex("3101ff0044")+be32(p.applicationEraseBase)+be32(p.applicationEraseLength)?QByteArray::fromHex("7f3131"):QByteArray();
+        };
+        UdsSession session(wire,{100,200,2000,0});FlashJob job(session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(app,driver,{},cal,error),qPrintable(error));QVERIFY(waitForTest([&]{return done.size()==1;},10000));
+        QVERIFY2(done.first()[0].toBool(),qPrintable(done.first()[1].toString()));
+        const bool slotB=fallback||form=="app-b.hex";const quint32 selected=slotB?p.applicationBBase:p.applicationEraseBase;
+        const int n=digests.contains(form)?102400:118784;const auto expected=bytes.mid(slotB?n:0,n);
+        QVERIFY(wire.requests.contains(QByteArray::fromHex("3101ff0044")+be32(selected)+be32(0x32000)));
+        QVERIFY(wire.requests.contains(QByteArray::fromHex("340044")+be32(selected)+be32(n)));
+        QCOMPARE(wire.ecu.memory(selected),expected);QCOMPARE(wire.ecu.memory(0x20001400),driver.segments.first().data);
+        QCOMPARE(wire.ecu.memory(p.calibBase),cal.segments.first().data);
+        qInfo().noquote()<<"ROM88 0x31"<<QString::number(selected,16)<<"+ 32000; 0x34 bytes"<<n<<"SHA256"<<QCryptographicHash::hash(wire.ecu.memory(selected),QCryptographicHash::Sha256).toHex();
+    }
+    void rom88InvalidFilesAndHexMismatch(){
+        const auto root=qEnvironmentVariable("SIMPLECN_ROM88_SNAPSHOT");
+        if(root.isEmpty())QSKIP("Set SIMPLECN_ROM88_SNAPSHOT to the pinned T010 output");
+        const QDir files(root);FirmwareImage original,driver,boot,one;QString error;
+        QVERIFY(FirmwareImage::load(files.filePath("app.bin"),0x18000,original,error));
+        QVERIFY(FirmwareImage::load(files.filePath("driver.bin"),0x20001400,driver,error));
+        QVERIFY(FirmwareImage::load(files.filePath("boot.bin"),0x1000,boot,error));
+        QCOMPARE(FirmwareImage::identify(boot),FirmwareImage::Kind::IncompleteBoot);
+        FlashProfile p;p.flow="boot";p.resetWaitMs=0;p.applicationHasB=true;p.applicationEraseBase=0x18000;p.applicationBBase=0x4b000;p.applicationEraseLength=0x32000;
+        SlotWire wire(p);UdsSession session(wire,{});FlashJob job(session,p,std::make_unique<SimulationKey>());
+        QVERIFY(!job.start(original,driver,boot,error));QVERIFY(error.contains("factory"));QVERIFY(wire.requests.isEmpty());
+        for(int mode=0;mode<9;++mode){
+            auto damaged=original;auto &data=damaged.segments[0].data;const int other=118784;
+            if(mode==0)data[other+4100]=char(data[other+4100]^1);
+            if(mode==1)data[3072+60]=char(data[3072+60]^1);
+            if(mode==2)data[3072+32]='Z';
+            if(mode==3)data[3072+40]=1;
+            if(mode==4)data.chop(1);
+            if(mode==5)data=data.mid(other)+data.left(other);
+            if(mode==6)data=data.left(other)+data.left(other);
+            if(mode==7){data.replace(8192,4096,QByteArray(4096,char(0xff)));data.replace(3072+56,4,be32(crc32(data.mid(4096,other-4096))));data.replace(3072+60,4,be32(crc32(data.mid(3072,60))));}
+            if(mode==8)data[0]='?';
+            QCOMPARE(FirmwareImage::identify(damaged),FirmwareImage::Kind::Unknown);
+            QVERIFY2(!job.start(damaged,driver,error),qPrintable(QString::number(mode)));
+            QVERIFY(!error.isEmpty());QVERIFY(wire.requests.isEmpty());
+        }
+        auto badDriver=driver;badDriver.segments[0].data[1024]=char(badDriver.segments[0].data[1024]^1);
+        QVERIFY(!job.start(original,badDriver,error));QVERIFY(error.contains("CRC32"));QVERIFY(wire.requests.isEmpty());
+        QVERIFY(!job.start(original,t010Driver(11),error));QVERIFY(wire.requests.isEmpty());
+        QVERIFY(!FirmwareImage::loadTarget(files.filePath("app-a.hex"),0x7e000,0,false,8192,one,error));
+        QVERIFY2(error.contains("0x00018000")&&error.contains("118784")&&error.contains("0x0007e000")&&error.contains("8192"),qPrintable(error));
+        QVERIFY(wire.requests.isEmpty());
+    }
+    void rom88SuppliedBinRangeReachesEcu(){
+        const auto root=qEnvironmentVariable("SIMPLECN_ROM88_SNAPSHOT");
+        if(root.isEmpty())QSKIP("Set SIMPLECN_ROM88_SNAPSHOT to the pinned T010 output");
+        const QDir files(root);QString error;FirmwareImage driver,app;
+        FlashProfile p;p.flow="boot";p.resetWaitMs=0;p.applicationEraseBase=0x7e000;
+        p.applicationEraseLength=8192;p.applicationBBase=0x4b000;p.applicationHasB=true;
+        QVERIFY(FirmwareImage::loadTarget(files.filePath("app.bin"),p.applicationEraseBase,p.applicationBBase,true,p.applicationEraseLength,app,error));
+        QVERIFY(FirmwareImage::loadTarget(files.filePath("driver.bin"),0x20001400,0,false,0,driver,error));
+        SlotWire wire(p);wire.ecu.maxBlockLength=1026;
+        const QByteArray erase=QByteArray::fromHex("3101ff0044")+be32(0x7e000)+be32(8192);
+        const QByteArray download=QByteArray::fromHex("340044")+be32(0x7e000)+be32(118784);
+        wire.intercept=[&](const QByteArray &r){
+            if(r==erase)return QByteArray::fromHex("7101ff0000");
+            if(r==download)return QByteArray::fromHex("7f3431");
+            return QByteArray();
+        };
+        UdsSession session(wire,{100,200,2000,0});FlashJob job(session,p,std::make_unique<SimulationKey>());QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(app,driver,error),qPrintable(error));
+        QVERIFY(waitForTest([&]{return done.size()==1;},10000));QVERIFY(!done.first()[0].toBool());
+        QCOMPARE(wire.requests.count(erase),1);QCOMPARE(wire.requests.last(),download);QVERIFY(wire.ecu.memory(p.applicationEraseBase).isEmpty());
+    }
+    void rom88SimulatedDownloadButton_data(){
+        QTest::addColumn<bool>("mismatch");QTest::newRow("planned-ranges")<<false;QTest::newRow("HEX-different-erase-start")<<true;
+    }
+    void rom88SimulatedDownloadButton(){
+        QFETCH(bool,mismatch);
+        const auto root=qEnvironmentVariable("SIMPLECN_ROM88_SNAPSHOT");
+        if(root.isEmpty())QSKIP("Set SIMPLECN_ROM88_SNAPSHOT to the pinned T010 output");
+        const QDir files(root);auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;
+        settings.applicationAddress="00018000";settings.applicationBAddress="0004B000";settings.applicationLength="00032000";
+        settings.flashPath=files.filePath("driver.bin");settings.applicationPath=files.filePath("app.bin");
+        settings.downloadProfile["flow"]="boot";settings.downloadProfile["resetWaitMs"]=0;
+        if(mismatch){
+            settings.applicationAddress="0007E000";settings.applicationLength="00002000";settings.applicationBAddress.clear();
+            settings.applicationPath=files.filePath("app-a.hex");
+        }
+        host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);page.show();auto *button=page.findChild<QPushButton*>("startButton");
+        auto *model=vm.findChild<host::ChannelModel*>();QVERIFY(model);QSignalSpy frames(model,&host::ChannelModel::framesReceived);
+        QVERIFY(button);QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());
+        QTRY_VERIFY(button->isEnabled());button->click();
+        if(mismatch){
+            QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),host::TaskState::Failed,10000);
+            const auto logs=vm.logs().join('\n');QVERIFY2(logs.contains("0x00018000")&&logs.contains("118784")&&logs.contains("0x0007e000")&&logs.contains("8192")&&logs.contains("0x31"),qPrintable(logs));
+            QCOMPARE(frames.count(),0);return;
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(vm.logs().join('\n').contains("0x34 0x00018000 (118784 bytes)")||vm.taskState()==host::TaskState::Failed,10000);
+        const auto logs=vm.logs().join('\n');QVERIFY2(logs.contains("0x31 0x00018000 (204800 bytes)"),qPrintable(logs));
+        QVERIFY2(logs.contains("0x34 0x20001400 (3152 bytes)"),qPrintable(logs));
+        vm.cancel();
+    }
+    void compiledStageAppAndDriver_data(){
+        QTest::addColumn<QString>("project");
+        for(const auto *project:{"T008","T009","T010"})QTest::newRow(project)<<QString(project);
+    }
+    void compiledStageAppAndDriver(){
+        QFETCH(QString,project);
+        const QString root=qEnvironmentVariable("SIMPLECN_TEST_STAGE_OUTPUTS");
+        if(root.isEmpty())QSKIP("Set SIMPLECN_TEST_STAGE_OUTPUTS to a snapshot of the three stage outputs");
+        const bool dual=project=="T010";
+        const QDir files(root+"/"+project);
+        FlashProfile p;p.flow="boot";p.target=dual?"s32k144-t010-v2":"s32k144-t008-t009-v2";
+        p.resetWaitMs=0;p.applicationEraseBase=0x1a000;p.applicationEraseLength=dual?0x30000:0x4d000;
+        p.applicationHasB=dual;p.applicationBBase=0x4b000;
+        FirmwareImage driver,app;QString error;
+        QVERIFY2(FirmwareImage::load(files.filePath("driver.bin"),0x20001400,driver,error),qPrintable(error));
+        QVERIFY2(FirmwareImage::load(files.filePath("app.bin"),p.applicationEraseBase,app,error),qPrintable(error));
+        SlotWire wire(p);wire.ecu.maxBlockLength=1026;
+        if(!dual){
+            FirmwareImage boot,cal;const int bootSlotBytes=0x14000;
+            QVERIFY2(FirmwareImage::load(files.filePath("boot-ab.bin"),wire.ecu.activeBootAddress,boot,error),qPrintable(error));
+            QVERIFY2(FirmwareImage::load(files.filePath("calib.bin"),p.calibBase,cal,error),qPrintable(error));
+            QCOMPARE(boot.segments.first().data.size(),2*bootSlotBytes);
+            wire.ecu.setMemory(wire.ecu.activeBootAddress,boot.segments.first().data.left(bootSlotBytes));
+            wire.ecu.setMemory(p.calibBase,cal.segments.first().data);
+        }
+        UdsSession session(wire,{100,200,2000,0});FlashJob job(session,p,std::make_unique<SimulationKey>());
+        QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(app,driver,error),qPrintable(error));
+        QVERIFY(waitForTest([&]{return done.size()==1;},10000));
+        QVERIFY2(done.first()[0].toBool(),qPrintable(done.first()[1].toString()));
+        const auto source=app.segments.first().data;
+        // The slot container may have an FF suffix beyond the marker's imageBytes.
+        RomMarker marker;
+        QVERIFY(RomMarker_Decode(reinterpret_cast<const uint8_t*>(source.constData()+ROM_MARKER_APP_OFFSET),&marker)==0);
+        QVERIFY(marker.imageBytes<=quint32(source.size()));const auto expected=source.left(int(marker.imageBytes));
+        QCOMPARE(wire.ecu.memory(0x20001400),driver.segments.first().data);
+        QCOMPARE(wire.ecu.memory(p.applicationEraseBase),expected);
+        QVERIFY(wire.requests.contains(QByteArray::fromHex("3101ff0044")+be32(p.applicationEraseBase)+be32(p.applicationEraseLength)));
+        QVERIFY(wire.requests.contains(QByteArray::fromHex("340044")+be32(p.applicationEraseBase)+be32(marker.imageBytes)));
     }
     void markedPairedSlotsRequireOriginalPrefixCrcAndVectors(){
         auto a=t010App(0x1a000,0),b=t010App(0x4b000,1);
@@ -252,7 +425,7 @@ private slots:
         const auto check=[&](const QByteArray &data,bool bin,quint32 base=0x15000){return FirmwareImage::validateMarkerSet({qMakePair(Segment{base,data},quint32(ROM_MARKER_APP))},error,bin);};
         QVERIFY(check(container,true));QVERIFY(!check(container,false));
         auto bad=container;bad[5000]=char(quint8(bad[5000])^1);QVERIFY(!check(bad,true));
-        bad=container;bad[bad.size()-1]=0;QVERIFY(!check(bad,true));QVERIFY(!check(container,true,0x7d000));
+        bad=container;bad[bad.size()-1]=0;QVERIFY(!check(bad,true));QVERIFY(check(container,true,0x7d000));
         marker_fixture::seal(container,ROM_MARKER_APP);QVERIFY(check(container,true));QVERIFY(check(container,false));
     }
     void markedBinTailPreservesDeclaredMarker(){
@@ -288,7 +461,7 @@ private slots:
             if(mode==1||mode==2){profile.applicationEraseLength=0x26000;profile.applicationBBase=0x40000;}
             if(mode==3)input.segments[0].data=t010App(0x40000,1);
             if(mode==4){const auto a=t010App(0x1a000,0),b=t010App(0x40000,1);input.segments[0].data=a+QByteArray(0x26000-a.size(),char(0xff))+b+QByteArray(0x26000-b.size(),char(0xff));}
-            SlotWire wire(profile);UdsSession session(wire,{});FlashJob job(session,profile,std::make_unique<SimulationKey>());QVERIFY(!job.start(input,t010Driver(mode==0||mode==1?10:11),error));QVERIFY(wire.requests.isEmpty());
+            SlotWire wire(profile);UdsSession session(wire,{});FlashJob job(session,profile,std::make_unique<SimulationKey>());const auto accepted=job.start(input,t010Driver(mode<2?10:11),error);QCOMPARE(accepted,mode>=2);if(accepted)job.cancel();else QVERIFY(wire.requests.isEmpty());
         }
         for(quint32 forbidden:{0x4a000u,0x7b000u}){FirmwareImage hex;hex.segments={{0x1a000,t010App(0x1a000,0)},{forbidden,QByteArray(4096,char(0xff))}};SlotWire wire(current);UdsSession session(wire,{});FlashJob job(session,current,std::make_unique<SimulationKey>());QVERIFY(!job.start(hex,t010Driver(11),error));QVERIFY(wire.requests.isEmpty());}
         QVERIFY(!t008::validateCurrentDriver(t010Driver(10),true,error,11));QVERIFY(!t008::validateCurrentDriver(t010Driver(10),true,error,9));
@@ -305,7 +478,7 @@ private slots:
             if(mode==4)marker_fixture::put32(input.segments[0].data,4100,0x16401);
             if(mode==3)boot.segments={{0x5000,linked(0x5000,0x14000,'B')}};
             SlotWire wire(profile);UdsSession session(wire,{});FlashJob job(session,profile,std::make_unique<SimulationKey>());
-            QVERIFY(!job.start(input,t010Driver(mode==0||mode==7?9:11),boot,error));QVERIFY(wire.requests.isEmpty());
+            const auto accepted=job.start(input,t010Driver(mode==0||mode==7?9:11),boot,error);QCOMPARE(accepted,mode!=4&&mode!=5);if(accepted)job.cancel();else QVERIFY(wire.requests.isEmpty());
         }
         QVERIFY(t008::validateCurrentDriver(t010Driver(9),true,error,9));QVERIFY(!t008::validateCurrentDriver(t010Driver(9),true,error,11));QVERIFY(t008::validateCurrentDriver(t010Driver(11),true,error,11));QVERIFY(!t008::validateCurrentDriver(t010Driver(11),true,error,9));
     }
@@ -315,9 +488,9 @@ private slots:
         QVERIFY(FirmwareImage::planSlots(out,0x5000,0,false,8192,a,b,e));QCOMPARE(a[0].data,QByteArray(4096,'A'));QVERIFY(b.isEmpty());
         QVERIFY(FirmwareImage::loadTarget(file("dual.bin",linked(0x5000,4096,'A')+linked(0x10000,4096,'B')),0x5000,0x10000,true,4096,out,e));
         QVERIFY(FirmwareImage::planSlots(out,0x5000,0x10000,true,4096,a,b,e));QCOMPARE(b[0].address,quint32(0x10000));QCOMPARE(b[0].data,linked(0x10000,4096,'B'));
-        QVERIFY(!FirmwareImage::loadTarget(file("bad.bin",QByteArray(4097,'X')),0x5000,0x10000,true,4096,out,e));
-        QVERIFY(!FirmwareImage::loadTarget(temp.filePath("dual.bin"),0x5000,0,false,4096,out,e));
-        QVERIFY(!FirmwareImage::loadTarget(temp.filePath("dual.bin"),0xfffff000,0x10000,true,4096,out,e));
+        QVERIFY(FirmwareImage::loadTarget(file("unaligned.bin",QByteArray(4097,'X')),0x5000,0x10000,true,4096,out,e));
+        QVERIFY(!FirmwareImage::loadTarget(temp.filePath("dual.bin"),0x5000,0,false,4096,out,e));QVERIFY(e.contains("second image"));
+        QVERIFY(FirmwareImage::loadTarget(temp.filePath("dual.bin"),0xfffff000,0x10000,true,4096,out,e));
         FirmwareImage hex;hex.segments={{0x5000,QByteArray(4096,'A')},{0x6000,QByteArray(4096,'C')},{0x10000,QByteArray(8192,'B')}};
         QVERIFY2(FirmwareImage::planSlots(hex,0x5000,0x10000,true,0x3000,a,b,e),qPrintable(e));QCOMPARE(a.size(),1);QCOMPARE(a[0].data.size(),8192);QCOMPARE(b.size(),1);
         hex.segments[2].data.chop(4096);QVERIFY(FirmwareImage::planSlots(hex,0x5000,0x10000,true,0x3000,a,b,e));QCOMPARE(b[0].data.size(),4096);
@@ -325,10 +498,10 @@ private slots:
         hex.segments={{0x5000,QByteArray(4096,'A')+QByteArray(4096,'B')}};
         QVERIFY(FirmwareImage::planSlots(hex,0x5000,0x6000,true,4096,a,b,e));QCOMPARE(a[0].data,QByteArray(4096,'A'));QCOMPARE(b[0].data,QByteArray(4096,'B'));
         QVERIFY(FirmwareImage::planSlots(hex,0x6000,0x5000,true,4096,a,b,e));QCOMPARE(a[0].address,quint32(0x6000));QCOMPARE(b[0].address,quint32(0x5000));
-        for(const auto seg:QVector<Segment>{{0x5001,QByteArray(4096,'X')},{0x5000,QByteArray(4095,'X')},{0x4000,QByteArray(4096,'X')},{0x5000,QByteArray(8192,'X')}}){hex.segments={seg};QVERIFY(!FirmwareImage::planSlots(hex,0x5000,0x10000,true,4096,a,b,e));}
+        for(const auto seg:QVector<Segment>{{0x5001,QByteArray(4096,'X')},{0x5000,QByteArray(4095,'X')},{0x4000,QByteArray(4096,'X')},{0x5000,QByteArray(8192,'X')}}){hex.segments={seg};QCOMPARE(FirmwareImage::planSlots(hex,0x5000,0x10000,true,4096,a,b,e),seg.address==0x5000);}
         hex.segments={{0x5000,QByteArray(4096,'A')},{0x5000,QByteArray(4096,'B')}};QVERIFY(!FirmwareImage::planSlots(hex,0x5000,0x10000,true,4096,a,b,e));
-        QVERIFY(!FirmwareImage::planSlots(bin(0x5000,'A',true),0x5000,0x5000,true,4096,a,b,e));
-        QVERIFY(!FirmwareImage::planSlots(bin(0x5000,'A',false),0x5001,0x10000,true,4096,a,b,e));
+        QVERIFY(FirmwareImage::planSlots(bin(0x5000,'A',true),0x5000,0x5000,true,4096,a,b,e));
+        QVERIFY(FirmwareImage::planSlots(bin(0x5000,'A',false),0x5001,0x10000,true,4096,a,b,e));
     }
     void compatibilityMatrix_data(){QTest::addColumn<bool>("dualBoot");QTest::addColumn<bool>("dualApp");QTest::addColumn<bool>("bootB");QTest::addColumn<bool>("appB");for(bool db:{false,true})for(bool da:{false,true})for(bool bb:{false,true})for(bool ab:{false,true})if((!bb||db)&&(!ab||da))QTest::newRow(qPrintable(QString("boot%1-app%2-select%3%4").arg(db).arg(da).arg(bb).arg(ab)))<<db<<da<<bb<<ab;}
     void compatibilityMatrix(){
@@ -358,16 +531,6 @@ private slots:
     void candidateVersionsAndBObservation(){
         auto header=[](const char *version,int minimumBoot){QByteArray data(8192,char(0xff));data.replace(0,8,"T008APP2");data[8]=0;data[9]=0x10;data[10]=data[11]=0;data[12]=char(minimumBoot);data[13]=0;data.replace(46,9,version);return data;};
         const auto a=header("T008A0001",1),b=header("T008B0002",2);QString e;
-        auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;settings.hardwareKey="preview:CAN:1";settings.handle=0xf101;
-        settings.applicationAddress="00020000";settings.applicationBAddress="00030000";settings.applicationLength="00002000";
-        settings.checkAppVersion=true;settings.expectedAppVersion="T008A0001";
-        const auto appPath=file("version-pair.bin",a+b),driverPath=file("version-driver.bin",QByteArray(16,'D'));
-        settings.downloadFiles={QJsonObject{{"role","driver"},{"path",driverPath}},QJsonObject{{"role","app"},{"path",appPath}}};
-        host::ChannelWorker worker(settings);QSignalSpy review(&worker,&host::ChannelWorker::packageConfirmationRequested),frames(&worker,&host::ChannelWorker::observedFrames);
-        worker.initialize();worker.connectChannel(settings);worker.startPreview(settings);
-        QVERIFY(waitForTest([&]{return review.size()==1;},1000));const auto explanation=review[0][1].toString();
-        QVERIFY(explanation.contains("App B"));QVERIFY(explanation.contains("T008B0002"));QVERIFY(!explanation.contains("minimumBoot"));QVERIFY(!explanation.contains("App A"));
-        worker.confirmPackage(review[0][0].toULongLong(),false);worker.shutdown();
         auto p=profile();p.applicationEraseLength=8192;p.identityDid=0xf189;SlotWire wire;wire.ecu.maxBlockLength=1026;wire.ecu.t008VerifySkipped=true;
         wire.intercept=[&](const QByteArray &r){if(r==QByteArray::fromHex("3101ff00440002000000002000"))return QByteArray::fromHex("7f3131");if(r==QByteArray::fromHex("22f189"))return QByteArray::fromHex("62f189")+QByteArray("T008B0002");return QByteArray();};
         FirmwareImage app;app.binary=true;app.segments={{p.applicationEraseBase,a+b}};
@@ -392,11 +555,16 @@ private slots:
         int erases=0,downloads=0;for(const auto &r:wire.requests){if(r.startsWith(QByteArray::fromHex("3101ff0044")))++erases;if(r.startsWith(char(0x34)))++downloads;QVERIFY(!r.startsWith(char(0x36)));QVERIFY(r!=QByteArray::fromHex("1101"));}
         QCOMPARE(erases,(mode=="both31"||mode=="b72")?2:1);QCOMPARE(downloads,mode.startsWith("34_")?1:0);
     }
-    void validateBeforeSending(){
-        auto p=profile();QString e;SlotWire wire;UdsSession session(wire,{});FlashJob job(session,p,std::make_unique<SimulationKey>());
-        auto invalid=bin(p.applicationEraseBase,'a',false);invalid.segments[0].data.chop(1);QVERIFY(!job.start(invalid,{},e));QVERIFY(wire.requests.isEmpty());
-        p.applicationEraseBase=p.bootEraseBase;FlashJob overlap(session,p,std::make_unique<SimulationKey>());QVERIFY(!overlap.start(bin(p.applicationEraseBase,'a',false),{},bin(p.bootEraseBase,'A',false),e));QVERIFY(wire.requests.isEmpty());
-        p=profile();FlashJob driverOverlap(session,p,std::make_unique<SimulationKey>());FirmwareImage driver;driver.segments={{p.bootEraseBase,QByteArray(10,'D')}};QVERIFY(!driverOverlap.start({},driver,bin(p.bootEraseBase,'A',false),e));QVERIFY(wire.requests.isEmpty());
+    void overlappingRoleAddressesAreSentToEcu(){
+        auto p=profile();p.applicationEraseBase=p.bootEraseBase;
+        SlotWire wire(p);wire.ecu.maxBlockLength=1026;QString error;
+        const auto erase=QByteArray::fromHex("3101ff0044")+be32(p.bootEraseBase)+be32(p.bootEraseLength);
+        wire.intercept=[&](const QByteArray &r){return r==erase?QByteArray::fromHex("7f3172"):QByteArray();};
+        UdsSession session(wire,{50,100,1000,0});FlashJob job(session,p,std::make_unique<SimulationKey>());
+        QSignalSpy done(&job,&FlashJob::finished);
+        QVERIFY2(job.start(bin(p.applicationEraseBase,'a',false),{},bin(p.bootEraseBase,'A',false),error),qPrintable(error));
+        QVERIFY(waitForTest([&]{return !done.isEmpty();},2000));QVERIFY(!done.first()[0].toBool());
+        QCOMPARE(wire.requests.last(),erase);QCOMPARE(wire.requests.count(erase),1);
     }
     void uiAndSettings(){
         auto s=host::ChannelSettings::defaults(communication::Bus::Can);s.simulation=true;s.bootBAddress="00010000";s.applicationBAddress="00030000";host::ChannelSettings restored;QString e;

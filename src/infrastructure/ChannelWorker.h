@@ -29,7 +29,6 @@ public slots:
     void disconnectChannel();
     void refresh();
     void startPreview(host::ChannelSettings);
-    void confirmPackage(quint64,bool);
     void cancelTask();
     void startHeaderScan();
     void sendDiagnostic(host::ChannelSettings,host::diag::Request,bool manualStart=true);
@@ -56,7 +55,6 @@ signals:
     void signalStatus(host::signal::RunStatus);
     void busEvents(host::signal::BusFrameEvents);
     void connectionGenerationChanged(quint64);
-    void packageConfirmationRequested(quint64,QString);
 private:
     bool traceRecord(const QString &,quint32,int,const QByteArray &,bool valid=true,const TraceTiming &timing=TraceTiming{});
     void traceDeadline(const QString &,int,qint64);
@@ -73,7 +71,7 @@ private:
     void beginManualDiagnostic(ChannelSettings,diag::Request);
     void beginPreviewRound();
     void failPreview(const QString &);
-    void beginDownload(bool confirmed=false);
+    void beginDownload();
     void completeRound(const QString &result);
     void clearProtocol();
     bool createProtocol(const boot::FlashProfile &,QString &error,bool manual);
@@ -101,7 +99,6 @@ private:
     QObject *m_canNotifier=nullptr;
     qint64 m_traceOffsetUs=0,m_lastCaptureUs=0;
     bool m_running=false,m_scanning=false,m_waiting=false;
-    boot::FirmwareImage m_stagedApp,m_stagedDriver,m_stagedBoot,m_stagedCalib;quint64 m_confirmationId=0;bool m_confirmationPending=false;
     int m_round=0,m_totalRounds=1;
     int m_progress=0,m_scanId=0,m_scanSent=0,m_scanEvents=0,m_scanResponses=0,m_scanErrors=0;
     QString m_receiveError;

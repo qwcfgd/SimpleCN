@@ -446,10 +446,8 @@ private slots:
             QVERIFY(!dialog->findChild<QLabel*>("feedbackDecisionTitle"));
             QVERIFY(!dialog->findChild<QCheckBox*>("download_default_flashRequired"));
             QVERIFY(!dialog->findChild<QLineEdit*>("expectedDriverAbi"));QVERIFY(!dialog->findChild<QLineEdit*>("expectedMinimumBoot"));
-            for(const auto id:{"expectedAppVersion"}){
-                auto field=dialog->findChild<QLineEdit*>(id);auto check=dialog->findChild<QCheckBox*>(QString(id)+"Enabled");
-                QVERIFY(field&&check);QVERIFY(!check->isChecked());QVERIFY(!field->isEnabled());check->setChecked(true);QVERIFY(field->isEnabled());check->setChecked(false);
-            }
+            QVERIFY(!dialog->findChild<QLineEdit*>("expectedAppVersion"));
+            QVERIFY(!dialog->findChild<QCheckBox*>("expectedAppVersionEnabled"));
             QVERIFY(dialog->findChild<QLineEdit*>("bootAddress"));QVERIFY(dialog->findChild<QLineEdit*>("bootEraseLength"));
             auto limit=dialog->findChild<QLineEdit*>("consecutiveFrameByteLimit");QVERIFY(limit);
             QCOMPARE(limit->text(),QString("4095"));QVERIFY(limit->hasAcceptableInput());

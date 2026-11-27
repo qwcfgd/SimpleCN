@@ -98,12 +98,6 @@ ChannelPage::ChannelPage(ChannelViewModel *vm,QWidget *parent):QWidget(parent),m
     setObjectName(vm->settings().bus==communication::Bus::Lin?"linPage":"canPage");
     build();loadSettings();render();
     connect(vm,&ChannelViewModel::changed,this,&ChannelPage::render);
-    connect(vm,&ChannelViewModel::packageConfirmationRequested,this,[this](quint64 id,const QString &details){
-        QMessageBox dialog(QMessageBox::Question,QString::fromUtf8("确认下载镜像"),details,QMessageBox::Yes|QMessageBox::No,this);
-        dialog.setObjectName("packageConfirmation");dialog.setTextFormat(Qt::PlainText);dialog.setDefaultButton(QMessageBox::No);
-        m_vm->confirmPackage(id,dialog.exec()==QMessageBox::Yes);
-    });
-
     connect(vm,&ChannelViewModel::settingsChanged,this,[this](){if(!m_applying)loadSettings();});
     connect(vm,&ChannelViewModel::logAdded,m_log,[this](const QString &line){m_log->appendPlainText(Language::text(line));});
     connect(&Language::instance(),&Language::changed,this,[this]{const int scroll=m_log->verticalScrollBar()->value();const bool follow=scroll==m_log->verticalScrollBar()->maximum();QStringList lines;for(const auto &line:m_vm->logs())lines.append(Language::text(line));m_log->setPlainText(lines.join('\n'));m_log->verticalScrollBar()->setValue(follow?m_log->verticalScrollBar()->maximum():scroll);});
@@ -533,8 +527,8 @@ void ChannelPage::editDownload() {
     auto calibAddress=hexField("calibAddress",8,original.calibAddress.toUInt(nullptr,16)),calibLength=hexField("calibLength",8,original.calibLength.toUInt(nullptr,16));
     pair(left,"Calib 地址 / hex",calibAddress,defaults.calibAddress);pair(left,"Calib 长度 / hex",calibLength,defaults.calibLength);
     calibAddress->setToolTip("仅下载显式选择的Calib文件。BIN使用此地址，HEX保留文件绝对地址；目标ECU决定合法范围。");
-    calibLength->setToolTip("此长度用于31擦除，34使用文件实际长度且不得超出擦除区。文件须自带64字节标记及双CRC64，不自动补全。");
-    for(auto field:{bootLength,appLength})field->setToolTip("长度仅用于 31 擦除。34 使用单区 BIN 实际长度、已确认双区 BIN 的一半或 HEX 对应槽起始地址的连续长度；写入不得超过擦除区。B 地址本身不能证明双区；有歧义时停止，不补齐、不截断。");
+    calibLength->setToolTip("31 使用填写的擦除长度，34 使用文件实际长度。Calib 文件须含有效的 64 字节标记和双 CRC64。");
+    for(auto field:{bootLength,appLength})field->setToolTip("31 使用填写的擦除长度，34 使用所选镜像的实际传输长度。HEX 保留源地址，起点与配置不一致时停止下载。");
     auto fingerprint=edit("fingerprintHex",38);fingerprint->setText(original.fingerprintHex);
     QString fpError;const auto defaultFingerprint=boot::t008::fingerprint(QDate::currentDate(),QByteArray("TEST-PLACEHOLDER"),fpError);
     fingerprint->setPlaceholderText("留空使用默认值");pair(left,"F184 / 19 bytes hex",fingerprint,QString::fromLatin1(defaultFingerprint.toHex()).toUpper());
@@ -543,19 +537,7 @@ void ChannelPage::editDownload() {
     pair(right,"擦除 RID / hex",erase,h(defaultProfile.eraseRoutine));pair(right,"校验 RID / hex",verifyRid,h(defaultProfile.verifyRoutine));pair(right,"依赖 RID / hex",dependencyRid,h(defaultProfile.dependencyRoutine));pair(right,"身份 DID / hex",did,h(defaultProfile.identityDid));
     auto block=decimal("consecutiveFrameByteLimit",3,4095,profile.consecutiveFrameByteLimit),resetWait=decimal("resetWaitMs",0,60000,profile.resetWaitMs);
     pair(right,"连续帧字节限制",block,QString::number(defaultProfile.consecutiveFrameByteLimit));pair(right,"复位等待 / ms",resetWait,QString::number(defaultProfile.resetWaitMs));
-    auto versionPanel=new QWidget;auto versionLayout=new QFormLayout(versionPanel);
-    auto versionHeader=new QWidget;auto versionHeaderLayout=new QHBoxLayout(versionHeader);versionHeaderLayout->setContentsMargins(0,0,0,0);
-    versionHeaderLayout->addWidget(label("默认值"),1);versionHeaderLayout->addWidget(label("使用值"),1);versionLayout->addRow("参数",versionHeader);
-    auto versionRow=[&](const QString &title,const char *name,bool checked,const QString &value,const QString &baseline){
-        auto caption=new QWidget;auto captionLayout=new QHBoxLayout(caption);captionLayout->setContentsMargins(0,0,0,0);
-        auto check=new QCheckBox(title);check->setObjectName(QString(name)+"Enabled");check->setChecked(checked);captionLayout->addWidget(check);
-        auto row=new QWidget;auto rowLayout=new QHBoxLayout(row);rowLayout->setContentsMargins(0,0,0,0);
-        auto initial=new QLineEdit(baseline);initial->setObjectName(QString("download_default_")+name);initial->setReadOnly(true);initial->setStyleSheet("QLineEdit { background:#EEF1F4;color:#687582; }");
-        auto field=edit(name,32);field->setText(value);field->setEnabled(checked);connect(check,&QCheckBox::toggled,field,&QWidget::setEnabled);
-        rowLayout->addWidget(initial);rowLayout->addWidget(field);versionLayout->addRow(caption,row);return qMakePair(check,field);
-    };
-    auto appVersion=versionRow("App 版本","expectedAppVersion",original.checkAppVersion,original.expectedAppVersion,defaults.expectedAppVersion);
-    form->addRow(versionPanel);form->addRow(checksWidget);form->addRow(policy);
+    form->addRow(checksWidget);form->addRow(policy);
     auto error=label("");error->setObjectName("inlineError");error->setWordWrap(true);error->hide();outer->addWidget(error);
     auto buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel);outer->addWidget(buttons);
     buttons->button(QDialogButtonBox::Ok)->setText("保存");buttons->button(QDialogButtonBox::Cancel)->setText("取消");
@@ -576,8 +558,6 @@ void ChannelPage::editDownload() {
         s.bootAddress=bootAddress->text();s.bootEraseLength=bootLength->text();
         s.bootBAddress=bootBAddress->text().trimmed();s.applicationBAddress=appBAddress->text().trimmed();
         s.calibAddress=calibAddress->text().trimmed();s.calibLength=calibLength->text().trimmed();
-        s.checkAppVersion=appVersion.first->isChecked();s.expectedAppVersion=appVersion.second->text().trimmed();
-        if(s.checkAppVersion&&s.expectedAppVersion.isEmpty()){error->setText("请填写启用的版本值");error->show();return;}
         if(txId){s.downloadTxId=txId->text();s.downloadRxId=rxId->text();}
         if(nad)s.nad=nad->text().trimmed().toUpper();
         profile.flow=flow->currentData().toString();profile.stepEnabled={};profile.negativeResponseChecks={};profile.timeoutChecks={};
@@ -689,6 +669,7 @@ void ChannelPage::addDownloadFiles(){
         if(suggestedRole=="driver")choice="Driver";
         else if(suggestedRole=="app")choice="App";
         else if(suggestedRole=="boot")choice="Boot";
+        else if(suggestedRole=="calib")choice="Calib";
         else {bool ok=false;choice=QInputDialog::getItem(this,"无法自动识别文件类型",QFileInfo(path).fileName(),{"Driver","Boot","Calib","App"},0,false,&ok);if(!ok)continue;}
         const auto role=choice=="Driver"?QString("driver"):choice=="Boot"?QString("boot"):choice=="Calib"?QString("calib"):QString("app");
         bool conflict=false;for(int row=0;row<m_imageTable->rowCount();++row)conflict|=m_imageTable->item(row,0)->data(Qt::UserRole).toString()==role;

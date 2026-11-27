@@ -20,8 +20,7 @@ bool looksLikeImage(const FirmwareImage &image){
 }
 bool looksLikeDriver(const FirmwareImage &image){
     if(image.segments.size()!=1)return false;
-    return image.segments.first().address==0x20001400&&
-        (image.segments.first().data.startsWith("S32K144T")||image.segments.first().data.startsWith("T008DRV1"));
+    return image.segments.first().data.startsWith("S32K144T")||image.segments.first().data.startsWith("T008DRV1");
 }
 static bool asciiField(const QByteArray &field,QByteArray &value){
     const int zero=field.indexOf('\0');value=zero<0?field:field.left(zero);
@@ -48,13 +47,13 @@ bool images(const FirmwareImage &app,const FirmwareImage &driver,Plan &out,QStri
     out=p;error.clear();return true;
 }
 bool validateCurrentDriver(const FirmwareImage &image,bool t010,QString &error,quint16 t010Minor){
-    auto bad=[&]{error="Invalid Driver marker, entry table, operations or RAM range";return false;};
-    if(image.segments.size()!=1||image.segments[0].address!=0x20001400)return bad();
+    auto bad=[&]{error="Invalid Driver marker, entry table or operations";return false;};
+    if(image.segments.size()!=1)return bad();
     const auto &d=image.segments[0].data;const auto bytes=quint32(d.size());
     const bool marked=d.startsWith("S32K144T");const int offset=marked?64:0;const quint32 headerBytes=marked?192u:128u;
     if(!marked&&!t010)return bad();
     if(marked){RomMarker marker;if(!FirmwareImage::validateMarker(image.segments[0],ROM_MARKER_DRIVER,marker,error))return false;}
-    if(bytes<headerBytes||bytes>0x2000||d.mid(offset,8)!="T008DRV1"||le(d,offset+8,2)!=headerBytes||le(d,offset+14,2)!=0)return bad();
+    if(bytes<headerBytes||d.mid(offset,8)!="T008DRV1"||le(d,offset+8,2)!=headerBytes||le(d,offset+14,2)!=0)return bad();
     // Marked Drivers use the frozen 192-byte control format: these fields
     // are reserved zero, not the old 128-byte Driver ABI version.
     if(marked){
@@ -72,17 +71,16 @@ bool validateCurrentDriver(const FirmwareImage &image,bool t010,QString &error,q
 }
 bool completeApplication(const FirmwareImage &app,quint32 base,quint32 capacity,bool t010,int slot,Plan &out,QString &error,bool slotContainer){
     auto bad=[&](const char *why){error=QString::fromUtf8(why);return false;};
-    if(app.segments.isEmpty()||app.segments.first().address!=base)return bad("App must start at its selected slot base");
-    QByteArray complete;quint64 cursor=base;
+    Q_UNUSED(capacity);
+    if(app.segments.isEmpty())return bad("App image is empty");
+    QByteArray complete;quint64 cursor=app.segments.first().address;
     for(const auto &segment:app.segments){
         if(segment.data.isEmpty()||segment.address!=cursor)return bad("App has a hole or overlap; bytes are never supplied by the host");
-        cursor+=quint64(segment.data.size());if(cursor>0x100000000ULL||cursor-quint64(base)>capacity)return bad("App write range exceeds its erase capacity");complete+=segment.data;
+        cursor+=quint64(segment.data.size());complete+=segment.data;
     }
     if(complete.size()<4096||complete.left(8)!=(t010?QByteArray("T010APP1"):QByteArray("T008APP2")))return bad("App structural header does not match the target layout");
-    const auto *layout=s32kApplicationLayout(t010,base,capacity);
-    if(!layout)return bad("App address and erase capacity do not match a supported layout");
-    const auto codeBytes=le(complete,8),maximum=(t010?layout->t010AppBytes:layout->appBytes)-4096u;
-    if(!codeBytes||(codeBytes&0xfff)||codeBytes>maximum)return bad("Compiler-provided codeBytes must be 4 KiB aligned and fit the App region");
+    const auto codeBytes=le(complete,8);
+    if(!codeBytes||(codeBytes&0xfff))return bad("Compiler-provided codeBytes must be nonzero and 4 KiB aligned");
     const quint64 effectiveLength=4096ULL+codeBytes;
     const bool marked=complete.mid(ROM_MARKER_APP_OFFSET,8)=="S32K144T";
     quint64 transferLength=effectiveLength;
@@ -91,16 +89,29 @@ bool completeApplication(const FirmwareImage &app,quint32 base,quint32 capacity,
         if(RomMarker_Decode(reinterpret_cast<const uint8_t *>(complete.constData()+ROM_MARKER_APP_OFFSET),&marker)!=0||marker.kind!=ROM_MARKER_APP)
             return bad("Invalid App length marker");
         transferLength=marker.imageBytes;
-        if(transferLength<effectiveLength||transferLength>capacity||(transferLength&4095u))return bad("App marker length does not cover its code within the slot");
+        if(transferLength<effectiveLength||(transferLength&4095u))return bad("App marker length does not cover its code within the file");
     }
     if(quint64(complete.size())!=transferLength){
         if(!slotContainer||transferLength>quint64(complete.size()))return bad("App coverage does not match its declared package length");
         for(quint64 i=transferLength;i<quint64(complete.size());++i)if(quint8(complete[int(i)])!=0xff)return bad("App explicit container tail must be FF");
     }
     for(quint64 i=effectiveLength;i<transferLength;++i)if(quint8(complete[int(i)])!=0xff)return bad("App bytes beyond code extent must be FF");
-    if((t010&&(slot<0||slot>1||s32kT010Slot(base)!=slot||quint8(complete[87])!=slot))||(!t010&&quint8(complete[87])!=0xff))return bad("App slot marker does not match its linked address");
-    if(t010&&!s32kAppVectors(le(complete,4096),le(complete,4100),base,quint32(effectiveLength)))
-        return bad("App vectors do not match the selected slot and effective image range");
+    if((t010&&(slot<0||slot>1||quint8(complete[87])!=slot))||(!t010&&quint8(complete[87])!=0xff))return bad("App slot marker does not match its linked address");
+    if(t010){
+        if(complete.size()<4160)return bad("App vector table is missing");
+        const quint32 stack=le(complete,4096),reset=le(complete,4100);
+        if(stack<=0x1fff9000||stack>0x20001400||(stack&7u)||!(reset&1u))return bad("Invalid App stack or reset vector");
+        // Check the reset vector against the handlers in this file. Its UDS
+        // destination is supplied independently by the operator.
+        quint32 low=reset&~1u,high=low;
+        for(int i=2;i<16;++i){
+            const quint32 entry=le(complete,4096+4*i);
+            if(!entry)continue;
+            if(!(entry&1u))return bad("Invalid App handler vector");
+            low=qMin(low,entry&~1u);high=qMax(high,entry&~1u);
+        }
+        if(quint64(high)-low>=codeBytes)return bad("App vectors exceed the declared code extent");
+    }
     if(!marked&&!t010)return bad("App 64-byte marker missing");
     if(marked){
         RomMarker marker;
@@ -116,16 +127,6 @@ bool completeApplication(const FirmwareImage &app,quint32 base,quint32 capacity,
     FirmwareImage selected;selected.segments={{base,complete}};Plan parsed;
     if(!images(selected,{},parsed,error))return false;
     parsed.application=selected.segments;out=std::move(parsed);error.clear();return true;
-}
-bool compareFileVersions(const Plan &p,const QMap<QString,QString> &expected,QStringList &mismatches,QString &error){
-    mismatches.clear();error.clear();
-    for(auto it=expected.cbegin();it!=expected.cend();++it){
-        if(it.key()!="appVersion"){error="Unknown version field";return false;}
-        const auto actual=QString::fromLatin1(p.version);
-        if(!p.hasAppVersion)mismatches.append("App version is unavailable");
-        else if(actual!=it.value().trimmed())mismatches.append(QString("App version: file=%1, expected=%2").arg(actual,it.value().trimmed()));
-    }
-    return true;
 }
 bool response(const QByteArray &request,const QByteArray &pdu,bool suppressed,QString &error){
     if(request.isEmpty()){error="T008 empty request";return false;}

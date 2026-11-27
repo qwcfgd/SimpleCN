@@ -17,7 +17,6 @@ bool images(const FirmwareImage &,const FirmwareImage &,Plan &,QString &);
 // Strict current S32K144 App format, with explicit compiler-produced 4 KiB padding.
 bool validateCurrentDriver(const FirmwareImage &,bool t010,QString &error,quint16 t010Minor=9);
 bool completeApplication(const FirmwareImage &,quint32 base,quint32 eraseCapacity,bool t010,int slot,Plan &,QString &,bool slotContainer=false);
-bool compareFileVersions(const Plan &,const QMap<QString,QString> &,QStringList &,QString &);
 bool compatibility(const Plan &,QString &);
 bool validateBlockLimit(int pduLimit,QString &error);
 bool looksLikeImage(const FirmwareImage &);

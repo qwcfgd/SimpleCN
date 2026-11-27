@@ -66,6 +66,7 @@ public:
 signals:
     void progress(int,QString);
     void finished(bool,QString);
+    void transferPlanned(const QString &message);
     void notice(QString);
     void stepEvent(QString);
 private:

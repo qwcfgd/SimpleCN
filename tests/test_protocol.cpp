@@ -178,7 +178,7 @@ private slots:
         QVERIFY(FirmwareImage::load(file("segment.hex",seg),0,i,error));QCOMPARE(i.segments[0].address,quint32(0x12360));
         QVERIFY(FirmwareImage::load(file("image.bin",hex("010203")),0xfffffffd,i,error));
         QCOMPARE(i.segments[0].address,quint32(0xfffffffd));QCOMPARE(i.size,qint64(3));
-        QVERIFY(!FirmwareImage::load(file("overflow.bin",hex("010203")),0xfffffffe,i,error));QVERIFY(i.segments.isEmpty());
+        QVERIFY(FirmwareImage::load(file("high.bin",hex("010203")),0xfffffffe,i,error));QCOMPARE(i.segments.first().address,quint32(0xfffffffe));QCOMPARE(i.segments.first().data,hex("010203"));
         const auto production=record(0,0x20,hex("1122"))+record(1,0,{});
         QByteArray compatible=production;compatible.replace("\n",QByteArray("\r\r\n"));compatible+=QByteArray(":00000008F8\n");
         QVERIFY2(FirmwareImage::load(file("production.hex",compatible),0,i,error),qPrintable(error));QCOMPARE(i.size,qint64(2));
@@ -391,7 +391,7 @@ private slots:
         QTRY_COMPARE(t.requests.size(),2);QTest::qWait(1);emit t.responseStarted(hex("6300010203"));
         QTRY_VERIFY_WITH_TIMEOUT(done,200);QVERIFY(!ok);
     }
-    void eraseRangeValidationBeforeSend(){
+    void mismatchedHexOriginStopsBeforeErase(){
         ManualTransport wire;UdsSession session(wire,SessionOptions{100,100,1000,0});QString error;
         for(const auto range:QList<QPair<quint32,quint32>>{{0xff00,0},{0xfffffff0,0x20}}){
             FlashProfile p;p.applicationEraseBase=0x10000;p.applicationEraseBase=range.first;p.applicationEraseLength=range.second;

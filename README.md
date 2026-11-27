@@ -6,7 +6,7 @@
 
 简体中文 · [English](README.en.md) · [GitHub：SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.64-2563eb)
+![Version](https://img.shields.io/badge/version-1.65-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
@@ -18,6 +18,13 @@
 </div>
 
 实物 LIN 下载在 19,200 bit/s 且诊断调度间隔设为自动时，以 10 ms 为请求帧头（0x3C）的目标间隔，以 20 ms 轮询响应帧头（0x3D）。发送确认和主机调度可能延长实际间隔。
+
+## V1.65
+
+- 下载文件能识别时自动选择类型，不能识别时可手选。BIN 按填写的地址发送，目标地址和擦除长度由 ECU 裁决。下载前可查看擦除范围和实际传输范围。请核对手填范围，误选另一合法分区可能擦除该分区。
+- HEX 保留文件内的绝对地址。若起点与配置冲突，下载停止并显示两组参数。
+- 支持 T010 的 CRC32 页格式，按包内长度拆分 A/B 槽并校验标记和正文。保留 T008、T009、T010 原格式。发布者签名未经 ECU 验证。
+- 删除 App 版本比较及其下载门禁。F189 版本读取和显示保留。
 
 ## V1.64
 

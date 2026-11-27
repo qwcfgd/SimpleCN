@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Qt-SimpleCN VERSION 1.64 LANGUAGES CXX)
+project(Qt-SimpleCN VERSION 1.65 LANGUAGES CXX)
 if(MINGW)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-finput-charset=UTF-8>" "$<$<COMPILE_LANGUAGE:CXX>:-fexec-charset=UTF-8>")
 endif()
@@ -48,6 +48,7 @@ add_library(bootloader_protocol STATIC
     src/protocol/CanTransport.h src/protocol/CanTransport.cpp
     src/protocol/SimulatedUdsEcu.h src/protocol/SimulatedUdsEcu.cpp
     src/protocol/SimulatedCanEcu.h src/protocol/SimulatedCanEcu.cpp
+    src/protocol/PagePackage.h src/protocol/PagePackage.cpp
     src/protocol/FirmwareImage.h src/protocol/FirmwareImage.cpp
     src/protocol/LinTransport.h src/protocol/LinTransport.cpp
     src/protocol/UdsSession.h src/protocol/UdsSession.cpp

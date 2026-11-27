@@ -1,3 +1,4 @@
+#include "protocol/PagePackage.h"
 #include "domain/TraceClock.h"
 #include "ChannelWorker.h"
 #include "model/FramePresentation.h"
@@ -310,7 +311,6 @@ void ChannelWorker::beginPreviewRound() {
     beginDownload();
 }
 void ChannelWorker::failPreview(const QString &reason) {
-    ++m_confirmationId;m_confirmationPending=false;m_stagedApp={};m_stagedDriver={};m_stagedBoot={};m_stagedCalib={};
     m_operations.release(OperationCoordinator::Task::Download);
     if(m_job)m_job->cancel();
     m_repeat->stop();m_running=m_waiting=false;m_receive->setInterval(20);
@@ -337,16 +337,12 @@ void ChannelWorker::clearProtocol(){
     m_job.reset();m_uds.reset();m_transport.reset();m_ecu.reset();m_canTransport.reset();m_canEcu.reset();m_manualMode=false;
     emit diagnosticActivity(false);
 }
-void ChannelWorker::beginDownload(bool confirmed){
+void ChannelWorker::beginDownload(){
     clearProtocol();
     boot::FirmwareImage application,driver,bootBundle,calibration;QString error;
     boot::FlashProfile profile;
     if(!boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error)){failPreview(error);return;}
-    auto loadApp=[&](const QString &path,quint32 base,quint32 b,bool hasB,quint32 length,boot::FirmwareImage &image){
-        return profile.isS32kV2()||hasB?boot::FirmwareImage::loadTarget(path,base,b,hasB,length,image,error):boot::FirmwareImage::load(path,base,image,error);
-    };
-    if(confirmed){application=std::move(m_stagedApp);driver=std::move(m_stagedDriver);bootBundle=std::move(m_stagedBoot);calibration=std::move(m_stagedCalib);}
-    else if(!m_settings.downloadFiles.isEmpty()){
+    if(!m_settings.downloadFiles.isEmpty()){
         QJsonArray files;if(!effectiveDownloadFiles(m_settings.downloadFiles,files)){failPreview("Invalid download file list");return;}
         for(const auto &value:files){
             const auto row=value.toObject();const auto role=row.value("role").toString(),path=row.value("path").toString();
@@ -355,14 +351,16 @@ void ChannelWorker::beginDownload(bool confirmed){
             const bool isBoot=role=="boot";
             const auto b=(isBoot?m_settings.bootBAddress:m_settings.applicationBAddress);
             const auto length=(isBoot?m_settings.bootEraseLength:m_settings.applicationLength).toUInt(nullptr,16);
-            const bool loaded=role=="calib"?boot::FirmwareImage::loadCalibration(path,m_settings.calibAddress.toUInt(nullptr,16),m_settings.calibLength.toUInt(nullptr,16),*image,error):role=="driver"?boot::FirmwareImage::load(path,base,*image,error):isBoot?boot::FirmwareImage::loadTarget(path,base,b.toUInt(nullptr,16),!b.isEmpty(),length,*image,error):loadApp(path,base,b.toUInt(nullptr,16),!b.isEmpty(),length,*image);
+            const bool loaded=role=="calib"?boot::FirmwareImage::loadCalibration(path,m_settings.calibAddress.toUInt(nullptr,16),m_settings.calibLength.toUInt(nullptr,16),*image,error):role=="driver"?boot::FirmwareImage::loadTarget(path,base,0,false,0,*image,error):boot::FirmwareImage::loadTarget(path,base,b.toUInt(nullptr,16),!b.isEmpty(),length,*image,error);
             if(!loaded){failPreview(error);return;}
         }
-    }else if(!loadApp(m_settings.applicationPath,m_settings.applicationAddress.toUInt(nullptr,16),m_settings.applicationBAddress.toUInt(nullptr,16),!m_settings.applicationBAddress.isEmpty(),m_settings.applicationLength.toUInt(nullptr,16),application)||
-       !boot::FirmwareImage::load(m_settings.flashPath,m_settings.flashAddress.toUInt(nullptr,16),driver,error)){failPreview(error);return;}
-    if(!confirmed&&(profile.isT008()||profile.isS32kV2()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))&&
+    }else if(!boot::FirmwareImage::loadTarget(m_settings.applicationPath,m_settings.applicationAddress.toUInt(nullptr,16),m_settings.applicationBAddress.toUInt(nullptr,16),!m_settings.applicationBAddress.isEmpty(),m_settings.applicationLength.toUInt(nullptr,16),application,error)||
+       !boot::FirmwareImage::loadTarget(m_settings.flashPath,m_settings.flashAddress.toUInt(nullptr,16),0,false,0,driver,error)){failPreview(error);return;}
+    if((profile.isT008()||profile.isS32kV2()||boot::t008::looksLikeImage(application)||boot::t008::looksLikeDriver(driver))&&
        ((profile.enabled("driver36")&&!profile.enabled("driver34"))||(profile.enabled("app36")&&!profile.enabled("app34")))){failPreview("TransferData requires RequestDownload");return;}
-    if(!confirmed&&(!profile.isT010V2())&&(profile.isS32kV2()||boot::FirmwareImage::hasCurrentMarker(driver)||boot::FirmwareImage::hasCurrentMarker(application)||boot::FirmwareImage::hasCurrentMarker(bootBundle)||boot::FirmwareImage::hasCurrentMarker(calibration))){
+    const bool pagePackage=boot::page::resembles(driver)||boot::page::resembles(application)||
+        boot::page::resembles(bootBundle)||boot::page::resembles(calibration);
+    if(!pagePackage&&(!profile.isT010V2())&&(profile.isS32kV2()||boot::FirmwareImage::hasCurrentMarker(driver)||boot::FirmwareImage::hasCurrentMarker(application)||boot::FirmwareImage::hasCurrentMarker(bootBundle)||boot::FirmwareImage::hasCurrentMarker(calibration))){
         QVector<QPair<boot::Segment,quint32>> selected;
         for(const auto &part:driver.segments)selected.append({part,ROM_MARKER_DRIVER});
         for(const auto &part:calibration.segments)selected.append({part,ROM_MARKER_CAL});
@@ -375,33 +373,6 @@ void ChannelWorker::beginDownload(bool confirmed){
         if(!collect(bootBundle,ROM_MARKER_BOOT,m_settings.bootAddress,m_settings.bootBAddress,m_settings.bootEraseLength)||
            !collect(application,ROM_MARKER_APP,m_settings.applicationAddress,m_settings.applicationBAddress,m_settings.applicationLength)||
            !boot::FirmwareImage::validateMarkerSet(selected,error,application.binary)){failPreview(error);return;}
-    }
-    if(!confirmed&&m_settings.checkAppVersion){
-        QMap<QString,QString> expected;
-        if(m_settings.checkAppVersion)expected["appVersion"]=m_settings.expectedAppVersion;
-        QStringList mismatches;
-        if(!application.segments.isEmpty()){
-            QVector<boot::Segment> primary,alternate;
-            const auto base=m_settings.applicationAddress.toUInt(nullptr,16),b=m_settings.applicationBAddress.toUInt(nullptr,16),length=m_settings.applicationLength.toUInt(nullptr,16);
-            if(profile.isS32kV2()||!m_settings.applicationBAddress.isEmpty()){
-                if(!boot::FirmwareImage::planSlots(application,base,b,!m_settings.applicationBAddress.isEmpty(),length,primary,alternate,error)){failPreview(error);return;}
-            }else primary=application.segments;
-            for(const auto &candidate:{primary,alternate}){
-                if(candidate.isEmpty())continue;
-                boot::FirmwareImage selected=application;selected.segments=candidate;boot::t008::Plan plan;
-                if(!boot::t008::images(selected,driver,plan,error)){failPreview(error);return;}
-                QStringList differences;if(!boot::t008::compareFileVersions(plan,expected,differences,error)){failPreview(error);return;}
-                const QString slot=!m_settings.applicationBAddress.isEmpty()&&candidate.first().address>=b&&quint64(candidate.first().address)<quint64(b)+length?"App B":"App A";
-                for(const auto &difference:differences)mismatches.append(slot+" · "+difference);
-            }
-        }else{
-            boot::t008::Plan plan;
-            if(!boot::t008::compareFileVersions(plan,expected,mismatches,error)){failPreview(error);return;}
-        }
-        if(!mismatches.isEmpty()){
-            m_stagedApp=application;m_stagedDriver=driver;m_stagedBoot=bootBundle;m_stagedCalib=calibration;m_confirmationPending=true;const auto id=++m_confirmationId;
-            emit packageConfirmationRequested(id,QString("版本不一致或无法解析，请确认是否继续：\n")+mismatches.join("\n"));return;
-        }
     }
     // The front-panel transport, bitrate, repeat and reconnect settings are
     // authoritative. Image/range and actual transport checks remain below.
@@ -431,6 +402,7 @@ void ChannelWorker::beginDownload(bool confirmed){
     }
     emit logMessage(QString("镜像快照 %1 B · SHA256 %2 · 配置 %3").arg(application.size).arg(QString::fromLatin1(application.sha256.toHex())).arg(profile.name));
     m_job.reset(new boot::FlashJob(*m_uds,profile,std::move(key)));
+    connect(m_job.get(),&boot::FlashJob::transferPlanned,this,&ChannelWorker::logMessage);
     connect(m_job.get(),&boot::FlashJob::notice,this,&ChannelWorker::logMessage);
     connect(m_job.get(),&boot::FlashJob::stepEvent,this,&ChannelWorker::logMessage);
     connect(m_job.get(),&boot::FlashJob::progress,this,[this](int value,const QString &step){
@@ -459,13 +431,6 @@ void ChannelWorker::beginDownload(bool confirmed){
     }
     start();
 }
-void ChannelWorker::confirmPackage(quint64 id,bool accepted){
-    if(!m_running||!m_confirmationPending||id!=m_confirmationId)return;
-    m_confirmationPending=false;
-    if(!accepted){m_stagedApp={};m_stagedDriver={};m_stagedBoot={};m_stagedCalib={};cancelTask();return;}
-    beginDownload(true);
-}
-
 bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &error,bool manual){
     if(!diagnosticMaster(error))return false;
     if(!m_settings.simulation&&m_lin)m_lin->clearMsg();
@@ -730,7 +695,6 @@ void ChannelWorker::cancelTask() {
     if(m_manualBusy){if(m_uds)m_uds->cancel();m_manualBusy=false;emit diagnosticFinished(false,{},"诊断请求已取消或连接关闭");}
     if(m_scanning)stopScan("扫描已取消");
     if(!m_running)return;
-    ++m_confirmationId;m_confirmationPending=false;m_stagedApp={};m_stagedDriver={};m_stagedBoot={};m_stagedCalib={};
     if(m_job)m_job->cancel();
     m_repeat->stop();m_running=m_waiting=false;m_receive->setInterval(20);
     m_operations.release(OperationCoordinator::Task::Download);

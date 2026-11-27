@@ -1,3 +1,4 @@
+#include "PagePackage.h"
 #include "FlashJob.h"
 #include "S32kLayout.h"
 #include <QDateTime>
@@ -86,7 +87,7 @@ static bool continuousFile(const QVector<Segment> &source,QVector<Segment> &resu
     result.clear();if(source.isEmpty())return true;
     const auto base=source.first().address;quint64 cursor=base;QByteArray bytes;
     for(const auto &part:source){
-        if(part.data.isEmpty()||part.address!=cursor||cursor+quint64(part.data.size())>0x100000000ULL){error="File must contain continuous bytes; holes are not filled";return false;}
+        if(part.data.isEmpty()||part.address!=cursor){error="File must contain continuous bytes; holes are not filled";return false;}
         bytes+=part.data;cursor+=quint64(part.data.size());
     }
     result={{base,bytes}};return true;
@@ -112,74 +113,45 @@ bool FlashJob::start(const FirmwareImage &app,const FirmwareImage &driverFile,co
     if(t010Image&&m_profile.target!="generic"&&!m_profile.isT010V2()){error="T010APP1 conflicts with the selected target";return false;}
     const bool inferredT010=t010Image&&m_profile.target=="generic";
     const bool t010Layout=m_profile.isT010V2()||inferredT010;
-    if(inferredT010){
-        const auto *layout=s32kApplicationLayout(true,m_profile.applicationEraseBase,m_profile.applicationEraseLength);
-        if(!layout||m_profile.applicationEraseLength!=layout->t010AppBytes||
-           (m_profile.applicationHasB&&(m_profile.applicationEraseBase!=layout->appBase||m_profile.applicationBBase!=layout->t010AppB))){error="T010 App addresses and capacity do not match the file contract";return false;}
-    }
     // Driver validation determines image layout only. It never changes selected
     // services, routine IDs, checkboxes or the original download sequence.
-    const bool modern=m_profile.isS32kV2()||currentT008||t010Layout||FirmwareImage::hasCurrentMarker(app)||FirmwareImage::hasCurrentMarker(driver)||FirmwareImage::hasCurrentMarker(bootBundle)||FirmwareImage::hasCurrentMarker(calibration);
-    if(modern){
-        const auto *layout=s32kApplicationLayout(t010Layout,m_profile.applicationEraseBase,m_profile.applicationEraseLength);
-        const quint16 minor=t010Layout&&layout==&S32kUnified80?11:9;
-        if(!t008::validateCurrentDriver(driver,t010Layout,error,minor))return false;
+    const bool pagePackage=page::resembles(driver)||page::resembles(app)||page::resembles(bootBundle)||page::resembles(calibration);
+    const bool modern=pagePackage||m_profile.isS32kV2()||currentT008||t010Layout||FirmwareImage::hasCurrentMarker(app)||FirmwareImage::hasCurrentMarker(driver)||FirmwareImage::hasCurrentMarker(bootBundle)||FirmwareImage::hasCurrentMarker(calibration);
+    if(pagePackage){
+        if(m_profile.target!="generic"&&!m_profile.isT010V2()){error="T010 page package conflicts with the selected target";return false;}
+        if(!bootBundle.segments.isEmpty()){error="T010 fixed Boot is programmed by the factory tool";return false;}
+        if(driver.segments.isEmpty()){error="Missing RAM Driver";return false;}
+        QByteArray stage;
+        const auto check=[&](const FirmwareImage &file,quint32 expected){
+            if(file.segments.isEmpty())return true;
+            QVector<Segment> members;quint32 role=0;
+            if(!page::inspect(file,role,members,error))return false;
+            if(role!=expected){error="Selected file has a different package role";return false;}
+            const auto version=members.first().data.mid((role==ROM_MARKER_DRIVER?0:3072)+16,4);
+            if(!stage.isEmpty()&&stage!=version){error="Selected package stages differ";return false;}
+            stage=version;return true;
+        };
+        if(!check(driver,ROM_MARKER_DRIVER)||!check(app,ROM_MARKER_APP)||!check(calibration,ROM_MARKER_CAL))return false;
+    }else if(modern){
+        // The driver declares its ABI. The erase settings provide no ABI information.
+        if(t010Layout){
+            if(!t008::validateCurrentDriver(driver,true,error,9)&&
+               !t008::validateCurrentDriver(driver,true,error,11))return false;
+        }else if(!t008::validateCurrentDriver(driver,false,error))return false;
         // Routine IDs come from the existing download settings. Recognizing a
         // driver selects its memory layout, never a different set of services.
-        if(t010Layout&&!bootBundle.segments.isEmpty()){error="T010固定Boot不允许常规下载";return false;}
     }
     if(!calibration.segments.isEmpty()&&!FirmwareImage::validateCalibration(calibration,m_profile.calibBase,m_profile.calibLength,error))return false;
-    if(!modern&&!m_profile.applicationHasB&&!app.segments.isEmpty()&&m_profile.enabled("erase")&&
-       (!m_profile.applicationEraseLength||quint64(m_profile.applicationEraseBase)+m_profile.applicationEraseLength>0x100000000ULL)){
-        error="Invalid or overflowing erase range";return false;
-    }
     QVector<Segment> bootPrimary,appPrimary;
     m_targetPlan={};m_alternateTargetPlan={};
     m_bootAlternate.clear();m_appAlternate.clear();m_bootUsingB=m_appUsingB=false;
     if(!bootBundle.segments.isEmpty()&&!FirmwareImage::planSlots(bootBundle,m_profile.bootEraseBase,m_profile.bootBBase,m_profile.bootHasB,m_profile.bootEraseLength,bootPrimary,m_bootAlternate,error))return false;
-    if(!app.segments.isEmpty()){
-        if(modern||m_profile.applicationHasB){if(!FirmwareImage::planSlots(app,m_profile.applicationEraseBase,m_profile.applicationBBase,m_profile.applicationHasB,m_profile.applicationEraseLength,appPrimary,m_appAlternate,error))return false;}
-        else if(!continuousFile(app.segments,appPrimary,error))return false;
-    }
-    if(modern){
-        auto bootRegion=[&](const QVector<Segment> &parts){if(parts.isEmpty())return true;
-            const auto a=parts.first().address;
-            const bool usingB=m_profile.bootHasB&&a>=m_profile.bootBBase&&quint64(a)<quint64(m_profile.bootBBase)+m_profile.bootEraseLength;
-            const auto base=usingB?m_profile.bootBBase:m_profile.bootEraseBase;
-            return s32kBootLayout(base,m_profile.bootEraseLength)!=nullptr;
-        };
-        if(!bootRegion(bootPrimary)||!bootRegion(m_bootAlternate)){error="Boot erase range exceeds the current target slot";return false;}
-        auto appRegion=[&](const QVector<Segment> &segments){if(segments.isEmpty())return true;
-            const auto a=segments.first().address;const bool b=m_profile.applicationHasB&&a>=m_profile.applicationBBase&&quint64(a)<quint64(m_profile.applicationBBase)+m_profile.applicationEraseLength;
-            const auto base=b?m_profile.applicationBBase:m_profile.applicationEraseBase;const quint64 end=quint64(base)+m_profile.applicationEraseLength;
-            Q_UNUSED(end);return s32kApplicationLayout(t010Layout,base,m_profile.applicationEraseLength)!=nullptr;
-        };
-        if(!appRegion(appPrimary)||!appRegion(m_appAlternate)){error="App擦除范围越过当前profile分区边界或涉及状态/工厂/配置区";return false;}
-        const auto *appLayout=appPrimary.isEmpty()?nullptr:s32kApplicationLayout(t010Layout,
-            appPrimary.first().address,m_profile.applicationEraseLength);
-        const auto *bootLayout=bootPrimary.isEmpty()?nullptr:s32kBootLayout(bootPrimary.first().address,m_profile.bootEraseLength);
-        if(appLayout&&bootLayout&&appLayout!=bootLayout){error="Boot and App use different memory layouts";return false;}
-        if(appLayout==&S32kUnified80){
-            if(t010Layout&&m_profile.applicationHasB&&
-               (m_profile.applicationEraseBase!=appLayout->appBase||m_profile.applicationBBase!=appLayout->t010AppB)){
-                error="T010 App A/B addresses do not match the selected layout";return false;
-            }
-            if(!t010Layout&&m_profile.applicationHasB){error="T008/T009 unified layout contains one App";return false;}
-        }
-        if(bootLayout==&S32kUnified80&&m_profile.bootHasB&&
-           (m_profile.bootEraseBase!=0x5000||m_profile.bootBBase!=bootLayout->bootB)){
-            error="Boot A/B addresses do not match the selected layout";return false;
-        }
-    }
-    for(const auto &part:appPrimary){
-        const bool usingB=m_profile.applicationHasB&&part.address>=m_profile.applicationBBase&&quint64(part.address)<quint64(m_profile.applicationBBase)+m_profile.applicationEraseLength;
-        const quint32 base=usingB?m_profile.applicationBBase:m_profile.applicationEraseBase;
-        if(part.address!=base||quint64(part.address)+quint64(part.data.size())>quint64(base)+m_profile.applicationEraseLength){error="App write range exceeds configured erase range";return false;}
-    }
+    if(!app.segments.isEmpty()&&!FirmwareImage::planSlots(app,m_profile.applicationEraseBase,
+        m_profile.applicationBBase,m_profile.applicationHasB,m_profile.applicationEraseLength,appPrimary,m_appAlternate,error))return false;
     m_segments=driver.segments;m_driverCount=m_segments.size();m_bootIndex=m_appIndex=m_calibIndex=-1;m_total=0;
     if(!bootPrimary.isEmpty()){
         m_bootIndex=m_segments.size();m_segments+=bootPrimary;
-        m_bootUsingB=bootPrimary.first().address>=m_profile.bootBBase&&quint64(bootPrimary.first().address)<quint64(m_profile.bootBBase)+m_profile.bootEraseLength&&m_profile.bootHasB;
+        m_bootUsingB=m_profile.bootHasB&&m_profile.bootBBase!=m_profile.bootEraseBase&&bootPrimary.first().address==m_profile.bootBBase;
     }
     if(!calibration.segments.isEmpty()){
         QVector<Segment> data,none;if(!FirmwareImage::planSlots(calibration,m_profile.calibBase,0,false,m_profile.calibLength,data,none,error))return false;
@@ -194,10 +166,15 @@ bool FlashJob::start(const FirmwareImage &app,const FirmwareImage &driverFile,co
     }
     if(!app.segments.isEmpty()&&modern){
         auto prepare=[&](const QVector<Segment> &parts,t008::Plan &plan){
+            if(pagePackage){
+                plan.application=parts;
+                plan.version=parts.first().data.mid(46,9).split('\0').first();
+                plan.hasAppVersion=!plan.version.isEmpty();
+                return true;
+            }
             FirmwareImage selected;selected.segments=parts;const auto a=parts.first().address;
-            const bool b=m_profile.applicationHasB&&a>=m_profile.applicationBBase&&quint64(a)<quint64(m_profile.applicationBBase)+m_profile.applicationEraseLength;
-            const auto base=b?m_profile.applicationBBase:m_profile.applicationEraseBase;
-            return t008::completeApplication(selected,base,m_profile.applicationEraseLength,t010Layout,s32kT010Slot(base),plan,error,app.binary);
+            const int slot=t010Layout&&parts.first().data.size()>87?quint8(parts.first().data[87]):-1;
+            return t008::completeApplication(selected,a,m_profile.applicationEraseLength,t010Layout,slot,plan,error,app.binary);
         };
         if(!prepare(appPrimary,m_targetPlan))return false;
         if(!m_appAlternate.isEmpty()){if(!prepare(m_appAlternate,m_alternateTargetPlan))return false;m_appAlternate=m_alternateTargetPlan.application;}
@@ -213,19 +190,11 @@ bool FlashJob::start(const FirmwareImage &app,const FirmwareImage &driverFile,co
             if(!t008::images(alternate,driver,alternatePlan,error))return false;if(!m_profile.isT008())alternatePlan.application=alternate.segments;m_appAlternate=alternatePlan.application;m_alternateTargetPlan=alternatePlan;
         }
     }else if(!app.segments.isEmpty()){m_appIndex=m_segments.size();m_segments+=appPrimary;}
-    if(m_appIndex>=0){m_appUsingB=m_profile.applicationHasB&&appPrimary.first().address>=m_profile.applicationBBase&&quint64(appPrimary.first().address)<quint64(m_profile.applicationBBase)+m_profile.applicationEraseLength;}
-    // Erase ranges may not overlap any other role, including a validated alternate.
-    auto intersects=[](quint32 a,quint64 n,quint32 b,quint64 m){return quint64(a)<quint64(b)+m&&quint64(b)<quint64(a)+n;};
-    QVector<Segment> allBoot=bootPrimary;allBoot+=m_bootAlternate;QVector<Segment> allApp=appPrimary;allApp+=m_appAlternate;
-    auto slotBase=[](const Segment &s,quint32 a,quint32 b,bool hasB,quint32 length){return hasB&&s.address>=b&&quint64(s.address)<quint64(b)+length?b:a;};
-    for(const auto &b:allBoot)for(const auto &a:allApp)
-        if(intersects(slotBase(b,m_profile.bootEraseBase,m_profile.bootBBase,m_profile.bootHasB,m_profile.bootEraseLength),m_profile.bootEraseLength,slotBase(a,m_profile.applicationEraseBase,m_profile.applicationBBase,m_profile.applicationHasB,m_profile.applicationEraseLength),m_profile.applicationEraseLength)){error="Boot/App erase ranges overlap";return false;}
-    if(!calibration.segments.isEmpty()){
-        for(const auto &part:allBoot)if(intersects(slotBase(part,m_profile.bootEraseBase,m_profile.bootBBase,m_profile.bootHasB,m_profile.bootEraseLength),m_profile.bootEraseLength,m_profile.calibBase,m_profile.calibLength)){error="Boot erase range overlaps Calib";return false;}
-        for(const auto &part:allApp)if(intersects(slotBase(part,m_profile.applicationEraseBase,m_profile.applicationBBase,m_profile.applicationHasB,m_profile.applicationEraseLength),m_profile.applicationEraseLength,m_profile.calibBase,m_profile.calibLength)){error="App erase range overlaps Calib";return false;}
-    }
+    if(m_appIndex>=0){m_appUsingB=m_profile.applicationHasB&&m_profile.applicationBBase!=m_profile.applicationEraseBase&&appPrimary.first().address==m_profile.applicationBBase;}
+    QVector<Segment> allBoot=bootPrimary;allBoot+=m_bootAlternate;
+    QVector<Segment> allApp=appPrimary;allApp+=m_appAlternate;
     // Validate every candidate before any erase, including the unused fallback slot.
-    if(modern&&!t010Layout){
+    if(modern&&!t010Layout&&!pagePackage){
         QVector<QPair<Segment,quint32>> selected;
         for(const auto &part:driver.segments)selected.append({part,ROM_MARKER_DRIVER});
         for(const auto &part:allBoot)selected.append({part,ROM_MARKER_BOOT});
@@ -233,17 +202,24 @@ bool FlashJob::start(const FirmwareImage &app,const FirmwareImage &driverFile,co
         for(const auto &part:calibration.segments)selected.append({part,ROM_MARKER_CAL});
         if(!FirmwareImage::validateMarkerSet(selected,error,app.binary))return false;
     }
-    for(int i=0;i<m_driverCount;++i){const auto &d=m_segments[i];
-        if(!calibration.segments.isEmpty()&&intersects(d.address,d.data.size(),m_profile.calibBase,m_profile.calibLength)){error="Calib范围与RAM Driver重叠";return false;}
-        for(const auto &b:allBoot)if(intersects(d.address,d.data.size(),slotBase(b,m_profile.bootEraseBase,m_profile.bootBBase,m_profile.bootHasB,m_profile.bootEraseLength),m_profile.bootEraseLength)){error="Boot erase range overlaps driver";return false;}
-        for(const auto &a:allApp)if(intersects(d.address,d.data.size(),slotBase(a,m_profile.applicationEraseBase,m_profile.applicationBBase,m_profile.applicationHasB,m_profile.applicationEraseLength),m_profile.applicationEraseLength)){error="App erase range overlaps driver";return false;}
-    }
     if((!m_bootAlternate.isEmpty()||!m_appAlternate.isEmpty())&&!m_profile.enabled("erase")){error="Dual-slot images require the erase selection step";return false;}
     for(int i=0;i<m_segments.size();++i){
-        const auto &s=m_segments[i];const quint64 end=quint64(s.address)+quint64(s.data.size());
-        if(s.data.isEmpty()||end>0x100000000ULL){error="Invalid image segment";return false;}
+        const auto &s=m_segments[i];
+        if(s.data.isEmpty()){error="Invalid image segment";return false;}
         m_total+=s.data.size();
     }
+    const auto describe=[this](const QString &role,const Segment &part,quint32 eraseBase,quint32 eraseBytes,bool erase){
+        auto hex=[](quint32 value){return QString("0x%1").arg(value,8,16,QChar('0'));};
+        QString message=QString("%1 · 0x34 %2 (%3 bytes)").arg(role,hex(part.address)).arg(part.data.size());
+        if(erase)message+=QString(" · 0x31 %1 (%2 bytes)").arg(hex(eraseBase)).arg(eraseBytes);
+        emit transferPlanned(message);
+    };
+    for(const auto &part:driver.segments)describe("Driver",part,0,0,false);
+    for(const auto &part:bootPrimary)describe("Boot",part,m_bootUsingB?m_profile.bootBBase:m_profile.bootEraseBase,m_profile.bootEraseLength,true);
+    for(const auto &part:m_bootAlternate)describe("Boot B",part,m_profile.bootBBase,m_profile.bootEraseLength,true);
+    if(m_calibIndex>=0)describe("Calib",m_segments[m_calibIndex],m_profile.calibBase,m_profile.calibLength,true);
+    if(m_appIndex>=0)describe("App",m_segments[m_appIndex],m_appUsingB?m_profile.applicationBBase:m_profile.applicationEraseBase,m_profile.applicationEraseLength,true);
+    for(const auto &part:m_appAlternate)describe("App B",part,m_profile.applicationBBase,m_profile.applicationEraseLength,true);
     ++m_epoch;m_index=0;m_acked=0;m_ignored=0;m_running=true;m_unresolvedSids.clear();m_versionObservation.clear();
     if(m_isV2)emit notice("ROM targets follow the configured 34/36/37/security loop, then one programming dependency check. Positive responses are ECU evidence only; no host signature verification is implemented.");
     if(m_profile.isT008()){
@@ -366,7 +342,7 @@ void FlashJob::eraseTarget(RomTarget target,bool useB){
     const auto base=calib?m_profile.calibBase:boot?(useB?m_profile.bootBBase:m_profile.bootEraseBase):(useB?m_profile.applicationBBase:m_profile.applicationEraseBase);
     const auto length=calib?m_profile.calibLength:boot?m_profile.bootEraseLength:m_profile.applicationEraseLength;
     const auto req=routine(m_profile.eraseRoutine)+char(0x44)+be32(base)+be32(length);
-    const bool canFallback=!calib&&!useB&&!(boot?m_bootAlternate:m_appAlternate).isEmpty();
+    const bool canFallback=!calib&&!useB&&base!=(boot?m_profile.bootBBase:m_profile.applicationBBase)&&!(boot?m_bootAlternate:m_appAlternate).isEmpty();
     const auto unavailable=QByteArray::fromHex("7f3131");
     step("erase",req,positive(req,4)+char(0),[this,req](const QByteArray &pdu){
         if(m_profile.enabled("erase")&&!pdu.isEmpty()&&pdu!=positive(req,4)+char(0)){fail("Erase requires exact positive response/status");return;}download();

@@ -7,18 +7,6 @@ struct S32kLayout {
 };
 inline constexpr S32kLayout S32kLegacy60{0xf000,0x6d000,0x15000,0x57000,0x49000,0x33000};
 inline constexpr S32kLayout S32kUnified80{0x14000,0x68000,0x1a000,0x4d000,0x4b000,0x30000};
-inline const S32kLayout *s32kApplicationLayout(bool t010,quint32 base,quint32 bytes){
-    if(!bytes)return nullptr;
-    if(t010){
-        if((base==S32kUnified80.appBase||base==S32kUnified80.t010AppB)&&bytes==S32kUnified80.t010AppBytes)return &S32kUnified80;
-        if((base==S32kLegacy60.appBase||base==S32kLegacy60.t010AppB)&&bytes<=S32kLegacy60.t010AppBytes)return &S32kLegacy60;
-    }else{
-        if(base==S32kUnified80.appBase&&bytes==S32kUnified80.appBytes)return &S32kUnified80;
-        // Keep the existing explicitly configured legacy subranges compatible.
-        if(base>=S32kLegacy60.appBase&&quint64(base)+bytes<=0x6c000)return &S32kLegacy60;
-    }
-    return nullptr;
-}
 inline const S32kLayout *s32kBootLayout(quint32 base,quint32 bytes){
     if((base==0x5000||base==S32kUnified80.bootB)&&bytes==S32kUnified80.bootBytes)return &S32kUnified80;
     if((base==0x5000||base==S32kLegacy60.bootB)&&bytes&&bytes<=S32kLegacy60.bootBytes)return &S32kLegacy60;

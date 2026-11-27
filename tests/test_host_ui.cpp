@@ -200,7 +200,7 @@ class HostUiTest : public QObject {
     ChannelSettings realWakeSettings(){
         auto s=preview(Bus::Lin);s.simulation=false;s.hardwareKey="lin:fake:1";s.handle=0x31;
         s.applicationPath=fixture("wake-app.bin",16);s.applicationBAddress.clear();s.bootBAddress.clear();s.downloadFiles={};
-        s.downloadProfile=boot::FlashProfile().toJson();s.linSlotMs=1;s.linAsMs=30;s.p2Ms=10;s.checkAppVersion=false;return s;
+        s.downloadProfile=boot::FlashProfile().toJson();s.linSlotMs=1;s.linAsMs=30;s.p2Ms=10;return s;
     }
 private slots:
     void periodicButtonReconnect_data(){
@@ -897,15 +897,15 @@ private slots:
         for(int bytes:{2,18,20}){json["fingerprintHex"]=QString(bytes*2,'0');QVERIFY(!ChannelSettings::fromJson(json,restored,error));}
         json["fingerprintHex"]=123;QVERIFY(!ChannelSettings::fromJson(json,restored,error));
     }
-    void packageVersionSettingsRoundTrip(){
+    void obsoleteAppVersionSettingsIgnored(){
         for(const auto bus:{Bus::Can,Bus::Lin}){
-            auto s=ChannelSettings::defaults(bus);QVERIFY(!s.checkAppVersion);
-            s.bootAddress="00000000";s.bootEraseLength="00020000";s.checkAppVersion=true;
-            s.expectedAppVersion="T008A0001";
-            ChannelSettings restored;QString error;QVERIFY2(ChannelSettings::fromJson(s.toJson(),restored,error),qPrintable(error));
+            auto s=ChannelSettings::defaults(bus);
+            s.bootAddress="00000000";s.bootEraseLength="00020000";
+            auto legacy=s.toJson();legacy["checkAppVersion"]=true;legacy["expectedAppVersion"]="T008A0001";
+            ChannelSettings restored;QString error;QVERIFY2(ChannelSettings::fromJson(legacy,restored,error),qPrintable(error));
             QCOMPARE(restored.bootAddress,s.bootAddress);QCOMPARE(restored.bootEraseLength,s.bootEraseLength);
-            QVERIFY(restored.checkAppVersion);
-            QCOMPARE(restored.expectedAppVersion,s.expectedAppVersion);
+            QVERIFY(!restored.toJson().contains("checkAppVersion"));
+            QVERIFY(!restored.toJson().contains("expectedAppVersion"));
         }
     }
     void downloadLengthRoundTripAndValidation() {

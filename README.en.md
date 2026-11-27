@@ -6,7 +6,7 @@
 
 [简体中文](README.md) · English · [GitHub: SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.64-2563eb)
+![Version](https://img.shields.io/badge/version-1.65-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
@@ -18,6 +18,13 @@ Developed with assistance from OpenAI Codex.
 </div>
 
 For physical LIN downloads at 19,200 bit/s with automatic diagnostic scheduling, the target interval is 10 ms for request headers (0x3C) and 20 ms for response headers (0x3D). Transmit confirmation and host scheduling can extend the observed interval.
+
+## V1.65
+
+- SimpleCN detects the download type when possible and offers manual selection for unrecognized files. BIN downloads use the entered address. The ECU decides which destination ranges it accepts. Review the displayed erase and transfer ranges before starting. Entering another valid partition can erase it.
+- Intel HEX retains its absolute addresses. A conflict with the configured start stops the download and displays both sets of parameters.
+- T010 CRC32 page packages use each member's declared length for A/B selection, with integrity checks for the marker and body. Earlier T008, T009 and T010 formats remain supported. The ECU does not verify publisher signatures for this T010 format.
+- Removed the App version comparison and its download gate. F189 version reading and display remain available.
 
 ## V1.64
 

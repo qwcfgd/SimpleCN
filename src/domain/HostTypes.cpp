@@ -101,7 +101,6 @@ QJsonObject ChannelSettings::toJson() const {
         {"testerPresentEnabled",testerPresentEnabled},{"testerPresentMs",testerPresentMs},{"maxPendingMs",maxPendingMs},{"programmingSession",programmingSession},
         {"securityLevel",securityLevel},{"flashPath",flashPath},{"applicationPath",applicationPath},{"downloadFiles",downloadFiles},
         {"flashAddress",flashAddress},{"applicationAddress",applicationAddress},{"applicationLength",applicationLength},{"applicationNote",applicationNote},{"bootAddress",bootAddress},{"bootEraseLength",bootEraseLength},{"bootBAddress",bootBAddress},{"applicationBAddress",applicationBAddress},{"calibAddress",calibAddress},{"calibLength",calibLength},
-        {"checkAppVersion",checkAppVersion},{"expectedAppVersion",expectedAppVersion},
         {"flashRequired",flashRequired},{"rxdEnabled",rxdEnabled},{"repeatDownloadEnabled",repeatDownloadEnabled},
         {"repeatDownloadCount",repeatDownloadCount},{"repeatDownloadIntervalMs",repeatDownloadIntervalMs},
         {"cddPath",cddPath},{"cddEcu",cddEcu},{"cddVariant",cddVariant},{"signalConfiguration",signalConfiguration},
@@ -161,8 +160,6 @@ bool ChannelSettings::fromJson(const QJsonObject &o,ChannelSettings &result,QStr
     for(const auto key:{"bootBAddress","applicationBAddress","calibAddress","calibLength"})if(o.contains(key)&&!o.value(key).isString()){error=QString::fromLatin1(key)+": must be a hexadecimal string";return false;}
     s.calibAddress=text("calibAddress",s.calibAddress);s.calibLength=text("calibLength",s.calibLength);
     s.bootBAddress=text("bootBAddress",QStringLiteral("0006D000"));s.applicationBAddress=text("applicationBAddress",s.applicationBAddress);
-    s.checkAppVersion=o.value("checkAppVersion").toBool(false);
-    s.expectedAppVersion=text("expectedAppVersion",s.expectedAppVersion);
     s.flashRequired=o.value("flashRequired").toBool(s.flashRequired);
     s.rxdEnabled=o.value("rxdEnabled").toBool(s.rxdEnabled);
     s.repeatDownloadEnabled=o.value("repeatDownloadEnabled").toBool(s.repeatDownloadEnabled);

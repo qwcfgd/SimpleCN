@@ -78,12 +78,27 @@ private slots:
         const auto original=vm.settings().toJson();QSignalSpy changed(&vm,&host::ChannelViewModel::settingsChanged);
         QTemporaryDir temp(QCoreApplication::applicationDirPath()+"/download-inspection-XXXXXX");QVERIFY(temp.isValid());
         const QList<QPair<QByteArray,QString>> samples={{currentDriverFixture(),"driver"},{QByteArray("T008APP2").leftJustified(128,'A'),"app"},
-            {QByteArray("T010APP1").leftJustified(128,'A'),"app"},{marker_fixture::boot(),"boot"},{QByteArray(4096,'?'),""}};
+            {QByteArray("T010APP1").leftJustified(128,'A'),"app"},{marker_fixture::boot(),"boot"},{marker_fixture::calib(),"calib"},{QByteArray(4096,'?'),""}};
         int index=0;
         for(const auto &sample:samples){const auto path=temp.filePath(QString::number(index++)+".bin");QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));QCOMPARE(file.write(sample.first),qint64(sample.first.size()));file.close();
             QString role="stale",error="stale";QVERIFY2(vm.inspectDownloadFile(path,role,error),qPrintable(error));QCOMPARE(role,sample.second);QVERIFY(error.isEmpty());}
         QString role="stale",error;QVERIFY(!vm.inspectDownloadFile(temp.filePath("missing.bin"),role,error));QVERIFY(role.isEmpty());QVERIFY(!error.isEmpty());
         QCOMPARE(vm.settings().toJson(),original);QCOMPARE(changed.size(),0);
+    }
+    void opaqueHexUsesOnlyAnUnambiguousConfiguredAddress(){
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.filePath("opaque.hex");
+        QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(":01012300AB30\n:00000001FF\n");file.close();
+        auto s=host::ChannelSettings::defaults(communication::Bus::Can);s.simulation=true;
+        s.applicationAddress="00000123";s.applicationLength="00000001";
+        auto inferred=[&]{
+            host::ChannelViewModel vm(s);QString role,error;
+            const bool inspected=vm.inspectDownloadFile(path,role,error);
+            return inspected?role:QString("error: ")+error;
+        };
+        s.calibAddress="00000000";QCOMPARE(inferred(),QString("app"));
+        s.calibAddress=s.applicationAddress;QCOMPARE(inferred(),QString());
+        s.applicationAddress="00000234";s.calibAddress="00000000";QCOMPARE(inferred(),QString());
     }
     void fileListCommitDerivesPathsAndRejectsAtomically(){
         auto s=host::ChannelSettings::defaults(communication::Bus::Can);s.simulation=true;host::ChannelViewModel vm(s);QString error;
@@ -193,7 +208,7 @@ private slots:
         QVERIFY(FirmwareImage::planSlots(image,0x15000,0x49000,true,0x33000,a,b,error));QCOMPARE(a.size(),1);QCOMPARE(a[0].data.size(),8192);QCOMPARE(b[0].data.size(),4096);
         image.segments[1].address=0x17000;QVERIFY(!FirmwareImage::planSlots(image,0x15000,0x49000,true,0x33000,a,b,error));
         image.segments={{0x16000,QByteArray(4096,'A')}};QVERIFY(!FirmwareImage::planSlots(image,0x15000,0x49000,true,0x33000,a,b,error));
-        image.segments={{0x15000,QByteArray(0x58000,'A')}};QVERIFY(!FirmwareImage::planSlots(image,0x15000,0,false,0x57000,a,b,error));
+        image.segments={{0x15000,QByteArray(0x58000,'A')}};QVERIFY(FirmwareImage::planSlots(image,0x15000,0,false,0x57000,a,b,error));
     }
     void bAddressDoesNotImplyDualBin(){
         FirmwareImage image;image.binary=true;QString error;QVector<Segment> a,b;
@@ -202,9 +217,9 @@ private slots:
         image.segments={{0x5000,linked(0x5000,8192,'A')}};
         QVERIFY(FirmwareImage::planSlots(image,0x5000,0x6d000,true,0xf000,a,b,error));QCOMPARE(a[0].data.size(),8192);QVERIFY(b.isEmpty());
         image.segments={{0x5000,QByteArray(8192,'A')}};
-        QVERIFY(!FirmwareImage::planSlots(image,0x5000,0x6d000,true,0xf000,a,b,error));
+        QVERIFY(FirmwareImage::planSlots(image,0x5000,0x6d000,true,0xf000,a,b,error));QCOMPARE(a[0].data,image.segments[0].data);QVERIFY(b.isEmpty());
         image.segments={{0x5000,linked(0x5000,8192,'A')+linked(0x6d000,8192,'B')}};
-        QVERIFY(!FirmwareImage::planSlots(image,0x5000,0x6d000,true,0xf000,a,b,error));QVERIFY(error.contains("ambiguous"));
+        QVERIFY(FirmwareImage::planSlots(image,0x5000,0x6d000,true,0xf000,a,b,error));QCOMPARE(a[0].data.size(),8192);QCOMPARE(b[0].data.size(),8192);
     }
     void compilerNativeBinKeepsActualLength(){
         const auto path=qEnvironmentVariable("DOWNLOAD_CONTRACT_APP_BIN");

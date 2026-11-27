@@ -1,8 +1,11 @@
+#include "protocol/PagePackage.h"
 #include "ChannelViewModel.h"
 #include <QDir>
 #include <QSaveFile>
 #include <QCoreApplication>
 #include "protocol/FlashJob.h"
+#include "protocol/S32kLayout.h"
+#include <QtEndian>
 #include "domain/CddConfiguration.h"
 #include "infrastructure/TraceExporter.h"
 namespace host {
@@ -70,7 +73,6 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent,Chan
     connect(m_model,&ChannelModel::taskChanged,this,[this](TaskState state,int,QString){if(state!=TaskState::Running)flushMonitorFrames();});
     connect(m_model,&ChannelModel::signalStatus,this,[this](signal::RunStatus status){if(!signal::active(status.state)&&!status.cleanupPending)flushMonitorFrames();});
     connect(m_model,&ChannelModel::logMessage,this,&ChannelViewModel::log);
-    connect(m_model,&ChannelModel::packageConfirmationRequested,this,&ChannelViewModel::packageConfirmationRequested);
     connect(m_model,&ChannelModel::taskChanged,this,[this](TaskState state,int progress,QString text){
         m_downloadStartBlocked=false;
         m_task=state;m_progress=progress;m_taskText=std::move(text);emit changed();
@@ -231,7 +233,6 @@ void ChannelViewModel::start(){
     }
     m_downloadStartBlocked=false;m_error.clear();m_pending=true;m_model->previewRequested(m_settings);emit changed();
 }
-void ChannelViewModel::confirmPackage(quint64 id,bool accepted){m_model->packageConfirmationReply(id,accepted);}
 void ChannelViewModel::cancel(){
     if(m_signals->running())m_signals->stop();
     if(m_repeatActive){m_repeatActive=false;m_diagnosticRepeatTimer.stop();m_diagnosticResult+="\n自动重发已停止";log("自动重发已停止");}
@@ -260,7 +261,9 @@ void adaptFreshT010(host::ChannelSettings &s){
         if(parts.isEmpty())continue;
         boot::FirmwareImage selected;selected.segments=parts;boot::t008::Plan plan;
         const auto base=parts.first().address;
-        if(!parts.first().data.startsWith("T010APP1")||!boot::t008::completeApplication(selected,base,0x30000,true,base==0x4b000?1:0,plan,error,app.binary))return;
+        if(!parts.first().data.startsWith("T010APP1")||parts.first().data.size()<4104||
+           !boot::s32kAppVectors(qFromLittleEndian<quint32>(parts.first().data.constData()+4096),
+                                 qFromLittleEndian<quint32>(parts.first().data.constData()+4100),base,quint32(parts.first().data.size()))||!boot::t008::completeApplication(selected,base,0x30000,true,base==0x4b000?1:0,plan,error,app.binary))return;
     }
     profile.target="s32k144-t010-v2";
     s.downloadProfile=profile.toJson();s.applicationLength="00030000";s.applicationBAddress="0004B000";s.bootBAddress.clear();
@@ -296,6 +299,10 @@ bool ChannelViewModel::inspectDownloadFile(const QString &path,QString &suggeste
     suggestedRole.clear();error.clear();boot::FirmwareImage image;
     if(!boot::FirmwareImage::load(path,0x5000,image,error))return false;
     const auto kind=boot::FirmwareImage::identify(image);
+    if(kind==boot::FirmwareImage::Kind::Unknown&&boot::page::resembles(image)){
+        quint32 role=0;QVector<boot::Segment> members;
+        return boot::page::inspect(image,role,members,error);
+    }
     if(kind==boot::FirmwareImage::Kind::Unknown&&boot::FirmwareImage::hasCurrentMarker(image)){error="Invalid ROM marker, length or CRC64";return false;}
     switch(kind){
     case boot::FirmwareImage::Kind::Driver:suggestedRole="driver";break;
@@ -303,7 +310,23 @@ bool ChannelViewModel::inspectDownloadFile(const QString &path,QString &suggeste
     case boot::FirmwareImage::Kind::Calibration:suggestedRole="calib";break;
     case boot::FirmwareImage::Kind::BootBundle:
     case boot::FirmwareImage::Kind::IncompleteBoot:suggestedRole="boot";break;
-    default:break; // An unknown file still needs the user's existing role dialog.
+    default:
+        if(!image.binary&&!image.segments.isEmpty()){
+            const quint32 start=image.segments.first().address;
+            QStringList roles;
+            auto match=[&](const QString &address,const QString &role){
+                bool ok=false;
+                if(address.toUInt(&ok,16)==start&&ok&&!roles.contains(role))roles.append(role);
+            };
+            match(m_settings.flashAddress,"driver");
+            match(m_settings.bootAddress,"boot");
+            match(m_settings.bootBAddress,"boot");
+            match(m_settings.calibAddress,"calib");
+            match(m_settings.applicationAddress,"app");
+            match(m_settings.applicationBAddress,"app");
+            if(roles.size()==1)suggestedRole=roles.first();
+        }
+        break;
     }
     return true;
 }

@@ -400,6 +400,37 @@ private slots:
         auto changed=vm.settings();changed.downloadFiles=QJsonArray{QJsonObject{{"role","app"},{"path",path}}};changed.applicationPath=path;QVERIFY(vm.setSettings(changed));QCOMPARE(table->rowCount(),1);
         defaults->click();QCOMPARE(table->rowCount(),0);QVERIFY(vm.settings().downloadFiles.isEmpty());QVERIFY(vm.settings().applicationPath.isEmpty());
     }
+    void unknownBinUsesManualRoleFromAddButton(){
+        QTemporaryDir temp;QVERIFY(temp.isValid());const QString path=temp.filePath("opaque.bin");
+        QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));QCOMPARE(file.write("opaque"),qint64(6));file.close();
+        auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;
+        host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);page.show();
+        const bool old=QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs,true);
+        QSettings prefs("Qt-SimpleCN","DownloadFiles");
+        const QVariant previous=prefs.value("lastDirectory");
+        bool fileChosen=false,roleChosen=false;
+        QTimer timer;timer.setInterval(25);
+        connect(&timer,&QTimer::timeout,&page,[&]{
+            if(auto *role=page.findChild<QInputDialog*>()){
+                role->setTextValue("App");roleChosen=true;role->accept();
+            }else if(auto *picker=page.findChild<QFileDialog*>()){
+                if(fileChosen)return;
+                picker->setDirectory(temp.path());
+                auto *name=picker->findChild<QLineEdit*>("fileNameEdit");
+                if(name){name->setText("opaque.bin");fileChosen=true;QMetaObject::invokeMethod(picker,"accept");}
+            }
+        });
+        QTimer guard;guard.setSingleShot(true);
+        connect(&guard,&QTimer::timeout,&page,[&]{if(auto *d=qobject_cast<QDialog*>(QApplication::activeModalWidget()))d->reject();});
+        auto *add=page.findChild<QPushButton*>("addDownloadFiles");QVERIFY(add);
+        timer.start();guard.start(5000);add->click();timer.stop();
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs,old);
+        if(previous.isValid())prefs.setValue("lastDirectory",previous);else prefs.remove("lastDirectory");
+        QVERIFY(fileChosen);QVERIFY(roleChosen);QCOMPARE(vm.settings().downloadFiles.size(),1);
+        const auto row=vm.settings().downloadFiles.first().toObject();
+        QCOMPARE(row["role"].toString(),QString("app"));QCOMPARE(row["path"].toString(),path);
+    }
     void roleEditingPreservesIdentityAndSelection(){
         auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;
         settings.downloadFiles=QJsonArray{QJsonObject{{"role","app"},{"path","app.bin"},{"id","a"}},QJsonObject{{"role","driver"},{"path","driver.bin"},{"id","d"}},QJsonObject{{"role","boot"},{"path","boot.bin"},{"id","b"}}};
@@ -562,15 +593,14 @@ private slots:
         UdsSession session(wire,{100,100,2000,0});QSignalSpy pending(&session,&UdsSession::notice);FlashJob job(session,p,std::make_unique<TestKey>());QSignalSpy done(&job,&FlashJob::finished),progress(&job,&FlashJob::progress);
         const bool withApp=scenario=="app70"||scenario=="fallback_pending";QVERIFY2(job.start(withApp?f.app:FirmwareImage{},f.driver,bundle,error),qPrintable(error));
         QVERIFY(waitForTest([&]{return done.size()==1;},15000));const bool success=scenario=="a_ok"||scenario=="a_pending_ok"||scenario=="fallback"||scenario=="strict_fallback"||scenario=="fallback_pending";
-        // An unchecked NRC permits continuation but must not be reported as confirmed success.
-        const bool ignoredErase=!checkNegative&&(scenario=="both31"||scenario=="a72"||scenario=="b72");
         QCOMPARE(done[0][0].toBool(),success);
         if(scenario=="driver70"){QCOMPARE(wire.requests.count(eraseA),0);QVERIFY(!wire.requests.contains(a));QVERIFY(!wire.requests.contains(b));return;}
         QCOMPARE(wire.requests.count(eraseA),1);
         const bool fallback=scenario=="fallback"||scenario=="strict_fallback"||scenario=="fallback_pending"||scenario=="both31"||scenario=="b72";
         QCOMPARE(wire.requests.count(eraseB),fallback?1:0);
         if(scenario=="fallback_pending"||scenario=="a_pending_ok")QVERIFY(!pending.isEmpty());
-        if(!success&&!ignoredErase&&scenario!="app70"){
+        if(!success&&scenario!="app70"){
+            if(scenario=="both31"||scenario=="a72"||scenario=="b72"){QVERIFY(!wire.requests.contains(a));QVERIFY(!wire.requests.contains(b));}
             const int first=wire.requests.indexOf(eraseA);for(int i=first+1;i<wire.requests.size();++i)QVERIFY(!wire.requests[i].startsWith(char(0x36)));
             QVERIFY(!wire.requests.contains(QByteArray::fromHex("3101ff02")));QVERIFY(!wire.requests.contains(QByteArray::fromHex("1101")));return;
         }
@@ -583,7 +613,7 @@ private slots:
         QVERIFY(commit>wire.requests.indexOf(verify));QCOMPARE(wire.requests.count(QByteArray::fromHex("3101ff02")),1);QVERIFY(commit>wire.requests.lastIndexOf(QByteArray::fromHex("37")));
         const auto reset=wire.requests.indexOf(QByteArray::fromHex("1101"));QVERIFY(reset>commit);QVERIFY(wire.requests.lastIndexOf(QByteArray::fromHex("1003"))>reset);
         if(withApp){const auto eraseApp=wire.requests.indexOf(QByteArray::fromHex("3101ff004400015000")+be32(p.applicationEraseLength));QVERIFY(eraseApp>begin&&eraseApp<commit);}
-        QVERIFY(!progress.isEmpty());QCOMPARE(progress.last()[0].toInt(),ignoredErase?99:100);
+        QVERIFY(!progress.isEmpty());QCOMPARE(progress.last()[0].toInt(),100);
     }
     void simulatedBootSlotSelection_data(){QTest::addColumn<quint32>("active");QTest::addColumn<quint32>("selected");QTest::newRow("A active")<<quint32(0x5000)<<quint32(0x6d000);QTest::newRow("B active")<<quint32(0x6d000)<<quint32(0x5000);}
     void simulatedBootSlotSelection(){
@@ -655,15 +685,6 @@ private slots:
             QCOMPARE(sent.value(0x20001400),driver.segments[0].data);QCOMPARE(sent.value(selected?0x6d000:0x5000),bundle.segments[0].data.mid(selected*0xf000,0xf000));
             QCOMPARE(sent.value(0x15000),app.segments[0].data);QVERIFY(!sent.contains(0x16000));
         }
-    }
-    void selectedFileVersions(){
-        Fixture f;t008::Plan p;QString error;QStringList mismatches;
-        QVERIFY(t008::images(f.app,f.driver,p,error));QMap<QString,QString> expected;
-        QVERIFY(t008::compareFileVersions(p,expected,mismatches,error));QVERIFY(mismatches.isEmpty());
-        expected={{"appVersion","T008A0001"}};QVERIFY(t008::compareFileVersions(p,expected,mismatches,error));QVERIFY(mismatches.isEmpty());
-        expected["appVersion"]="OTHER";QVERIFY(t008::compareFileVersions(p,expected,mismatches,error));QCOMPARE(mismatches.size(),1);
-        p.hasAppVersion=false;QVERIFY(t008::compareFileVersions(p,expected,mismatches,error));QCOMPARE(mismatches.size(),1);
-        for(const auto key:{"driverAbi","minimumBoot"}){expected.clear();expected[key]="1";QVERIFY(!t008::compareFileVersions(p,expected,mismatches,error));}
     }
     void packageDataWithoutLocalTargetRejection(){
         Fixture f;t008::Plan p;QString error;auto &d=f.driver.segments[0].data;
@@ -1323,21 +1344,19 @@ private slots:
         FlashProfile reloaded;QVERIFY2(FlashProfile::fromJson(restored.downloadProfile,reloaded,error),qPrintable(error));
         QCOMPARE(reloaded.flow,QString("boot"));QVERIFY(reloaded.enabled("pre1003"));
     }
-    void uiV2CancelSendsNothing(){
+    void uiLegacyAppVersionSettingDoesNotGateDownload(){
         Fixture f;QTemporaryDir dir;QVERIFY(dir.isValid());
         const auto app=dir.filePath("app.bin"),driver=dir.filePath("driver.bin");
         QFile a(app),d(driver);QVERIFY(a.open(QIODevice::WriteOnly));QCOMPARE(a.write(f.app.segments[0].data),qint64(f.app.segments[0].data.size()));a.close();
         QVERIFY(d.open(QIODevice::WriteOnly));QCOMPARE(d.write(f.driver.segments[0].data),qint64(f.driver.segments[0].data.size()));d.close();
         auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;settings.applicationPath=app;settings.flashPath=driver;settings.applicationLength=QString::number(QFileInfo(app).size(),16);
-        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;settings.checkAppVersion=true;settings.expectedAppVersion="DIFFERENT";
+        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;
+        auto old=settings.toJson();old["checkAppVersion"]=true;old["expectedAppVersion"]="DIFFERENT";
+        QString settingsError;QVERIFY2(host::ChannelSettings::fromJson(old,settings,settingsError),qPrintable(settingsError));
         host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);auto *model=vm.findChild<host::ChannelModel*>();QVERIFY(model);
-        QSignalSpy frames(model,&host::ChannelModel::framesReceived),review(&vm,&host::ChannelViewModel::packageConfirmationRequested);
+        QSignalSpy frames(model,&host::ChannelModel::framesReceived);
         QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());
-        bool seen=false;QTimer closer;closer.setInterval(10);connect(&closer,&QTimer::timeout,&page,[&]{
-            auto *box=page.findChild<QMessageBox*>("packageConfirmation");if(!box)return;
-            const auto text=box->text();seen=text.contains("T008A0001")&&text.contains("DIFFERENT");box->done(QMessageBox::No);
-        });closer.start();vm.start();QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),host::TaskState::Cancelled,5000);closer.stop();
-        QVERIFY(seen);QCOMPARE(review.size(),1);QCOMPARE(frames.size(),0);
+        vm.start();QTRY_VERIFY_WITH_TIMEOUT(frames.size()>0,5000);vm.cancel();
     }
     void uiV2SmallLimitFailsBeforeAppTransfer(){
         Fixture f;QTemporaryDir dir;QVERIFY(dir.isValid());const auto app=dir.filePath("app.bin"),driver=dir.filePath("driver.bin");
@@ -1346,9 +1365,9 @@ private slots:
         auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;settings.applicationPath=app;settings.flashPath=driver;settings.applicationLength=QString::number(QFileInfo(app).size(),16);
         settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;settings.downloadProfile["consecutiveFrameByteLimit"]=9;
         host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);auto *model=vm.findChild<host::ChannelModel*>();QVERIFY(model);
-        QSignalSpy frames(model,&host::ChannelModel::framesReceived),review(&vm,&host::ChannelViewModel::packageConfirmationRequested);
+        QSignalSpy frames(model,&host::ChannelModel::framesReceived);
         QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());vm.start();
-        QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),host::TaskState::Failed,15000);QCOMPARE(review.size(),0);QVERIFY(frames.size()>0);QVERIFY(vm.logs().join('\n').contains("1024 App bytes"));
+        QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),host::TaskState::Failed,15000);QVERIFY(frames.size()>0);QVERIFY(vm.logs().join('\n').contains("1024 App bytes"));
     }
     void actualGoldenUiReview(){
         const auto app=qEnvironmentVariable("T008_TEST_GOLDEN_APP"),driver=qEnvironmentVariable("T008_TEST_DRIVER_BIN");
@@ -1361,16 +1380,12 @@ private slots:
         const auto expectedBinding=qEnvironmentVariable("T008_TEST_HEADER_BINDING","210A66E669E6AC5539AC4131829BDD66").toLatin1();
         QCOMPARE(QCryptographicHash::hash(plan.application[0].data.left(88),QCryptographicHash::Sha256).left(16).toHex().toUpper(),expectedBinding);
         auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;settings.applicationPath=app;settings.flashPath=driver;settings.applicationLength=QString::number(QFileInfo(app).size(),16);
-        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;settings.applicationNote="INTERNAL-STATUS-DO-NOT-SHOW";settings.checkAppVersion=true;settings.expectedAppVersion="DIFFERENT";
+        settings.applicationAddress="00020000";settings.flashAddress="20001400";settings.flashRequired=true;settings.applicationNote="INTERNAL-STATUS-DO-NOT-SHOW";
         host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);auto *model=vm.findChild<host::ChannelModel*>();QVERIFY(model);
         QSignalSpy frames(model,&host::ChannelModel::framesReceived);QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());
-        bool seen=false;QTimer closer;closer.setInterval(10);connect(&closer,&QTimer::timeout,&page,[&]{
-            auto *box=page.findChild<QMessageBox*>("packageConfirmation");if(!box)return;const auto text=box->text();
-            seen=text.contains("T008A0001")&&text.contains("DIFFERENT")&&!text.contains("INTERNAL-STATUS-DO-NOT-SHOW");
-            box->done(QMessageBox::No);
-        });closer.start();vm.start();QTRY_COMPARE_WITH_TIMEOUT(vm.taskState(),host::TaskState::Cancelled,5000);closer.stop();QVERIFY(seen);QCOMPARE(frames.size(),0);
+        vm.start();QTRY_VERIFY_WITH_TIMEOUT(frames.size()>0,5000);vm.cancel();
     }
-    void uiV2ConfirmationUsesSnapshot(){
+    void uiV2TransfersSelectedFileContents(){
         Fixture f;const auto realApp=qEnvironmentVariable("T008_TEST_REAL_APP"),realDriver=qEnvironmentVariable("T008_TEST_DRIVER_BIN");
         if(!realApp.isEmpty()){QString loadError;QVERIFY(!realDriver.isEmpty());QVERIFY2(FirmwareImage::load(realApp,0x15000,f.app,loadError),qPrintable(loadError));QVERIFY2(FirmwareImage::load(realDriver,0x20001400,f.driver,loadError),qPrintable(loadError));}
         QTemporaryDir dir;QVERIFY(dir.isValid());const auto app=dir.filePath("app.bin"),driver=dir.filePath("driver.bin");
@@ -1379,7 +1394,7 @@ private slots:
         const quint32 appBase=f.app.segments[0].address;
         FirmwareImage original;QString error;QVERIFY(FirmwareImage::load(app,appBase,original,error));const auto digest=QString::fromLatin1(original.sha256.toHex());
         auto settings=host::ChannelSettings::defaults(communication::Bus::Can);settings.simulation=true;settings.applicationPath=app;settings.flashPath=driver;settings.applicationLength=QString::number(QFileInfo(app).size(),16);
-        settings.applicationAddress=QString::number(appBase,16).rightJustified(8,'0');settings.flashAddress="20001400";settings.flashRequired=true;settings.downloadProfile["consecutiveFrameByteLimit"]=1026;settings.checkAppVersion=true;settings.expectedAppVersion="DIFFERENT";
+        settings.applicationAddress=QString::number(appBase,16).rightJustified(8,'0');settings.flashAddress="20001400";settings.flashRequired=true;settings.downloadProfile["consecutiveFrameByteLimit"]=1026;
         host::ChannelViewModel vm(settings);host::ChannelPage page(&vm);auto *model=vm.findChild<host::ChannelModel*>();QVERIFY(model);
         QByteArray current,driverBytes,descriptorBytes,codeBytes;int pduLength=0,maxAppBlock=0;quint32 address=0;
         auto acceptPdu=[&](const QByteArray &pdu){
@@ -1395,13 +1410,14 @@ private slots:
             }
         });
         QTRY_VERIFY(vm.canConnect());vm.toggleConnection();QTRY_VERIFY(vm.connected()&&!vm.pending());
-        bool replaced=false;QTimer closer;closer.setInterval(10);connect(&closer,&QTimer::timeout,&page,[&]{
-            auto *box=page.findChild<QMessageBox*>("packageConfirmation");if(!box)return;
-            QFile changed(app),changedDriver(driver);if(changed.open(QIODevice::WriteOnly|QIODevice::Truncate)&&changedDriver.open(QIODevice::WriteOnly|QIODevice::Truncate)){
-                replaced=changed.write(QByteArray(32,'X'))==32&&changedDriver.write(QByteArray(32,'X'))==32;changed.close();changedDriver.close();}
-            box->done(QMessageBox::Yes);
-        });closer.start();vm.start();QTRY_VERIFY_WITH_TIMEOUT(replaced,5000);closer.stop();
+        vm.start();
         QTRY_VERIFY_WITH_TIMEOUT(vm.logs().join('\n').contains(digest,Qt::CaseInsensitive),5000);
+        // Both source files are temporary copies. After the worker records the
+        // loaded image, edits on disk must not change this transfer.
+        for(const auto &path:{app,driver}){
+            QFile edited(path);QVERIFY(edited.open(QIODevice::WriteOnly|QIODevice::Truncate));
+            QCOMPARE(edited.write("changed"),qint64(7));
+        }
         const int timeout=realApp.isEmpty()?40000:600000;
         QTRY_COMPARE_WITH_TIMEOUT(descriptorBytes.size(),f.app.segments[0].data.size(),timeout);
         // The T008 simulation advertises 1026 bytes including SID and BSC.
