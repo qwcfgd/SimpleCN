@@ -63,7 +63,7 @@ public:
     }
 };
 class VectorLin final:public LinHardware {
-    Port p;QTimer timer;int role=modSlave,selectedRole=modMaster;bool monitor=true;quint8 dlcs[64],checksumModes[60];bool tablesValid=false;
+    Port p;QTimer timer;int role=modSlave,selectedRole=modMaster;bool monitor=true,wakePending=false;quint8 dlcs[64],checksumModes[60];bool tablesValid=false;
     QMap<int,TLINFrameEntry>frames;QVector<TLINScheduleSlot>schedule;int slot=0;bool frameBreak=false,roundBreak=false,suspended=false;qint64 due=0;QString scheduleError;
     bool fail(const QString&e){p.error=e;return false;}
     bool disableResponses(){if(p.handle<0)return fail("Vector LIN channel is closed");QMutexLocker lock(&p.runtime->mutex);
@@ -96,22 +96,30 @@ public:
     communication::HardwareChannels scan(QString&e)override{return p.runtime->scan(bus(),e);}
     bool open(const communication::HardwareChannel&h,const communication::SoftwareChannelConfiguration&c,QString&e)override{
         if(c.bitrate<1000||c.bitrate>20000||(c.linMode!=modMaster&&c.linMode!=modSlave)){e="Invalid LIN bitrate or role";return false;}
-        if(!p.open(h,c,bus())){e=p.error;return false;}selectedRole=c.linMode;monitor=true;const bool ok=configure(modSlave);
+        if(!p.open(h,c,bus())){e=p.error;return false;}selectedRole=c.linMode;monitor=true;wakePending=false;const bool ok=configure(modSlave);
         if(!ok){const QString first=p.error;p.close();p.error=first;}e=p.error;return ok;}
     bool close(QString&e)override{timer.stop();bool ok=true;if(p.handle>=0)ok=signalStop();const QString first=p.error;const bool closed=p.close();e=ok?p.error:first;return ok&&closed;}
     communication::Health health(QString&e)override{if(!scheduleError.isEmpty()){e=scheduleError;return communication::Health::Error;}return p.health(e);}
     unsigned long lastErrorCode()const override{return p.error.isEmpty()&&scheduleError.isEmpty()?errOK:errUnknown;}
     QString lastErrorText()const override{return scheduleError.isEmpty()?p.error:scheduleError;}
     int getDevMode()const override{return role;}
-    bool clearMsg()override{if(p.handle<0)return fail("Vector LIN channel is closed");QMutexLocker lock(&p.runtime->mutex);return p.checked(p.runtime->api.flush(p.handle),"xlFlushReceiveQueue");}
+    bool clearMsg()override{if(p.handle<0)return fail("Vector LIN channel is closed");
+        if(wakePending){
+            TLINRcvMsg messages[64];
+            for(int i=0;i<64;++i)if(recvRaw(64,messages)<64)return lastErrorCode()==errOK;
+            return fail("Vector LIN receive queue did not drain");
+        }
+        QMutexLocker lock(&p.runtime->mutex);return p.checked(p.runtime->api.flush(p.handle),"xlFlushReceiveQueue");}
     bool signalStop()override{timer.stop();schedule.clear();frames.clear();frameBreak=roundBreak=suspended=false;monitor=true;scheduleError.clear();if(!disableResponses())return false;return role==modSlave||configure(modSlave);}
     bool signalConfigureMode(bool master)override{if(!signalStop())return false;selectedRole=master?modMaster:modSlave;if(!configure(selectedRole))return false;monitor=false;return true;}
     bool signalConfigureMonitor()override{return signalStop()&&configure(modSlave);}
-    LinWakeResult wakeUp()override{
+    LinWakeResult wakeUp(quint64 *)override{
         if(!p.active||monitor||role!=modMaster){fail("Vector LIN wake-up requires an open master channel");return LinWakeResult::Failed;}
         if(!p.runtime->api.linWakeUp)return LinWakeResult::Unsupported;
+        if(wakePending){fail("Previous Vector LIN wake-up is still outstanding");return LinWakeResult::Failed;}
         QMutexLocker lock(&p.runtime->mutex);
-        return p.checked(p.runtime->api.linWakeUp(p.handle,p.mask),"xlLinWakeUp")?LinWakeResult::Sent:LinWakeResult::Failed;
+        wakePending=p.checked(p.runtime->api.linWakeUp(p.handle,p.mask),"xlLinWakeUp");
+        return wakePending?LinWakeResult::PulseQueued:LinWakeResult::Failed;
     }
     bool sendRaw(TLINMsg msg)override{
         const quint8 id=msg.FrameId&0x3f;const bool autoLength=msg.Direction==dirSubscriberAutoLength;
@@ -125,6 +133,11 @@ public:
     DWORD recvRaw(DWORD capacity,TLINRcvMsg*out)override{
         if(!p.active||(!out&&capacity)){fail("Vector LIN channel is closed or receive buffer is invalid");return 0;}DWORD n=0;
         for(unsigned budget=0;n<capacity&&budget<1024;++budget){Event event{};if(!p.receive(event))break;if(event.channel!=p.index)continue;
+            // XL_LIN_WAKEUP with XL_LIN_WAKUP_INTERNAL is the local transmitter event.
+            if(event.tag==24 && (event.data.raw[0]&1) && wakePending){
+                auto &wake=out[n++];wake={};wake.Type=mstBusWakeUp;wake.TimeStamp=event.ns/1000;
+                wake.ErrorFlags=event.flags;wakePending=false;continue;
+            }
             if(event.tag!=20&&event.tag!=21&&event.tag!=22&&event.tag!=23)continue;
             auto&f=out[n++];f={};f.Type=mstStandard;f.TimeStamp=event.ns/1000;
             if(event.tag!=20){f.FrameId=event.data.raw[0]&0x3f;f.ErrorFlags=0x10000;continue;}

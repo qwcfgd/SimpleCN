@@ -15,6 +15,7 @@ public:
     communication::Health health(QString&e)override{return backend.health(e);}
     bool sendRaw(TPCANMsg m)override{return driver.sendRaw(m);}
     DWORD recvRaw(DWORD n,TPCANMsg*m,TPCANTimestamp*t)override{return driver.recvRaw(n,m,t);}
+    DWORD recvRawWithTail(DWORD n,TPCANMsg*m,TPCANTimestamp*t,bool &tail)override{return driver.recvRaw(n,m,t,&tail);}
     unsigned long lastErrorCode()const override{return driver.lastErrorCode();}
     QString lastErrorText()const override{return driver.lastErrorText();}
     bool enableEcho()override{return driver.enableEcho();}
@@ -47,12 +48,14 @@ public:
     bool open(const communication::HardwareChannel&h,const communication::SoftwareChannelConfiguration&c,QString&e)override{return backend.open(h,c,e);}
     bool close(QString&e)override{return backend.close(e);}
     communication::Health health(QString&e)override{return backend.health(e);}
-    LinWakeResult wakeUp()override{return driver.wakeUp()?LinWakeResult::Sent:LinWakeResult::Failed;}
+    LinWakeResult wakeUp(quint64 *since)override{return driver.wakeUp(since)?LinWakeResult::HeaderQueued:LinWakeResult::Failed;}
     bool sendRaw(TLINMsg m)override{return driver.sendRaw(m);}
     DWORD recvRaw(DWORD n,TLINRcvMsg*m)override{return driver.recvRaw(n,m);}
     unsigned long lastErrorCode()const override{return driver.lastErrorCode();}
     QString lastErrorText()const override{return driver.lastErrorText();}
+    void setWriteObserver(tstPeakLin::WriteObserver observer)override{driver.writeObserver=std::move(observer);}
     bool clearMsg()override{return driver.clearMsg();}
+    bool clearMsgObserved(const tstPeakLin::DrainObserver &observer)override{return driver.clearMsg(observer);}
     int getDevMode()const override{return const_cast<tstPeakLin&>(driver).getDevMode();}
     bool signalConfigureMode(bool master)override{return driver.signalConfigureMode(master);}
     bool signalStop()override{return driver.signalStop();}
@@ -85,6 +88,7 @@ public:
     COMMON_IO
     bool sendRaw(TPCANMsg m)override{return choice.active->sendRaw(m);}
     DWORD recvRaw(DWORD n,TPCANMsg*m,TPCANTimestamp*t)override{return choice.active->recvRaw(n,m,t);}
+    DWORD recvRawWithTail(DWORD n,TPCANMsg*m,TPCANTimestamp*t,bool &tail)override{return choice.active->recvRawWithTail(n,m,t,tail);}
     bool enableEcho()override{return choice.active->enableEcho();}
     void *receiveEventHandle()const override{return choice.active->receiveEventHandle();}
     CanBusState classifyStatus(unsigned long status)const override{return choice.active->classifyStatus(status);}
@@ -95,10 +99,12 @@ class CombinedLin final:public LinHardware {
     Selection<LinHardware> choice{std::make_unique<PeakLin>(),createTosunLin(tosun::sharedRuntime()),createVectorLin(vectorxl::sharedRuntime())};
 public:
     COMMON_IO
-    LinWakeResult wakeUp()override{return choice.active->wakeUp();}
+    LinWakeResult wakeUp(quint64 *since)override{return choice.active->wakeUp(since);}
     bool sendRaw(TLINMsg m)override{return choice.active->sendRaw(m);}
     DWORD recvRaw(DWORD n,TLINRcvMsg*m)override{return choice.active->recvRaw(n,m);}
+    void setWriteObserver(tstPeakLin::WriteObserver observer)override{choice.active->setWriteObserver(std::move(observer));}
     bool clearMsg()override{return choice.active->clearMsg();}
+    bool clearMsgObserved(const tstPeakLin::DrainObserver &observer)override{return choice.active->clearMsgObserved(observer);}
     int getDevMode()const override{return choice.active->getDevMode();}
     bool signalConfigureMode(bool master)override{return choice.active->signalConfigureMode(master);}
     bool signalConfigureMonitor()override{return choice.active->signalConfigureMonitor();}

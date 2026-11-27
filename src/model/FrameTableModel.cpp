@@ -52,6 +52,8 @@ QVariant FrameTableModel::data(const QModelIndex &i,int role) const {
     if(role==NibbleAgeRole&&merged()&&i.column()==7)return m_details[i.row()].ages;
     if(role==Qt::ForegroundRole)return QColor(r.error?"#C93838":(r.warning?"#9A6700":"#29425D"));
 
+    if(role==Qt::ToolTipRole && i.column()==1 && r.peakClockDomain)
+        return Language::text("PEAK 设备时间戳（µs）：%1；时钟段：%2").arg(r.hardwareUs).arg(r.peakClockDomain);
     if(role==Qt::ToolTipRole&&i.column()==8)return Language::text(r.status)+(r.simulated?Language::text("\n模拟报文"):QString())+(r.detail.isEmpty()?QString():"\n"+Language::text(r.detail));
     if(role==Qt::ToolTipRole||role==Qt::DisplayRole){
         if(i.column()==NameColumn){
@@ -63,8 +65,11 @@ QVariant FrameTableModel::data(const QModelIndex &i,int role) const {
     }return {};
 }
 QVariant FrameTableModel::headerData(int c,Qt::Orientation o,int role) const {
-    if(o==Qt::Horizontal&&c==1&&role==Qt::ToolTipRole)
-        return Language::text("时刻单位为 s：从首条记录起算，省略小数末尾无效的 0。");
+    if(o==Qt::Horizontal && role==Qt::ToolTipRole){
+        if(c==0)return Language::text("电脑采集时的本地时间，精度为毫秒。");
+        if(c==1)return Language::text("从首条记录起算。PEAK 实测段按设备微秒差推进，段首对齐主机采集时间。");
+        if(c==2)return Language::text("相邻记录属于同一 PEAK 时钟段时取设备差值，否则取主机采集时间差。");
+    }
     if(o!=Qt::Horizontal||role!=Qt::DisplayRole)return {};
     return Language::text(QStringList{"时间","时刻/s","绝对时间/s","软件通道","方向","ID","长度","数据","状态","名称"}.value(c));
 }
@@ -241,9 +246,25 @@ void FrameTableModel::append(const FrameBatch &input){
         ok=ok&&std::isfinite(rawUs)&&rawUs>=0&&rawUs<double(std::numeric_limits<qint64>::max());
         if(ok){if(!m_hasRelativeOrigin){m_relativeOriginUs=rawUs;m_hasRelativeOrigin=true;}
             r.captureUs=qRound64(rawUs);r.timeUs=qRound64(rawUs-m_relativeOriginUs);
-            r.intervalSeconds=seconds(m_hasPrevious?(rawUs-m_previousUs)/1000000.0:0.0);
+            double intervalUs=m_hasPrevious?rawUs-m_previousUs:0.0;
+            r.intervalFromHardware=false;
+            if(r.peakClockDomain){
+                // The first read anchors this device segment on the host timeline.
+                // Subsequent device deltas are subtracted as integers, before formatting.
+                auto anchor=m_peakAnchors.constFind(r.peakClockDomain);
+                if(anchor==m_peakAnchors.cend())
+                    m_peakAnchors.insert(r.peakClockDomain,{r.hardwareUs,r.timeUs});
+                else
+                    r.timeUs=anchor->relativeUs+qint64(r.hardwareUs-anchor->hardwareUs);
+                if(m_hasPrevious && r.peakClockDomain==m_previousDomain){
+                    intervalUs=double(r.hardwareUs-m_previousHardwareUs);
+                    r.intervalFromHardware=true;
+                }
+            }
+            r.intervalSeconds=seconds(intervalUs/1000000.0);
+            m_previousDomain=r.peakClockDomain;m_previousHardwareUs=r.hardwareUs;
             m_previousUs=rawUs;m_hasPrevious=true;
-            r.relativeSeconds=(rawUs-m_relativeOriginUs)/1000000.0;
+            r.relativeSeconds=r.peakClockDomain?r.timeUs/1000000.0:(rawUs-m_relativeOriginUs)/1000000.0;
             r.relativeTime=seconds(r.relativeSeconds);
             if(!timestampPattern.match(r.timestamp).hasMatch())r.timestamp=QDateTime::currentDateTime().toString("HH:mm:ss.zzz");
         }else{r.relativeSeconds=std::numeric_limits<double>::quiet_NaN();r.relativeTime.clear();r.intervalSeconds.clear();m_hasPrevious=false;}
@@ -282,7 +303,7 @@ void FrameTableModel::append(const FrameBatch &input){
         ++ordinal;
     }
 }
-void FrameTableModel::clear(){beginResetModel();m_rows.clear();m_history=FrameBatch();m_firstFrames.clear();m_filteredHistory.clear();m_pausedHistoryLimit=0;m_details.clear();m_keys.clear();m_parentRows.clear();m_windowStart=0;m_windowSize=0;m_relativeOriginUs=0;m_startedEpochMs=0;m_hasRelativeOrigin=false;m_previousUs=0;m_hasPrevious=false;endResetModel();emit cleared();emit historyChanged();}
-bool FrameTableModel::exportCsv(const QString &p,QString &e) const{return TraceExporter::write(p,m_history,e,"csv");}
-bool FrameTableModel::exportTrace(const QString &p,QString &e) const{return TraceExporter::write(p,m_history,e);}
+void FrameTableModel::clear(){beginResetModel();m_rows.clear();m_history=FrameBatch();m_peakReads=PeakReadBatch();m_firstFrames.clear();m_filteredHistory.clear();m_pausedHistoryLimit=0;m_details.clear();m_keys.clear();m_parentRows.clear();m_windowStart=0;m_windowSize=0;m_relativeOriginUs=0;m_startedEpochMs=0;m_hasRelativeOrigin=false;m_previousUs=0;m_hasPrevious=false;m_peakAnchors.clear();m_previousDomain=0;endResetModel();emit cleared();emit historyChanged();}
+bool FrameTableModel::exportCsv(const QString &p,QString &e) const{return TraceExporter::write(p,m_history,e,"csv",m_peakReads);}
+bool FrameTableModel::exportTrace(const QString &p,QString &e) const{return TraceExporter::write(p,m_history,e,{},m_peakReads);}
 }

@@ -1,6 +1,7 @@
 #include "protocol/PagePackage.h"
 #include "domain/TraceClock.h"
 #include "ChannelWorker.h"
+#include <atomic>
 #include "model/FramePresentation.h"
 #include <QScopedValueRollback>
 #include <QThread>
@@ -27,6 +28,65 @@ static bool downloadInputsReady(const ChannelSettings &s){
         driver|=role=="driver";program|=role=="boot"||role=="calib"||role=="app";
     }
     return program&&driver;
+}
+static quint64 nextPeakClockDomain(){
+    static std::atomic<quint64> sequence{0};
+    return sequence.fetch_add(1,std::memory_order_relaxed)+1;
+}
+void ChannelWorker::stampPeakRead(FrameRecord &record){
+    if(!m_peakClockDomain)return;
+    if(record.hardwareUs<m_lastPeakStamp)m_peakClockDomain=nextPeakClockDomain();
+    record.peakClockDomain=m_peakClockDomain;
+    m_lastPeakStamp=record.hardwareUs;
+}
+QSharedPointer<PeakRead> ChannelWorker::peakEvent(){
+    auto event=QSharedPointer<PeakRead>::create();
+    event->session=m_peakSession;event->sequence=++m_peakSequence;
+    event->channel=m_settings.softwareId;event->hardwareKey=m_session->configuration().hardwareKey;
+    event->boundHandle=m_session->configuration().preferredHandle;event->hostCaptureUs=captureTimeUs();
+    return event;
+}
+PeakReadBatch ChannelWorker::capturePlin(const TLINRcvMsg *messages,DWORD count,TLINError status,bool monitor){
+    PeakReadBatch reads;
+    if(!m_peakClockDomain || !count)return reads;
+    reads.reserve(int(count));
+    for(DWORD i=0;i<count;++i){
+        const auto &m=messages[i];auto r=peakEvent();
+        r->hardwareHandle=m.hHw;r->timestampUs=m.TimeStamp;r->sdkReadStatus=status;
+        r->fields=PlinReadFields{m.Type,m.FrameId,m.Length,m.Direction,m.ChecksumType,m.Checksum,m.ErrorFlags};
+        std::copy_n(m.Data,8,r->data.begin());
+        if(m.hHw==r->boundHandle){
+            if(monitor && m.Type==mstStandard){
+                FrameRecord stamp;stamp.hardwareUs=m.TimeStamp;stampPeakRead(stamp);
+            }
+            r->clockDomain=m_peakClockDomain;
+        }
+        reads.append(r);
+    }
+    emit peakReads(reads);return reads;
+}
+PeakReadBatch ChannelWorker::capturePcan(const TPCANMsg *messages,const TPCANTimestamp *stamps,DWORD count,bool tail,unsigned long status){
+    PeakReadBatch reads;
+    if(!m_peakClockDomain)return reads;
+    for(DWORD i=0;i<count+DWORD(tail);++i){
+        const auto &m=messages[i];const auto &t=stamps[i];auto r=peakEvent();
+        r->hardwareHandle=r->boundHandle;r->sdkReadStatus=(i<count || status==PCAN_ERROR_ILLDATA)?PCAN_ERROR_OK:status;
+        r->timestampUs=(quint64(t.millis_overflow)<<32)*1000+quint64(t.millis)*1000+t.micros;
+        if(i<count){FrameRecord stamp;stamp.hardwareUs=r->timestampUs;stampPeakRead(stamp);}
+        r->clockDomain=m_peakClockDomain;
+        r->fields=PcanReadFields{m.ID,m.MSGTYPE,m.LEN,t.millis,t.millis_overflow,t.micros};
+        std::copy_n(m.DATA,8,r->data.begin());reads.append(r);
+    }
+    if(!reads.isEmpty())emit peakReads(reads);
+    return reads;
+}
+bool ChannelWorker::clearLinQueue(){
+    return m_lin->clearMsgObserved([this](const TLINRcvMsg *m,DWORD n,TLINError status){capturePlin(m,n,status,false);});
+}
+void ChannelWorker::noteLinCancel(const QString &origin){
+    if(m_linEvidence){
+        auto r=peakEvent();r->fields=LinCancelFields{origin};emit peakReads({r});
+    }
 }
 static void stampFrame(FrameRecord &record){
     const auto now=QDateTime::currentDateTime();record.epochMs=now.toMSecsSinceEpoch();
@@ -119,6 +179,22 @@ void ChannelWorker::createSession() {
             emit connectionGenerationChanged(m_session->generation());
             const auto c=m_session->configuration();
             m_settings.hardwareKey=c.hardwareKey;m_settings.handle=c.preferredHandle;
+            const bool peak=!m_settings.simulation &&
+                ((m_lin && c.hardwareKey.startsWith("lin:")) || (m_can && c.hardwareKey.startsWith("can:")));
+            m_peakClockDomain=peak?nextPeakClockDomain():0;
+            m_lastPeakStamp=0;
+            m_peakSession=peak?QUuid::createUuid():QUuid();m_peakSequence=0;m_linSubmission=0;
+            m_linEvidence=peak && m_lin && qEnvironmentVariableIntValue("SIMPLECN_PEAK_LIN_EVIDENCE")==1;
+            if(m_linEvidence){
+                m_lin->setWriteObserver([this](const TLINMsg &msg,const TLINError *result){
+                    const auto observedUs=captureTimeUs();
+                    if(!result){m_submittedMessage=msg;m_writeBeginUs=observedUs;++m_linSubmission;return;}
+                    const auto &sent=m_submittedMessage;
+                    auto r=peakEvent();r->hostCaptureUs=observedUs;
+                    r->fields=PlinWriteFields{m_linSubmission,m_writeBeginUs,*result,sent.FrameId,sent.Length,sent.Direction,sent.ChecksumType,sent.Checksum};
+                    std::copy_n(sent.Data,8,r->data.begin());emit peakReads({r});
+                });
+            }else if(m_lin)m_lin->setWriteObserver({});
             emit bindingChanged(c.hardwareKey,c.preferredHandle);
             bindCanReceiveNotifier(!m_reconnectingCan);
         }
@@ -311,6 +387,7 @@ void ChannelWorker::beginPreviewRound() {
     beginDownload();
 }
 void ChannelWorker::failPreview(const QString &reason) {
+    m_afterWake={};
     m_operations.release(OperationCoordinator::Task::Download);
     if(m_job)m_job->cancel();
     m_repeat->stop();m_running=m_waiting=false;m_receive->setInterval(20);
@@ -332,6 +409,7 @@ void ChannelWorker::completeRound(const QString &result) {
     }
 }
 void ChannelWorker::clearProtocol(){
+    m_afterWake={};
     m_operations.release(OperationCoordinator::Task::Diagnostic);
     if(m_job)m_job->cancel();
     m_job.reset();m_uds.reset();m_transport.reset();m_ecu.reset();m_canTransport.reset();m_canEcu.reset();m_manualMode=false;
@@ -417,23 +495,25 @@ void ChannelWorker::beginDownload(){
         QString why;if(!job->start(application,driver,bootBundle,calibration,why))failPreview(why);
     };
     if(m_settings.bus==Bus::Lin&&!m_settings.simulation){
-        const auto wake=m_lin->wakeUp();
+        const auto wake=m_lin->wakeUp(&m_wakeEarliestHeaderUs);
+        if(wake==LinWakeResult::Unsupported){failPreview("该 LIN 适配器不支持可确认的下载唤醒");return;}
         if(wake==LinWakeResult::Failed){failPreview("LIN 唤醒失败："+m_lin->lastErrorText());return;}
-        if(wake==LinWakeResult::Sent){
-            emit logMessage("已请求 LIN 唤醒；等待节点准备后开始下载。");
-            // API success is not a physical end-of-pulse confirmation. Qualify
-            // pulse-end -> first header on hardware before accepting this path.
-            // PreciseTimer cannot expire early; N_As and P2 start in the
-            // unchanged transport only after this preparation has completed.
-            QTimer::singleShot(120,Qt::PreciseTimer,this,std::move(start));return;
-        }
-        emit logMessage("当前适配器尚未确认自动唤醒能力；沿用原下载流程，节点需处于唤醒状态。");
+        m_wakeRequest=wake;
+        m_afterWake=std::move(start);
+        emit logMessage("已提交 LIN 唤醒，等待适配器回读。");
+        // Missing confirmation is a preparation failure, independent of UDS P2 and LIN N_As.
+        QTimer::singleShot(1000,Qt::PreciseTimer,this,[this,job]{
+            if(job && job.data()==m_job.get() && m_afterWake)failPreview("LIN 唤醒回读超时");
+        });
+        return;
     }
     start();
 }
 bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &error,bool manual){
     if(!diagnosticMaster(error))return false;
-    if(!m_settings.simulation&&m_lin)m_lin->clearMsg();
+    if(!m_settings.simulation && m_lin && !clearLinQueue() && !manual){
+        error="LIN 接收队列清理失败："+m_lin->lastErrorText();return false;
+    }
     if(m_settings.bus==Bus::Lin){
         const auto nad=quint8(m_settings.nad.toUInt(nullptr,16));
         if(m_settings.simulation)m_ecu.reset(new boot::SimulatedLinEcu(nad,profile));
@@ -460,7 +540,7 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
         }));
         if(requestSlotMs > 0) m_transport->setDownloadRequestSlot(requestSlotMs);
         m_transport->requireTransmitConfirmation(!m_settings.simulation,m_settings.linAsMs);
-        connect(m_transport.get(),&boot::DiagnosticTransport::cancelled,this,[this]{if(m_ecu)m_ecu->clearWire();});
+        connect(m_transport.get(),&boot::DiagnosticTransport::cancelled,this,[this]{noteLinCancel("transportCancelled");if(m_ecu)m_ecu->clearWire();});
         connect(m_transport.get(),&boot::LinTransport::trace,this,[this](bool tx,quint8 id,const QByteArray &bytes){
             // A 0x3D header opens one receive event. Its eventual response or
             // no-response timeout is the only row shown for that event.
@@ -688,6 +768,8 @@ void ChannelWorker::beginManualDiagnostic(ChannelSettings settings,diag::Request
 }
 
 void ChannelWorker::cancelTask() {
+    if(m_running || m_manualBusy || m_scanning)noteLinCancel("cancelTask");
+    m_afterWake={};
     m_canStartAfterReconnect=false;
     if(m_settings.bus==Bus::Can&&(!m_canEchoes.isEmpty()||(m_uds&&m_uds->hasActiveRequest()&&m_udsWriteAttempted))){m_canUnresolved=true;m_recoveryCloseSucceeded=false;}
     if(m_signal)m_signal->stop();
@@ -701,6 +783,30 @@ void ChannelWorker::cancelTask() {
     emit taskChanged(TaskState::Cancelled,m_progress,"下载已取消");
     emit logMessage("用户取消或连接关闭，下载任务已停止。");
 }
+bool ChannelWorker::observeDownloadWake(const TLINRcvMsg &message){
+    if(!m_afterWake)return false;
+    int readyMs=100;
+    if(m_wakeRequest==LinWakeResult::HeaderQueued){
+        if(message.Type!=mstStandard || message.TimeStamp<=m_wakeEarliestHeaderUs ||
+           message.hHw!=m_session->configuration().preferredHandle ||
+           message.FrameId!=0x7d || message.Direction!=dirSubscriber || message.Length!=8 ||
+           message.ChecksumType!=cstClassic)return false;
+        const auto flags=message.ErrorFlags;
+        const bool empty=flags==MSG_ERR_SLAVE_NOT_RESPONDING ||
+            (flags==(MSG_ERR_SLAVE_NOT_RESPONDING|MSG_ERR_TIMEOUT) && message.Checksum==0);
+        if(flags && !empty){failPreview("LIN 唤醒帧头回读错误");return false;}
+        // PLIN delivers the subscriber slot result after the break, sync and PID.
+    }else{
+        if(message.Type!=mstBusWakeUp)return false;
+        if(message.ErrorFlags){failPreview("LIN 唤醒事件错误");return false;}
+        // A local Vector wake event may timestamp the beginning of the pulse.
+        readyMs+=5;
+    }
+    auto start=std::move(m_afterWake);
+    m_afterWake={};
+    QTimer::singleShot(readyMs,Qt::PreciseTimer,this,std::move(start));
+    return true;
+}
 void ChannelWorker::receive() {
     m_receiveDrained=true;
     if(!m_session || m_session->state()!=ConnectionState::Connected || m_settings.simulation)return;
@@ -710,12 +816,15 @@ void ChannelWorker::receive() {
       do {
         TLINRcvMsg messages[64]={};const auto n=m_lin->recvRaw(64,messages);
         const auto error=m_lin->lastErrorCode();
+        const auto reads=capturePlin(messages,n,TLINError(error),true);
         if(error!=errOK && error!=errRcvQueueEmpty) {
             const auto text=m_lin->lastErrorText();if(m_signal)m_signal->linkFailed(text);if(m_manualBusy){m_uds->cancel();m_manualBusy=false;emit diagnosticFinished(false,{},text);}if(m_running)failPreview(text);if(text!=m_receiveError){emit logMessage(text);m_receiveError=text;}break;
         }
         m_receiveError.clear();
         for(DWORD i=0;i<n;++i) {
-            const auto &m=messages[i];if(m.Type!=mstStandard){
+            const auto &m=messages[i];
+            const bool wakeReceipt=observeDownloadWake(m);
+            if(m.Type!=mstStandard){
                 if(m.Type>=mstOverrun){++m_scanErrors;emit logMessage("LIN 接收队列溢出。");if(m_signal)m_signal->linkFailed("LIN 接收队列溢出");if(m_running)failPreview("LIN 接收队列溢出");}continue;
             }
             const bool timeout=m.ErrorFlags&MSG_ERR_TIMEOUT;
@@ -723,11 +832,12 @@ void ChannelWorker::receive() {
             const bool subscriber=m.Direction==dirSubscriber||m.Direction==dirSubscriberAutoLength;
             const auto frameId=quint8(m.FrameId&0x3f);
             // Fixed-length PLIN subscribers report the received byte count in Checksum on TIMEOUT.
-            const bool emptyDiagnosticSlot = m.ErrorFlags == (MSG_ERR_SLAVE_NOT_RESPONDING | MSG_ERR_TIMEOUT)
+            const bool emptyPeakSlot = m.ErrorFlags == (MSG_ERR_SLAVE_NOT_RESPONDING | MSG_ERR_TIMEOUT)
                 && m.Direction == dirSubscriber && frameId == 0x3d && m.Length == 8
-                && m.ChecksumType == cstClassic && m.Checksum == 0 && m_uds && m_uds->hasActiveRequest()
+                && m.ChecksumType == cstClassic && m.Checksum == 0
                 && m_session->configuration().hardwareKey.startsWith(QLatin1String("lin:"));
-            const bool absent = (subscriber && m.ErrorFlags == MSG_ERR_SLAVE_NOT_RESPONDING) || emptyDiagnosticSlot;
+            const bool absent = (subscriber && m.ErrorFlags == MSG_ERR_SLAVE_NOT_RESPONDING)
+                || (emptyPeakSlot && (wakeReceipt || (m_uds && m_uds->hasActiveRequest())));
             // Length remains the expected size when TIMEOUT is set.
             const int dataLength=timeout?qMin(int(m.Checksum),8):noData?0:qMin(int(m.Length),8);
             const bool malformedLength=m.Length<1||m.Length>8||(frameId==0x3c&&m.Length!=8);
@@ -737,12 +847,15 @@ void ChannelWorker::receive() {
             // Matching payload errors still fail the existing pending request.
             if(m_transport&&frameId==0x3c&&m.Direction==dirPublisher&&m.Length==8)
                 m_transport->confirmTransmitted(QByteArray(reinterpret_cast<const char*>(m.Data),8),valid);
-            if(m_transport)m_transport->receiveFrame(m.FrameId&0x3f,QByteArray(reinterpret_cast<const char*>(m.Data),dataLength),absent,bad);
+            if(m_transport && !wakeReceipt)m_transport->receiveFrame(m.FrameId&0x3f,QByteArray(reinterpret_cast<const char*>(m.Data),dataLength),absent,bad);
             FrameRecord record;stampFrame(record);record.channel=m_settings.softwareId;
             record.bus=signal::Bus::Lin;record.id=m.FrameId&0x3f;record.typed=true;
             record.payload=QByteArray(reinterpret_cast<const char*>(m.Data),dataLength);
             record.hardwareUs=m.TimeStamp;record.checksum=(timeout||noData)?-1:m.Checksum;record.classicChecksum=m.ChecksumType==cstClassic;
-            record.errorFlags=m.ErrorFlags;record.noResponse=absent;
+            if(!reads.isEmpty()){record.peakRead=reads.at(int(i));record.peakClockDomain=record.peakRead->clockDomain;}
+            // A queued slot may be read after its UDS request finished. Its monitor
+            // result depends on the wire record, not on the current transport state.
+            record.errorFlags=m.ErrorFlags;record.noResponse=absent || (emptyPeakSlot && record.peakClockDomain);
             const bool diagnosticTransmitFrame=frameId==0x3c&&!(m_signal&&m_signal->running());
             const bool transmitReadback=valid&&m.Direction==dirPublisher&&((m_signal&&m_signal->running())?m_signal->publishesLin(frameId):frameId==0x3c);
             signal::BusFrameEvent event;event.bus=signal::Bus::Lin;event.id=frameId;event.bytes=QByteArray(reinterpret_cast<const char*>(m.Data),dataLength);
@@ -753,8 +866,8 @@ void ChannelWorker::receive() {
             record.echo=transmitReadback;
             record.length=dataLength;
             if(valid||timeout)record.data=QString::fromLatin1(record.payload.toHex(' ')).toUpper();
-            record.status=transmitReadback&&valid?"发送回读":(absent?"无从节点响应":(bad?QString("LIN 错误 0x%1").arg(m.ErrorFlags,0,16):"有效响应"));
-            record.error=bad;record.warning=absent;
+            record.status=transmitReadback&&valid?"发送回读":(record.noResponse?"无从节点响应":(bad?QString("LIN 错误 0x%1").arg(m.ErrorFlags,0,16):"有效响应"));
+            record.error=bad && !record.noResponse;record.warning=record.noResponse;
             // A scheduled publisher has no separate software TX record. Its
             // hardware echo is the transmission record, not a duplicate RxD.
             // Diagnostic requests remain TxPending events; the actual valid bus
@@ -766,9 +879,10 @@ void ChannelWorker::receive() {
       }while(budget.nsecsElapsed()<2000000);
     } else if(m_can) {
       {
-        TPCANMsg messages[64]={};TPCANTimestamp stamps[64]={};QElapsedTimer readTimer;if(m_traceEnabled)readTimer.start();const auto n=m_can->recvRaw(64,messages,stamps);
+        TPCANMsg messages[64]={};TPCANTimestamp stamps[64]={};QElapsedTimer readTimer;if(m_traceEnabled)readTimer.start();bool tail=false;const auto n=m_can->recvRawWithTail(64,messages,stamps,tail);
         const qint64 readDurationUs=m_traceEnabled?readTimer.nsecsElapsed()/1000:-1;
         const qint64 readEndUs=m_traceEnabled?captureTimeUs():-1;
+        const auto reads=capturePcan(messages,stamps,n,tail,m_can->lastErrorCode());
         // Avoid synchronous trace writes for routine empty polls while retaining
         // slow empty reads that can explain gaps before the next received frame.
         if(m_traceEnabled&&n==0&&readDurationUs>=10000){TraceTiming timing;timing.hardwareOperation="CAN_READ_EMPTY_SLOW";timing.hardwareDurationUs=readDurationUs;if(!traceRecord("PROFILE",0,0,{},false,timing))return;}
@@ -836,6 +950,7 @@ void ChannelWorker::receive() {
             FrameRecord r;stampFrame(r);
             r.typed=true;r.id=m.ID;r.extended=frame.extended;r.fd=frame.fd;r.rtr=frame.rtr;r.payload=frame.data;
             r.echo=echo;r.hardwareUs=event.hardwareUs;r.error=frame.error||frame.fd||m.LEN>8;r.errorFlags=m.MSGTYPE;
+            if(!reads.isEmpty()){r.peakRead=reads.at(int(i));r.peakClockDomain=r.peakRead->clockDomain;}
             r.channel=m_settings.softwareId;r.direction=echo?"TX ECHO":"RX";r.identifier=QString("0x%1").arg(m.ID,0,16).toUpper();
             r.length=m.LEN;r.data=QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(m.DATA),qMin(int(m.LEN),8)).toHex(' ')).toUpper();
             r.status=frame.fd?"当前经典 CAN 接口无法完整采集 CAN FD":(m.MSGTYPE&PCAN_MESSAGE_STATUS)?"硬件状态":"CAN";r.hardwareStatus=bool(m.MSGTYPE&PCAN_MESSAGE_STATUS);r.warning=m.MSGTYPE&PCAN_MESSAGE_STATUS;batch.append(r);
@@ -862,7 +977,7 @@ void ChannelWorker::startHeaderScan() {
         emit logMessage("扫描需要处于活动状态的真实 LIN 主机连接。"+detail);emit commandFinished();return;
     }
     QString error;if(!diagnosticMaster(error)){emit logMessage(error);emit commandFinished();return;}
-    clearProtocol();m_operations.acquire(OperationCoordinator::Task::Scan);m_lin->clearMsg();m_scanning=true;m_scanId=0;m_scanSent=m_scanEvents=m_scanResponses=m_scanErrors=0;
+    clearProtocol();m_operations.acquire(OperationCoordinator::Task::Scan);clearLinQueue();m_scanning=true;m_scanId=0;m_scanSent=m_scanEvents=m_scanResponses=m_scanErrors=0;
     m_scan->setInterval(qMax(100,2000000/m_settings.bitrate));
     emit scanChanged(true,"扫描 00–3B、3D · 仅帧头");emit logMessage("开始帧头扫描；不发送控制数据或 UDS 请求。");
     m_scan->start();scanTick();emit commandFinished();

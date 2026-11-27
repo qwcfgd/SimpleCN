@@ -1,4 +1,18 @@
-# 1.56 LIN download wake-up candidate
+# LIN 自动下载前的唤醒
+
+## 1.66 正式版
+
+每次真实 LIN 自动下载开始时，控制器在占用通道后执行一次唤醒。首条正式诊断请求和它的协议定时器都在准备期结束后启动。
+
+- **PEAK 主机**读取适配器模式、配置的 break 位数和适配器时钟。按通道波特率换算，break 必须至少 13 bit 且落在 250 µs 到 5 ms 之间。主机提交一次标准从节点响应帧头（ID 0x3D，PID 0x7D，Classic），无主机业务载荷。19.2 kbit/s 下 13 bit 约为 677 µs。
+- **PEAK 回读**要求同一适配器、标准帧、正确 PID、订阅方向、长度 8、Classic，且回读的 break 起点时间晚于提交前采样。上次尚未确认的同类帧头会阻止新提交。正常响应，或硬件明确报告该时隙没有从节点数据，均可确认帧头已处理。部分响应超时、总线或校验错误导致本轮失败。
+- **等待起点**为软件读到时隙结果的时刻。硬件已处理完 break、同步字节、PID 和响应时隙，因此在这个时刻再用精确定时器等待 100 ms 已覆盖从 break 结束沿算起的准备期。排队及主机读取延迟只会增加等待。适配器时间戳标记 break 的起始沿，仅用于关联回读。
+- **Vector**提交一次原有的主机唤醒请求，通过同通道本机发送的 XL 唤醒事件确认。从收到事件开始保守预留 5 ms 脉宽上限，再等待 100 ms。
+- **失败与取消**：未提供可确认唤醒能力的后端（包括当前 TOSUN）、提交失败、回读错误或 1 秒内未取得确认均终止本轮。取消、断开、任务替换使旧任务的延迟启动失效。CAN、手动诊断和 LIN 正常传输槽继续使用各自既有入口。
+
+LIN 2.0 §5.1、§7.1 的 150 ms 是再次请求唤醒的门槛。实际显性宽度、结束沿到首个正式帧的总线间隔和 ECU 的就绪状态仍须由物理采集验证。工程候选的离线验证覆盖软件时序及错误路径。[LIN Protocol Specification Rev. 2.0](https://forums.ni.com/attachments/ni/30/3619/1/LIN.pdf) · [PEAK PLIN-API 手册，§3.2、§3.5、§4.4](https://www.peak-system.com/produktcd/Develop/PC%20interfaces/Windows/PLIN-API/PLINAPI_enu.pdf)
+
+## 历史记录 · 1.56 LIN download wake-up candidate
 
 Scope: prepare the bus once at the start of each physical LIN download round,
 after the existing image checks and channel ownership checks. The FlashJob,

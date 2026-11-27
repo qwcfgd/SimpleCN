@@ -46,7 +46,7 @@ public:
     bool updateDownloadFiles(const QJsonArray &,QString &error);
     static QStringList imageCandidates(const QString &path);
     bool exportLogs(const QString &,QString &error)const;
-    bool exportFrames(const QString &,const FrameBatch &,QString &error)const;
+    bool exportFrames(const QString &,const FrameBatch &,QString &error,const PeakReadBatch &raw={})const;
     bool flashProfile(boot::FlashProfile &profile,QString &error)const;
     bool updateDownloadSettings(const ChannelSettings &settings,const boot::FlashProfile &profile,QString &error);
     const diag::Database &diagnosticDatabase()const{return m_database;}

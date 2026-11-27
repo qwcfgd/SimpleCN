@@ -1,5 +1,8 @@
 #include <QtTest>
+#include "ContractWireFixture.h"
 #include <QQueue>
+#include <QCryptographicHash>
+#include <QScopeGuard>
 #include <QThread>
 #include <QTemporaryDir>
 #include <QFile>
@@ -49,6 +52,7 @@ class ReceiveEventFakeCan final:public CanHardware {
 public:
     explicit ReceiveEventFakeCan(bool eventSupported):event(eventSupported?CreateEvent(nullptr,FALSE,FALSE,nullptr):nullptr){}
     ~ReceiveEventFakeCan()override{if(event)CloseHandle(event);}
+    QQueue<TPCANTimestamp> stamps;
     HANDLE event=nullptr;QQueue<TPCANMsg> frames;int reads=0,delayMs=0,writes=0,scans=0;TPCANMsg lastWrite={};bool opened=false;bool warning=false,failClose=false,failOpen=false,failWrite=false;
     bool busOff=false,present=true,reconnectOk=true,becomesReady=true,autoEcho=false,rejectWhenOff=false;
     QStringList operations;
@@ -69,7 +73,7 @@ public:
     void *receiveEventHandle()const override{return event;}
     bool sendRaw(TPCANMsg m)override{operations.append("write");++writes;lastWrite=m;
         if(rejectWhenOff&&busOff){if(warningAfterBusOffWrite)liveOverride=CanBusState::Warning;return false;}if(autoEcho&&!failWrite){m.MSGTYPE=TPCANMessageType(m.MSGTYPE|PCAN_MESSAGE_ECHO);frames.enqueue(m);}return !failWrite;}
-    DWORD recvRaw(DWORD count,TPCANMsg *out,TPCANTimestamp *time)override{++reads;if(delayMs)QThread::msleep(unsigned(delayMs));DWORD n=0;while(n<count&&!frames.isEmpty()){out[n]=frames.dequeue();if(time)time[n]={};++n;}return n;}
+    DWORD recvRaw(DWORD count,TPCANMsg *out,TPCANTimestamp *time)override{++reads;if(delayMs)QThread::msleep(unsigned(delayMs));DWORD n=0;while(n<count&&!frames.isEmpty()){out[n]=frames.dequeue();if(time)time[n]=stamps.isEmpty()?TPCANTimestamp{}:stamps.dequeue();++n;}return n;}
     unsigned long lastErrorCode()const override{return busOff?PCAN_ERROR_BUSOFF:warning?PCAN_ERROR_BUSHEAVY:PCAN_ERROR_OK;}
     QString lastErrorText()const override{return {};}
     CanBusState classifyStatus(unsigned long status)const override{return status&PCAN_ERROR_BUSOFF?CanBusState::BusOff:status&PCAN_ERROR_BUSHEAVY?CanBusState::Warning:CanBusState::Ready;}
@@ -80,15 +84,44 @@ public:
 // No vendor runtime or physical adapter is used by the wake-up tests.
 class WakeFakeLin final:public LinHardware {
 public:
-    bool opened=false;int role=modMaster,wakes=0;LinWakeResult wakeResult=LinWakeResult::Sent;
+    bool opened=false;int role=modMaster,wakes=0;LinWakeResult wakeResult=LinWakeResult::HeaderQueued;
+    bool autoConfirm=true;
+    tstPeakLin::WriteObserver writeObserver;
+    void setWriteObserver(tstPeakLin::WriteObserver f)override{writeObserver=std::move(f);}
+    quint64 headerClock=0;
+    QElapsedTimer sinceReceipt;
+    std::unique_ptr<boot::SimulatedLinEcu> ecu;
+    QList<int> roundStarts;
+    TLINRcvMsg wakeReceipt()const{
+        TLINRcvMsg m={};m.Type=mstStandard;m.FrameId=0x7d;m.Length=8;
+        m.hHw=0x31;m.Direction=dirSubscriber;m.ChecksumType=cstClassic;
+        m.TimeStamp=headerClock+1;m.ErrorFlags=MSG_ERR_SLAVE_NOT_RESPONDING;return m;
+    }
     QElapsedTimer sinceWake;QList<TLINMsg>writes;QList<qint64>writeMs;QQueue<TLINRcvMsg> frames;
     communication::HardwareChannels scan(QString &e)override{e.clear();communication::HardwareChannel h;h.bus=Bus::Lin;h.handle=0x31;h.key="lin:fake:1";h.available=true;h.persistentIdentity=true;return {h};}
     bool open(const communication::HardwareChannel&,const communication::SoftwareChannelConfiguration&,QString&e)override{opened=true;e.clear();return true;}
     bool close(QString&e)override{opened=false;e.clear();return true;}
     communication::Health health(QString&e)override{e.clear();return opened?communication::Health::Ready:communication::Health::Removed;}
-    LinWakeResult wakeUp()override{++wakes;sinceWake.start();return wakeResult;}
-    bool sendRaw(TLINMsg m)override{writes.append(m);writeMs.append(sinceWake.isValid()?sinceWake.elapsed():-1);return opened;}
-    DWORD recvRaw(DWORD count,TLINRcvMsg*out)override{DWORD n=0;while(n<count&&!frames.isEmpty())out[n++]=frames.dequeue();return n;}
+    LinWakeResult wakeUp(quint64 *since)override{
+        ++wakes;headerClock+=100;*since=headerClock;roundStarts.append(writes.size());sinceWake.start();
+        if(autoConfirm && wakeResult==LinWakeResult::HeaderQueued)frames.enqueue(wakeReceipt());
+        return wakeResult;
+    }
+    bool sendRaw(TLINMsg m)override{writes.append(m);writeMs.append(sinceReceipt.isValid()?sinceReceipt.elapsed():-1);
+        if(ecu){
+            QString error;QByteArray bytes(reinterpret_cast<const char*>(m.Data),8);
+            if(!ecu->write(m.FrameId,bytes,error))return false;
+            TLINRcvMsg event={};event.Type=mstStandard;event.FrameId=m.FrameId;event.Length=8;
+            event.Direction=m.Direction;event.ChecksumType=cstClassic;
+            if(m.Direction==dirSubscriber)bytes=ecu->takeResponseFrame();
+            if(!bytes.isEmpty()){std::copy_n(bytes.constData(),8,event.Data);frames.enqueue(event);}
+        }
+        return opened;}
+    DWORD recvRaw(DWORD count,TLINRcvMsg*out)override{DWORD n=0;while(n<count&&!frames.isEmpty()){
+            out[n]=frames.dequeue();
+            if(out[n].hHw==0x31 && out[n].FrameId==0x7d && out[n].TimeStamp>headerClock)sinceReceipt.start();
+            ++n;
+        }return n;}
     unsigned long lastErrorCode()const override{return errOK;}
     QString lastErrorText()const override{return "fake wake failure";}
     bool clearMsg()override{return true;}
@@ -675,10 +708,184 @@ private slots:
         auto settings=realWakeSettings();WakeFakeLin *fake=nullptr;
         ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
         QSignalSpy tasks(&worker,&ChannelWorker::taskChanged);worker.initialize();worker.connectChannel(settings);QVERIFY(fake&&fake->opened);
-        worker.startPreview(settings);QCOMPARE(fake->wakes,1);QVERIFY(fake->writes.isEmpty());
-        QTest::qWait(70);QVERIFY(fake->writes.isEmpty());QCOMPARE(qvariant_cast<TaskState>(tasks.last()[0]),TaskState::Running);
-        QTRY_VERIFY_WITH_TIMEOUT(!fake->writes.isEmpty(),700);QVERIFY(fake->writeMs.first()>=120);QCOMPARE(fake->writes.first().FrameId,BYTE(0x3c));QCOMPARE(fake->wakes,1);
+        fake->autoConfirm=false;worker.startPreview(settings);QCOMPARE(fake->wakes,1);
+        // Even a queue delay longer than the previous 120 ms cannot start UDS.
+        auto receipt=fake->wakeReceipt();
+        auto wrong=receipt;wrong.hHw=0x32;fake->frames.enqueue(wrong);
+        wrong=receipt;wrong.TimeStamp=fake->headerClock;fake->frames.enqueue(wrong);
+        wrong=receipt;wrong.Type=mstBusWakeUp;fake->frames.enqueue(wrong);
+        wrong=receipt;wrong.Direction=dirPublisher;fake->frames.enqueue(wrong);
+        wrong=receipt;wrong.FrameId=0x3c;fake->frames.enqueue(wrong);
+        QTest::qWait(180);QVERIFY(fake->writes.isEmpty());QCOMPARE(qvariant_cast<TaskState>(tasks.last()[0]),TaskState::Running);
+        receipt.ErrorFlags|=MSG_ERR_TIMEOUT;fake->frames.enqueue(receipt);QTest::qWait(65);
+        QVERIFY(fake->writes.isEmpty());QTRY_VERIFY_WITH_TIMEOUT(!fake->writes.isEmpty(),700);
+        const auto elapsed=fake->writeMs.first();QVERIFY(elapsed>=100);qInfo()<<"PEAK receipt to first 3C (ms)"<<elapsed;
+        QCOMPARE(fake->writes.first().FrameId,BYTE(0x3c));QCOMPARE(fake->wakes,1);
         worker.cancelTask();worker.shutdown();
+    }
+    void peakRawFileRoundTrip(){
+        const auto previous=qgetenv("SIMPLECN_PEAK_LIN_EVIDENCE");
+        auto restore=qScopeGuard([&]{if(previous.isNull())qunsetenv("SIMPLECN_PEAK_LIN_EVIDENCE");else qputenv("SIMPLECN_PEAK_LIN_EVIDENCE",previous);});
+        qputenv("SIMPLECN_PEAK_LIN_EVIDENCE","1");
+        auto settings=realWakeSettings();WakeFakeLin *device=nullptr;
+        ChannelWorker worker(settings,{},[&]{auto p=std::make_unique<WakeFakeLin>();device=p.get();return p;});
+        FrameTableModel model;
+        connect(&worker,&ChannelWorker::peakReads,&model,&FrameTableModel::appendPeakReads);
+        connect(&worker,&ChannelWorker::framesReceived,&model,&FrameTableModel::append);
+        worker.initialize();worker.connectChannel(settings);QVERIFY(device->writeObserver);
+        TLINMsg submitted={};submitted.FrameId=0x7d;submitted.Length=8;submitted.Direction=dirSubscriber;submitted.ChecksumType=cstClassic;
+        TLINError rc=errXmtQueueFull;
+        device->writeObserver(submitted,nullptr);device->writeObserver(submitted,&rc);
+        TLINRcvMsg msg=device->wakeReceipt();
+        for(int i=0;i<8;++i)msg.Data[i]=quint8(0xa0+i);
+        quint64 stamp=0;
+        for(int flags:{0,0x10,0x18,0x20}){
+            msg.TimeStamp=stamp++;msg.ErrorFlags=flags;msg.Checksum=flags==0x10?3:flags==0x18?0:0x83;device->frames.enqueue(msg);
+        }
+        for(int type:{mstBusSleep,mstBusWakeUp,mstOverrun}){
+            msg.Type=type;msg.TimeStamp=stamp++;device->frames.enqueue(msg);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(model.peakReads().size(),8,1000);QCOMPARE(model.historyCount(),qint64(4));
+        FrameRecord sw;sw.request=true;sw.channel="software";sw.captureUs=100;sw.typed=true;model.append({sw});
+        auto canSettings=ChannelSettings::defaults(Bus::Can);
+        canSettings.simulation=false;canSettings.hardwareKey="can:fake:1";canSettings.handle=0x51;
+        ReceiveEventFakeCan *pcan=nullptr;
+        ChannelWorker can(canSettings,[&]{auto p=std::make_unique<ReceiveEventFakeCan>(false);pcan=p.get();return p;});
+        connect(&can,&ChannelWorker::peakReads,&model,&FrameTableModel::appendPeakReads);
+        connect(&can,&ChannelWorker::framesReceived,&model,&FrameTableModel::append);
+        can.initialize();can.connectChannel(canSettings);QVERIFY(pcan->opened);
+        TPCANMsg frame={};frame.ID=0x12345;frame.MSGTYPE=PCAN_MESSAGE_EXTENDED;frame.LEN=2;frame.DATA[1]=0xee;
+        TPCANTimestamp t={};t.millis_overflow=3;t.millis=19;t.micros=31;
+        pcan->stamps.enqueue(t);pcan->frames.enqueue(frame);
+        QTRY_COMPARE_WITH_TIMEOUT(model.historyCount(),qint64(6),1000);
+        // Exercise the external cancellation entry without issuing diagnostic data.
+        device->autoConfirm=false;worker.startPreview(settings);worker.cancelTask();
+        QVERIFY(model.peakReads().size()>=10);
+        QTemporaryDir temp;const QDir dir(qEnvironmentVariable("SIMPLECN_TEST_RAW_EXPORT_DIR",temp.path()));
+        QVERIFY(dir.exists());
+        QString error;
+        for(const auto ext:{"asc","blf","csv"}){
+            const QString file=dir.filePath("raw-roundtrip."+QString(ext));
+            QVERIFY2(model.exportTrace(file,error),qPrintable(error));
+            QFile primary(file);QVERIFY(primary.open(QIODevice::ReadOnly));const auto main=primary.readAll();
+            if(QString(ext)=="csv"){
+                auto lines=main.trimmed().split('\n');
+                const auto split=[](QByteArray line){
+                    line=line.trimmed();if(line.startsWith("\xef\xbb\xbf"))line.remove(0,3);
+                    return QString::fromUtf8(line.mid(1,line.size()-2)).split(QStringLiteral("\",\""));
+                };
+                const auto columns=split(lines.takeFirst());
+                int hardware=0,software=0;
+                for(const auto &line:lines){
+                    const auto cells=split(line);QCOMPARE(cells.size(),columns.size());
+                    const auto get=[&](const QString &name){return cells.at(columns.indexOf(name));};
+                    if(get("eventSeq").isEmpty()){++software;QVERIFY(get("deviceUs").isEmpty());continue;}
+                    ++hardware;
+                    if(get("recordKind")=="plinRead"&&get("deviceUs")=="1"){
+                        QCOMPARE(get("checksum"),QString("3"));QCOMPARE(get("data8Hex"),QString("a0a1a2a3a4a5a6a7"));
+                    }
+                }
+                QCOMPARE(software,1);QCOMPARE(hardware,model.peakReads().size());
+                continue;
+            }
+            QFile side(file+".peak.jsonl");QVERIFY(side.open(QIODevice::ReadOnly));
+            const auto header=QJsonDocument::fromJson(side.readLine()).object();
+            QCOMPARE(header["standardSha256"].toString().toLatin1(),QCryptographicHash::hash(main,QCryptographicHash::Sha256).toHex());
+            QSet<QString> keys;int physical=0,unlinked=0,cancels=0,canReads=0,writes=0;
+            while(!side.atEnd()){
+                const auto o=QJsonDocument::fromJson(side.readLine()).object();
+                const auto kind=o["recordKind"].toString(),key=o["sessionId"].toString()+"/"+o["eventSeq"].toString();
+                QVERIFY(!keys.contains(key));keys.insert(key);
+                if(kind=="plinRead"){
+                    ++physical;QCOMPARE(o["hardwareHandle"].toInt(),0x31);QCOMPARE(o["pid"].toInt(),0x7d);
+                    QCOMPARE(o["direction"].toInt(),int(dirSubscriber));QCOMPARE(o["checksumType"].toInt(),int(cstClassic));
+                    QCOMPARE(o["length"].toInt(),8);QCOMPARE(o["data8Hex"].toString(),QString("a0a1a2a3a4a5a6a7"));
+                    const int index=o["deviceUs"].toString().toInt();QCOMPARE(index,physical-1);
+                    if(index<4){
+                        const int flags[]={0,0x10,0x18,0x20};QCOMPARE(o["errorFlags"].toInt(),flags[index]);
+                        QCOMPARE(o["checksum"].toInt(),index==1?3:index==2?0:0x83);
+                        QCOMPARE(o["checksumRole"].toString(),QString(index==1||index==2?"byteCount":"checksumField"));
+                        QVERIFY(o.contains("exportRow"));
+                    }else{QVERIFY(!o.contains("exportRow"));QVERIFY(!o.contains("dataByteCount"));++unlinked;}
+                }else if(kind=="pcanRead"){
+                    ++canReads;QCOMPARE(o["canId"].toInt(),0x12345);QCOMPARE(o["length"].toInt(),2);
+                    QCOMPARE(o["messageType"].toInt(),int(PCAN_MESSAGE_EXTENDED));QCOMPARE(o["millisOverflow"].toInt(),3);
+                    QCOMPARE(o["millis"].toInt(),19);QCOMPARE(o["micros"].toInt(),31);
+                    QCOMPARE(o["deviceUs"].toString().toULongLong(),(quint64(3)<<32)*1000+19031);
+                }else if(kind=="plinWrite"){
+                    ++writes;QCOMPARE(o["submission"].toString(),QString("1"));QCOMPARE(o["writeResult"].toInt(),int(errXmtQueueFull));
+                    QVERIFY(o["writeBeginUs"].toString().toLongLong()<=o["hostCaptureUs"].toString().toLongLong());
+                    QVERIFY(!o.contains("deviceUs"));
+                }else if(kind=="cancel"){++cancels;QVERIFY(!o.contains("deviceUs"));}else QFAIL("unexpected record kind");
+            }
+            QCOMPARE(physical,7);QCOMPARE(unlinked,3);QCOMPARE(canReads,1);QCOMPARE(writes,1);QVERIFY(cancels>=1);
+            QCOMPARE(keys.size(),model.peakReads().size());
+        }
+        can.shutdown();worker.shutdown();model.clear();QVERIFY(model.peakReads().isEmpty());
+    }
+    void peakCanBatchUsesTimestampOverflowAndMicroseconds(){
+        auto settings=ChannelSettings::defaults(Bus::Can);
+        settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *device=nullptr;
+        ChannelWorker worker(settings,[&]{auto p=std::make_unique<ReceiveEventFakeCan>(false);device=p.get();return p;});
+        FrameTableModel model;
+        connect(&worker,&ChannelWorker::framesReceived,&model,&FrameTableModel::append);
+        worker.initialize();worker.connectChannel(settings);QVERIFY(device&&device->opened);
+        TPCANMsg frame={};frame.ID=0x715;frame.LEN=1;
+        TPCANTimestamp before={};before.millis=0xffffffffU;before.micros=999;
+        TPCANTimestamp after={};after.millis_overflow=1;after.micros=2;
+        device->frames.enqueue(frame);device->frames.enqueue(frame);
+        device->stamps.enqueue(before);device->stamps.enqueue(after);
+        QTRY_COMPARE_WITH_TIMEOUT(model.historyCount(),qint64(2),1000);
+        const auto &last=model.history().last();QVERIFY(last.peakClockDomain);
+        QCOMPARE(last.hardwareUs,(quint64(1)<<32)*1000+2);
+        QCOMPARE(last.timeUs,qint64(3));QCOMPARE(last.intervalSeconds,QString("0.000003"));
+        worker.shutdown();
+    }
+    void peakLinBatchFinalRowsAndClockSegments(){
+        auto settings=realWakeSettings();settings.nad="5F";settings.p2Ms=1500;settings.linAsMs=1000;
+        WakeFakeLin *device=nullptr;
+        ChannelWorker worker(settings,{},[&]{auto p=std::make_unique<WakeFakeLin>();device=p.get();return p;});
+        FrameTableModel model;
+        connect(&worker,&ChannelWorker::framesReceived,&model,&FrameTableModel::append);
+        QSignalSpy finished(&worker,&ChannelWorker::diagnosticFinished);
+        worker.initialize();worker.connectChannel(settings);QVERIFY(device&&device->opened);
+        diag::Request req;req.raw=true;req.bytes=QByteArray::fromHex("1003");
+        worker.sendDiagnostic(settings,req);QTRY_VERIFY_WITH_TIMEOUT(!device->writes.isEmpty(),1000);
+        QCOMPARE(model.historyCount(),qint64(1));QCOMPARE(model.history().first().peakClockDomain,quint64(0));
+        TLINRcvMsg read=device->wakeReceipt();read.FrameId=0x3c;read.Direction=dirPublisher;
+        read.TimeStamp=0;read.ErrorFlags=0;
+        std::copy_n(device->writes.first().Data,8,read.Data);device->frames.enqueue(read);
+        QTRY_VERIFY_WITH_TIMEOUT(device->writes.size()>=3,1000);
+        // Physical header submissions and the transport RX trace create no monitor row.
+        QCOMPARE(model.historyCount(),qint64(2));
+        const auto domain=model.history().last().peakClockDomain;QVERIFY(domain!=0);
+        read.FrameId=0x7d;read.Direction=dirSubscriber;read.TimeStamp=10000;
+        read.ErrorFlags=MSG_ERR_SLAVE_NOT_RESPONDING|MSG_ERR_TIMEOUT;read.Checksum=0;device->frames.enqueue(read);
+        read.TimeStamp=20001;read.ErrorFlags=0;
+        const auto bytes=QByteArray::fromHex("5f065003003201f4");
+        std::copy_n(bytes.constData(),8,read.Data);device->frames.enqueue(read);
+        QTRY_COMPARE_WITH_TIMEOUT(model.historyCount(),qint64(4),1000);
+        QCOMPARE(finished.size(),1);QVERIFY(finished.first()[0].toBool());
+        const auto &missing=model.history()[2],&response=model.history()[3];
+        QCOMPARE(missing.status,QString("无响应"));QCOMPARE(response.status,QString("正常"));
+        QCOMPARE(response.payload,bytes);QCOMPARE(response.peakClockDomain,domain);
+        QCOMPARE(response.timeUs-missing.timeUs,qint64(10001));QCOMPARE(response.intervalSeconds,QString("0.010001"));
+        read.TimeStamp=30002;read.ErrorFlags=MSG_ERR_SLAVE_NOT_RESPONDING|MSG_ERR_TIMEOUT;
+        read.Checksum=0;device->frames.enqueue(read); // A trailing slot after the UDS completion.
+        QTRY_COMPARE_WITH_TIMEOUT(model.historyCount(),qint64(5),1000);
+        QCOMPARE(model.history().last().status,QString("无响应"));
+        read.TimeStamp=0;read.ErrorFlags=MSG_ERR_CHECKSUM;device->frames.enqueue(read);
+        QTRY_COMPARE_WITH_TIMEOUT(model.historyCount(),qint64(6),1000);
+        const auto reset=model.history().last();QVERIFY(reset.peakClockDomain!=domain && reset.peakClockDomain!=0);
+        QCOMPARE(reset.status,QString("错误"));QVERIFY(!reset.intervalFromHardware);
+        worker.disconnectChannel();worker.connectChannel(settings);
+        read.TimeStamp=22000;device->frames.enqueue(read);
+        QTRY_COMPARE_WITH_TIMEOUT(model.historyCount(),qint64(7),1000);
+        const auto reopened=model.history().last();
+        QVERIFY(reopened.peakClockDomain && reopened.peakClockDomain!=reset.peakClockDomain);
+        QVERIFY(!reopened.intervalFromHardware);
+        worker.shutdown();
     }
     void linWakeCancellationAndDisconnect_data(){QTest::addColumn<bool>("disconnect");QTest::newRow("cancel")<<false;QTest::newRow("disconnect")<<true;}
     void linWakeCancellationAndDisconnect(){
@@ -690,19 +897,79 @@ private slots:
     void linCancelledWakeCannotStartReplacementJobEarly(){
         auto settings=realWakeSettings();WakeFakeLin *fake=nullptr;
         ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
-        worker.initialize();worker.connectChannel(settings);worker.startPreview(settings);QCOMPARE(fake->wakes,1);QTest::qWait(60);worker.cancelTask();
-        worker.startPreview(settings);QCOMPARE(fake->wakes,2);QTest::qWait(85);QVERIFY(fake->writes.isEmpty());
-        QTRY_VERIFY_WITH_TIMEOUT(!fake->writes.isEmpty(),700);QVERIFY(fake->writeMs.first()>=120);worker.cancelTask();worker.shutdown();
+        worker.initialize();worker.connectChannel(settings);worker.startPreview(settings);QCOMPARE(fake->wakes,1);
+        const auto oldReceipt=fake->wakeReceipt();QTest::qWait(60);worker.cancelTask();
+        fake->autoConfirm=false;
+        worker.startPreview(settings);QCOMPARE(fake->wakes,2);fake->frames.enqueue(oldReceipt);
+        QTest::qWait(160);QVERIFY(fake->writes.isEmpty());fake->frames.enqueue(fake->wakeReceipt());
+        QTRY_VERIFY_WITH_TIMEOUT(!fake->writes.isEmpty(),700);QVERIFY(fake->writeMs.first()>=100);worker.cancelTask();worker.shutdown();
     }
-    void linWakeFailureStopsAndUnsupportedPreservesExistingFlow_data(){QTest::addColumn<bool>("unsupported");QTest::newRow("SDK failure")<<false;QTest::newRow("no verified API")<<true;}
-    void linWakeFailureStopsAndUnsupportedPreservesExistingFlow(){
+    void linWakeFailureAndUnsupportedStop_data(){QTest::addColumn<bool>("unsupported");QTest::newRow("SDK failure")<<false;QTest::newRow("no verified API")<<true;}
+    void linWakeFailureAndUnsupportedStop(){
         QFETCH(bool,unsupported);auto settings=realWakeSettings();WakeFakeLin *fake=nullptr;
         ChannelWorker worker(settings,{},[&]()->std::unique_ptr<LinHardware>{auto p=std::make_unique<WakeFakeLin>();p->wakeResult=unsupported?LinWakeResult::Unsupported:LinWakeResult::Failed;fake=p.get();return p;});
         QSignalSpy tasks(&worker,&ChannelWorker::taskChanged),logs(&worker,&ChannelWorker::logMessage);
         worker.initialize();worker.connectChannel(settings);worker.startPreview(settings);QCOMPARE(fake->wakes,1);
-        if(unsupported){QTRY_VERIFY_WITH_TIMEOUT(!fake->writes.isEmpty(),700);bool notice=false;for(const auto &row:logs)notice|=row[0].toString().contains("节点需处于唤醒状态");QVERIFY(notice);worker.cancelTask();}
-        else{QCOMPARE(qvariant_cast<TaskState>(tasks.last()[0]),TaskState::Failed);QTest::qWait(180);QVERIFY(fake->writes.isEmpty());}
+        QCOMPARE(qvariant_cast<TaskState>(tasks.last()[0]),TaskState::Failed);
+        QTest::qWait(180);QVERIFY(fake->writes.isEmpty());
         worker.shutdown();
+    }
+    void vectorDownloadAwaitsLocalWakeEvent(){
+        auto settings=realWakeSettings();WakeFakeLin *fake=nullptr;
+        ChannelWorker worker(settings,{},[&]{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
+        worker.initialize();worker.connectChannel(settings);fake->wakeResult=LinWakeResult::PulseQueued;
+        worker.startPreview(settings);fake->frames.enqueue(fake->wakeReceipt());
+        QTest::qWait(160);QVERIFY(fake->writes.isEmpty());
+        TLINRcvMsg local={};local.Type=mstBusWakeUp;QElapsedTimer elapsed;elapsed.start();fake->frames.enqueue(local);
+        QTest::qWait(70);QVERIFY(fake->writes.isEmpty());QTRY_VERIFY_WITH_TIMEOUT(!fake->writes.isEmpty(),700);
+        QVERIFY(elapsed.elapsed()>=105);QCOMPARE(fake->wakes,1);worker.cancelTask();worker.shutdown();
+    }
+    void linWakeReadbackFailure_data(){
+        QTest::addColumn<int>("flags");QTest::newRow("missing")<<-1;
+        QTest::newRow("bus-error")<<int(MSG_ERR_GND_SHORT);
+        QTest::newRow("partial-timeout")<<int(MSG_ERR_TIMEOUT|MSG_ERR_SLAVE_NOT_RESPONDING);
+    }
+    void linWakeReadbackFailure(){
+        QFETCH(int,flags);auto settings=realWakeSettings();WakeFakeLin *fake=nullptr;
+        ChannelWorker worker(settings,{},[&]{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
+        QSignalSpy tasks(&worker,&ChannelWorker::taskChanged);worker.initialize();worker.connectChannel(settings);
+        fake->autoConfirm=false;worker.startPreview(settings);
+        if(flags>=0){auto event=fake->wakeReceipt();event.ErrorFlags=flags;event.Checksum=1;fake->frames.enqueue(event);}
+        QTRY_VERIFY_WITH_TIMEOUT(qvariant_cast<TaskState>(tasks.last()[0])==TaskState::Failed,1600);
+        QCOMPARE(fake->wakes,1);QVERIFY(fake->writes.isEmpty());worker.shutdown();
+    }
+    void repeatedPhysicalLinDownloadWakesEachRound(){
+        auto settings=realWakeSettings();settings.repeatDownloadEnabled=true;settings.repeatDownloadCount=2;
+        settings.repeatDownloadIntervalMs=50;settings.p2Ms=1000;settings.linAsMs=500;
+        WakeFakeLin *fake=nullptr;
+        ChannelWorker worker(settings,{},[&]{auto p=std::make_unique<WakeFakeLin>();fake=p.get();return p;});
+        worker.initialize();worker.connectChannel(settings);
+        fake->ecu=std::make_unique<boot::SimulatedLinEcu>(settings.nad.toUInt(nullptr,16));
+        ContractWire peer;
+        fake->ecu->diagnosticHandler=[&peer](const QByteArray &request){
+            const auto reply=peer.responseFor(request);
+            return reply.isEmpty()?QList<QByteArray>{}:QList<QByteArray>{reply};
+        };
+        QSignalSpy tasks(&worker,&ChannelWorker::taskChanged);worker.startPreview(settings);
+        QTRY_VERIFY_WITH_TIMEOUT(qvariant_cast<TaskState>(tasks.last()[0])==TaskState::Completed ||
+                                 qvariant_cast<TaskState>(tasks.last()[0])==TaskState::Failed,25000);
+        QVERIFY2(qvariant_cast<TaskState>(tasks.last()[0])==TaskState::Completed,qPrintable(tasks.last()[2].toString()));
+        QCOMPARE(fake->wakes,2);
+        for(const int first:fake->roundStarts){
+            QCOMPARE(fake->writes.at(first).FrameId,BYTE(0x3c));QVERIFY(fake->writeMs.at(first)>=100);
+        }
+        worker.shutdown();
+    }
+    void canDownloadStartsWithoutLinPreparation(){
+        auto settings=realWakeSettings();settings.bus=Bus::Can;settings.bitrate=500000;
+        settings.hardwareKey="can:fake:1";settings.handle=0x51;
+        ReceiveEventFakeCan *fake=nullptr;
+        ChannelWorker worker(settings,[&]{auto p=std::make_unique<ReceiveEventFakeCan>(true);fake=p.get();return p;});
+        worker.initialize();worker.connectChannel(settings);QVERIFY(fake && fake->opened);
+        worker.startPreview(settings);
+        // UdsSession posts its initial pump with singleShot(0); no prepare timer is needed.
+        QCoreApplication::processEvents();QCoreApplication::processEvents();
+        QCOMPARE(fake->writes,1);worker.cancelTask();worker.shutdown();
     }
     void failedWriteRemainsUnresolvedUntilManualRecovery(){
         auto settings=ChannelSettings::defaults(Bus::Can);settings.simulation=false;settings.hardwareKey="can:fake:1";settings.handle=0x51;

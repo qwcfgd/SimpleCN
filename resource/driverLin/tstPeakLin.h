@@ -6,6 +6,7 @@
 #include "../global/globalDataType.h"
 
 #include "plinApiClass.h"
+#include <functional>
 #include "../communication/ChannelTypes.h"
 
 class tstPeakLin
@@ -32,7 +33,7 @@ public:
     unsigned long lastErrorCode() const { return t_LastLinErr; }
     QString lastErrorText() const;
     communication::Health hardwareHealth(QString *detail=nullptr);
-    bool wakeUp();
+    bool wakeUp(quint64 *earliestHeaderUs=nullptr);
     bool sendRaw(TLINMsg message);
     DWORD recvRaw(DWORD capacity, TLINRcvMsg messages[]);
 
@@ -72,7 +73,10 @@ public:
     bool setSlotData(const byte, const byte, const StrtLinSchdTxBuf&);
 
     //following are the receive linframe function:
-    bool clearMsg();
+    using WriteObserver=std::function<void(const TLINMsg &,const TLINError *)>;
+    WriteObserver writeObserver;
+    using DrainObserver=std::function<void(const TLINRcvMsg *,DWORD,TLINError)>;
+    bool clearMsg(const DrainObserver &observe={});
     DWORD recvMsg(const DWORD, StrtLinSchdRxBuf&);
 
     //following are the public get function:
@@ -150,6 +154,7 @@ private:
     // hardware configuration
     HLINHW t_hHw; //hardware ID and all hardware ID
     TLINHardwareMode t_HwMode; //hardware mode, master mode or slave mode
+    unsigned pendingResponseHeaders=0; // Local, fixed-length 0x3D writes awaiting PLIN readback.
     WORD t_baudrate; //baudrate
 
     // client configuration

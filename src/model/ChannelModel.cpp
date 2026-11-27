@@ -3,7 +3,7 @@
 namespace host {
 ChannelModel::ChannelModel(ChannelSettings settings,QObject *parent,ChannelWorker *worker):
     QObject(parent),m_worker(worker?worker:new ChannelWorker(settings)) {
-    qRegisterMetaType<ChannelSettings>();qRegisterMetaType<FrameBatch>();qRegisterMetaType<TaskState>();
+    qRegisterMetaType<ChannelSettings>();qRegisterMetaType<FrameBatch>();qRegisterMetaType<PeakReadBatch>();qRegisterMetaType<TaskState>();
     qRegisterMetaType<diag::Request>();
     qRegisterMetaType<signal::TxPlan>();qRegisterMetaType<signal::PayloadUpdate>();qRegisterMetaType<signal::RunStatus>();qRegisterMetaType<signal::BusFrameEvents>();
     qRegisterMetaType<communication::HardwareChannels>();qRegisterMetaType<communication::ConnectionState>();qRegisterMetaType<communication::Health>();
@@ -34,6 +34,7 @@ ChannelModel::ChannelModel(ChannelSettings settings,QObject *parent,ChannelWorke
     connect(m_worker,&ChannelWorker::stateChanged,this,&ChannelModel::stateChanged);
     connect(m_worker,&ChannelWorker::healthChanged,this,&ChannelModel::healthChanged);
     connect(m_worker,&ChannelWorker::framesReceived,this,&ChannelModel::framesReceived);
+    connect(m_worker,&ChannelWorker::peakReads,this,&ChannelModel::peakReads);
     connect(m_worker,&ChannelWorker::observedFrames,this,&ChannelModel::observedFrames);
     connect(m_worker,&ChannelWorker::logMessage,this,&ChannelModel::logMessage);
     connect(m_worker,&ChannelWorker::taskChanged,this,&ChannelModel::taskChanged);

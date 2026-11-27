@@ -5,6 +5,11 @@
 #include <QLocale>
 #include <QMap>
 #include <QSaveFile>
+#include <QCryptographicHash>
+#include <QJsonDocument>
+#include <QLockFile>
+#include <QSet>
+#include <QTemporaryDir>
 #include <algorithm>
 namespace host {
 namespace {
@@ -38,16 +43,144 @@ quint8 checksum(const FrameRecord &r){
     for(auto c:r.payload){sum+=quint8(c);if(sum>255)sum-=255;}return quint8(~sum);
 }
 QString source(const FrameRecord &r){return r.simulated?"SIM":r.request?"TX request":r.echo?"TX echo":r.direction;}
-QByteArray csv(const FrameBatch &rows){
+const QStringList &rawColumns(){
+    static const QStringList names={"recordKind","sessionId","eventSeq","clockDomain","softwareChannel","hardwareKey",
+        "boundHandle","hardwareHandle","hostCaptureUs","deviceUs","sdkReadStatus","type","pid","direction","checksumType",
+        "length","checksum","checksumRole","errorFlags","data8Hex","dataByteCount","canId","messageType","millis","millisOverflow","micros",
+        "submission","writeBeginUs","writeResult","cancelSource"};
+    return names;
+}
+QJsonObject rawFields(const PeakRead &r){
+    QJsonObject o{{"sessionId",r.session.toString(QUuid::WithoutBraces)},{"eventSeq",QString::number(r.sequence)},
+        {"softwareChannel",r.channel},{"hardwareKey",r.hardwareKey},{"boundHandle",int(r.boundHandle)},
+        {"hostCaptureUs",QString::number(r.hostCaptureUs)}};
+    if(const auto *cancel=std::get_if<LinCancelFields>(&r.fields)){
+        o["recordKind"]="cancel";o["cancelSource"]=cancel->origin;return o;
+    }
+    o["data8Hex"]=QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(r.data.data()),8).toHex());
+    if(const auto *write=std::get_if<PlinWriteFields>(&r.fields)){
+        o["recordKind"]="plinWrite";o["submission"]=QString::number(write->submission);
+        o["writeBeginUs"]=QString::number(write->beginUs);o["writeResult"]=int(write->result);
+        o["pid"]=write->pid;o["length"]=write->length;o["direction"]=write->direction;
+        o["checksumType"]=write->checksumType;o["checksum"]=write->checksum;
+        return o;
+    }
+    o["hardwareHandle"]=int(r.hardwareHandle);o["sdkReadStatus"]=double(r.sdkReadStatus);
+    o["deviceUs"]=QString::number(r.timestampUs);
+    if(r.clockDomain)o["clockDomain"]=QString::number(r.clockDomain);
+    if(const auto *lin=std::get_if<PlinReadFields>(&r.fields)){
+        o["recordKind"]="plinRead";o["type"]=lin->type;o["pid"]=lin->pid;o["direction"]=lin->direction;
+        o["checksumType"]=lin->checksumType;o["length"]=lin->length;o["checksum"]=lin->checksum;
+        o["errorFlags"]=double(lin->errorFlags);
+        if(lin->type==0){
+            const bool timeout=lin->errorFlags&0x10,absent=lin->errorFlags&0x08;
+            o["checksumRole"]=timeout?"byteCount":absent?"unavailable":"checksumField";
+            if(timeout)o["dataByteCount"]=int(lin->checksum);
+            else if(absent)o["dataByteCount"]=0;
+            else if(lin->length<=8)o["dataByteCount"]=lin->length;
+        }
+    }else{
+        const auto &can=std::get<PcanReadFields>(r.fields);
+        o["recordKind"]="pcanRead";o["canId"]=double(can.id);o["messageType"]=can.messageType;
+        o["length"]=can.length;o["millis"]=double(can.millis);o["millisOverflow"]=can.millisOverflow;o["micros"]=can.micros;
+    }
+    return o;
+}
+using RowNumbers=QHash<const PeakRead*,qint64>;
+RowNumbers rowNumbers(const FrameBatch &rows){
+    RowNumbers result;
+    for(int i=0;i<rows.size();++i)if(rows[i].peakRead)result.insert(rows[i].peakRead.data(),i+1);
+    return result;
+}
+void appendRawCells(QStringList &cells,const PeakReadPtr &read){
+    const auto fields=read?rawFields(*read):QJsonObject{};
+    for(const auto &key:rawColumns())cells<<fields.value(key).toVariant().toString();
+}
+QByteArray csv(const FrameBatch &rows,const PeakReadBatch &raw){
     QByteArray b("\xEF\xBB\xBF");
     const auto escape=[](QString s){if(!s.isEmpty()&&QString("=+-@").contains(s.front()))s.prepend('\'');s.replace('"',"\"\"");return "\""+s+"\"";};
     auto line=[&](const QStringList &cells){QStringList out;for(auto s:cells)out<<escape(s);b+=(out.join(',')+"\r\n").toUtf8();};
-    line({"时间","时刻/s","间隔时间/s","软件通道","方向","ID","长度","数据","状态"});
-    for(const auto &r:rows)line({r.timestamp,r.relativeTime,r.intervalSeconds,r.channel,r.direction,r.identifier,QString::number(r.length),r.data,r.status});
+    const auto linked=rowNumbers(rows);
+    const bool extended=!raw.isEmpty() || !linked.isEmpty();
+    const bool peak=extended || std::any_of(rows.cbegin(),rows.cend(),[](const FrameRecord &r){return r.peakClockDomain!=0;});
+    QStringList header={"时间","时刻/s","间隔时间/s","软件通道","方向","ID","长度","数据","状态"};
+    if(peak)header.append(QStringList{"PEAK 时钟段","PEAK 设备时间戳/µs","主机采集时间轴/µs","间隔时间来源"});
+    if(extended)header.append(rawColumns());
+    line(header);
+    for(const auto &r:rows){
+        QStringList cells={r.timestamp,r.relativeTime,r.intervalSeconds,r.channel,r.direction,r.identifier,QString::number(r.length),r.data,r.status};
+        if(peak){
+            cells << (r.peakClockDomain?QString::number(r.peakClockDomain):QString())
+                  << (r.peakClockDomain?QString::number(r.hardwareUs):QString())
+                  << (r.captureUs>=0?QString::number(r.captureUs):QString())
+                  << (r.intervalFromHardware?"PEAK":"Host");
+        }
+        if(extended)appendRawCells(cells,r.peakRead);
+        line(cells);
+    }
+    for(const auto &read:raw){
+        if(linked.contains(read.data()))continue;
+        QStringList cells;
+        for(int i=0;i<13;++i)cells<<QString();
+        appendRawCells(cells,read);line(cells);
+    }
     return b;
 }
+bool writePair(const QString &path,const QByteArray &bytes,const FrameBatch &rows,
+               const PeakReadBatch &raw,QString &error){
+    const QString companion=path+".peak.jsonl";
+    QLockFile lock(path+".peak-export.lock");
+    if(!lock.tryLock(0)){error="报文导出正在使用该文件："+path;return false;}
+    QSaveFile standard(path),side(companion);
+    if(!standard.open(QIODevice::WriteOnly)||standard.write(bytes)!=bytes.size()){
+        error="报文文件写入失败："+standard.errorString();return false;
+    }
+    const auto positions=rowNumbers(rows);
+    if(raw.isEmpty() && positions.isEmpty() && !QFile::exists(companion)){
+        if(standard.commit())return true;
+        error=standard.errorString();return false;
+    }
+    if(!side.open(QIODevice::WriteOnly)){error="原始伴随文件打开失败："+side.errorString();return false;}
+    auto put=[&](const QJsonObject &obj){
+        auto data=QJsonDocument(obj).toJson(QJsonDocument::Compact);data.append('\n');
+        if(side.write(data)==data.size())return true;
+        error="原始伴随文件写入失败："+side.errorString();return false;
+    };
+    if(!put({{"format","SimpleCN.PEAK"},{"version",1},{"standardFile",QFileInfo(path).fileName()},
+             {"standardSha256",QString::fromLatin1(QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex())},
+             {"exportRowCount",rows.size()}}))return false;
+    QSet<const PeakRead*> saved;
+    auto putRead=[&](const PeakReadPtr &r){
+        auto obj=rawFields(*r);const auto pos=positions.value(r.data());
+        if(pos){obj["exportRow"]=QString::number(pos);obj["exportTimeUs"]=QString::number(rows.at(int(pos-1)).timeUs);}
+        return put(obj);
+    };
+    for(const auto &r:raw){
+        if(!putRead(r))return false;
+        saved.insert(r.data());
+    }
+    for(const auto &row:rows)if(row.peakRead && !saved.contains(row.peakRead.data())){
+        if(!putRead(row.peakRead))return false;
+        saved.insert(row.peakRead.data());
+    }
+    // Each file replaces atomically. Keep the previous companion until the
+    // standard file commits; its SHA-256 identifies the pair after interruption.
+    QTemporaryDir backup(QFileInfo(path).absolutePath()+"/.simplecn-export-XXXXXX");
+    const bool existed=QFile::exists(companion);
+    if(existed && (!backup.isValid() || !QFile::copy(companion,backup.filePath("previous")))){
+        error="无法备份现有原始伴随文件："+companion;return false;
+    }
+    if(!side.commit()){error=side.errorString();return false;}
+    if(standard.commit())return true;
+    error="报文导出失败："+standard.errorString();
+    if(!QFile::remove(companion) || (existed && !QFile::rename(backup.filePath("previous"),companion))){
+        backup.setAutoRemove(false);
+        error+="；伴随文件恢复失败，备份目录："+backup.path();
+    }
+    return false;
 }
-bool TraceExporter::write(const QString &path,const FrameBatch &input,QString &error,QString format){
+}
+bool TraceExporter::write(const QString &path,const FrameBatch &input,QString &error,QString format,const PeakReadBatch &raw){
     error.clear();if(format.isEmpty())format=QFileInfo(path).suffix().toLower();
     if(format!="csv"&&format!="asc"&&format!="blf"){error="请选择 CSV、ASC 或 BLF 扩展名。";return false;}
     const auto byTime=[](const auto&a,const auto&b){return a.timeUs<b.timeUs;};
@@ -66,7 +199,7 @@ bool TraceExporter::write(const QString &path,const FrameBatch &input,QString &e
         }
     }
     QByteArray bytes;const qint64 epoch=rows.isEmpty()?QDateTime::currentMSecsSinceEpoch():rows.first().epochMs-rows.first().timeUs/1000;
-    if(format=="csv")bytes=csv(rows);
+    if(format=="csv")bytes=csv(rows,raw);
     else if(format=="asc"){
         const auto date=QLocale::c().toString(QDateTime::fromMSecsSinceEpoch(epoch),"ddd MMM dd hh:mm:ss.zzz AP yyyy");
         bytes=("date "+date+"\r\nbase hex timestamps absolute\r\ninternal events logged\r\n// version 10.0.0\r\n").toUtf8();
@@ -132,6 +265,7 @@ bool TraceExporter::write(const QString &path,const FrameBatch &input,QString &e
         u64(bytes,144+containers.size());u64(bytes,uncompressed);u32(bytes,count);u32(bytes,0);
         systemTime(bytes,epoch);systemTime(bytes,epoch+(rows.isEmpty()?0:rows.last().timeUs/1000));bytes+=QByteArray(72,0);bytes+=containers;
     }
+    if(format!="csv")return writePair(path,bytes,rows,raw,error);
     QSaveFile file(path);
     if(!file.open(QIODevice::WriteOnly)||file.write(bytes)!=bytes.size()||!file.commit()){error="报文导出失败："+file.errorString();return false;}return true;
 }

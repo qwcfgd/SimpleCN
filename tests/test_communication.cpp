@@ -68,6 +68,8 @@ public:
     TLINHardwareState busState=hwsActive;
     QQueue<TLINRcvMsg> frames;
     TLINMsg lastWrite={};int writes=0,checksumCalls=0,wakes=0;HLINCLIENT wakeClient=0;HLINHW wakeHardware=0;TLINError wakeResult=errOK,writeResult=errOK;
+    int breakBits=13;
+    TLINError GetTargetTime(HLINHW,UINT64 *out)override{*out=123456;return errOK;}
     TLINError XmtWakeUp(HLINCLIENT c,HLINHW h)override{++wakes;wakeClient=c;wakeHardware=h;return wakeResult;}
     TLINError Write(HLINCLIENT,HLINHW,TLINMsg *message) override {++writes;lastWrite=*message;return writeResult;}
     TLINError GetPID(BYTE *id) override {if(*id==0x3d)*id=0x7d;return errOK;}
@@ -84,7 +86,7 @@ public:
         if(p==hwpConnectedClients){
             std::memset(out,0,bytes);if(occupied)static_cast<BYTE*>(out)[0]=3;return errOK;
         }
-        int value=p==hwpChannelNumber?handles.indexOf(hw):p==hwpSerialNumber?1234:(p==hwpDeviceNumber?1:(p==hwpScheduleActive?-1:0));
+        int value=p==hwpBreakLength?breakBits:p==hwpChannelNumber?handles.indexOf(hw):p==hwpSerialNumber?1234:(p==hwpDeviceNumber?1:(p==hwpScheduleActive?-1:0));
         std::memcpy(out,&value,sizeof(value));return errOK;
     }
     TLINError RegisterClient(LPSTR,DWORD,HLINCLIENT *client) override {++registers;*client=42;return errOK;}
@@ -99,7 +101,7 @@ public:
     TLINError ReadMulti(HLINCLIENT,TLINRcvMsg *out,int capacity,int *count) override {
         ++reads;*count=0;if(readResult!=errOK)return readResult;
         while(!frames.isEmpty() && *count<capacity){out[*count]=frames.dequeue();++*count;}
-        return *count?errOK:errRcvQueueEmpty;
+        return *count==capacity?errOK:errRcvQueueEmpty;
     }
     TLINError GetStatus(HLINHW hw,TLINHardwareStatus *out) override {
         if(!handles.contains(hw))return errIllegalHardware;
@@ -278,19 +280,62 @@ private slots:
         QCOMPARE(api.echoCalls,1);QCOMPARE(api.echoHandle,TPCANHandle(PCAN_USBBUS2));QCOMPARE(api.echoValue,DWORD(PCAN_PARAMETER_ON));
         api.echoResult=PCAN_ERROR_ILLPARAMVAL;QVERIFY(!driver.enableEcho());QCOMPARE(driver.lastErrorCode(),static_cast<unsigned long>(PCAN_ERROR_ILLPARAMVAL));QVERIFY(driver.lastErrorText().contains("8000"));
     }
+    void plinObservedSdkWriteAndDrain(){
+        FakeLinApi api;tstPeakLin driver(nullptr,&api);
+        driver.setHardwareHandle(21);driver.setDevMode(modMaster);driver.setDevBaudrate(19200);
+        QVERIFY(driver.startDevice());
+        QList<int> results;
+        driver.writeObserver=[&](const TLINMsg &m,const TLINError *rc){
+            QCOMPARE(m.FrameId,BYTE(0x7d));results.append(rc?int(*rc):-1);
+        };
+        QVERIFY(driver.wakeUp());
+        TLINRcvMsg slot={};slot.Type=mstStandard;slot.hHw=21;slot.FrameId=0x7d;
+        slot.Direction=dirSubscriber;slot.Length=8;slot.ChecksumType=cstClassic;
+        api.frames.enqueue(slot);int drained=0;
+        QVERIFY(driver.clearMsg([&](const TLINRcvMsg *m,DWORD n,TLINError status){
+            QCOMPARE(n,DWORD(1));QCOMPARE(status,TLINError(errRcvQueueEmpty));QCOMPARE(m->FrameId,BYTE(0x7d));++drained;
+        }));
+        api.writeResult=errXmtQueueFull;QVERIFY(!driver.wakeUp());QCOMPARE(drained,1);
+        QCOMPARE(results,QList<int>({-1,errOK,-1,errXmtQueueFull}));
+    }
+    void plinBatchKeepsBothHeaderResults(){
+        FakeLinApi api;
+        tstPeakLin driver(nullptr,&api);
+        driver.setHardwareHandle(21);driver.setDevMode(modMaster);driver.setDevBaudrate(19200);
+        QVERIFY(driver.startDevice());
+        TLINRcvMsg slot={};
+        slot.Type=mstStandard;slot.FrameId=0x7d;slot.Direction=dirSubscriber;slot.hHw=21;
+        slot.Length=8;slot.ChecksumType=cstClassic;slot.ErrorFlags=MSG_ERR_SLAVE_NOT_RESPONDING;
+        api.frames.enqueue(slot);
+        slot.TimeStamp=10001;slot.ErrorFlags=0;slot.Data[2]=0x50;api.frames.enqueue(slot);
+        TLINRcvMsg out[8]={};
+        QCOMPARE(driver.recvRaw(8,out),DWORD(2));
+        QCOMPARE(quint64(out[0].TimeStamp),quint64(0));
+        QVERIFY(out[0].ErrorFlags & MSG_ERR_SLAVE_NOT_RESPONDING);
+        QCOMPARE(quint64(out[1].TimeStamp),quint64(10001));QCOMPARE(out[1].Data[2],BYTE(0x50));
+        QCOMPARE(driver.recvRaw(8,out),DWORD(0));
+    }
     void linWake19200UsesOnlyStandardResponseHeader(){
         FakeLinApi api;tstPeakLin driver(nullptr,&api);driver.setHardwareHandle(21);driver.setDevMode(modMaster);driver.setDevBaudrate(19200);QVERIFY(driver.startDevice());
         QVERIFY(driver.wakeUp());QCOMPARE(api.wakes,0);QCOMPARE(api.writes,1);QCOMPARE(api.registers,1);QCOMPARE(api.connects,1);
         QCOMPARE(api.lastWrite.FrameId,BYTE(0x7d));QCOMPARE(api.lastWrite.Direction,TLINDirection(dirSubscriber));QCOMPARE(api.lastWrite.ChecksumType,TLINChecksumType(cstClassic));QCOMPARE(api.lastWrite.Length,BYTE(8));QCOMPARE(api.checksumCalls,0);
+        // An old outstanding header, including one cancelled by its job, cannot confirm another.
+        QVERIFY(!driver.wakeUp());QCOMPARE(api.writes,1);
+        TLINRcvMsg result={};result.hHw=21;result.Type=mstStandard;result.FrameId=0x7d;
+        result.Length=8;result.Direction=dirSubscriber;result.ChecksumType=cstClassic;
+        result.hHw=22;api.frames.enqueue(result);QVERIFY(driver.clearMsg());QVERIFY(!driver.wakeUp());
+        result.hHw=21;api.frames.enqueue(result);QVERIFY(driver.clearMsg());
         api.writeResult=errManagerNotResponding;QVERIFY(!driver.wakeUp());QCOMPARE(driver.lastErrorCode(),static_cast<unsigned long>(errManagerNotResponding));QCOMPARE(api.wakes,0);
     }
     void linWakeUsesOwnedClientAndPreservesErrors(){
         FakeLinApi api;tstPeakLin driver(nullptr,&api);QVERIFY(!driver.wakeUp());QCOMPARE(api.wakes,0);
         driver.setHardwareHandle(21);driver.setDevMode(modMaster);driver.setDevBaudrate(9600);QVERIFY(driver.startDevice());
-        QVERIFY(driver.wakeUp());QCOMPARE(api.wakes,1);QCOMPARE(api.wakeClient,HLINCLIENT(42));QCOMPARE(api.wakeHardware,HLINHW(21));QCOMPARE(api.registers,1);QCOMPARE(api.writes,0);
-        api.wakeResult=errManagerNotResponding;QVERIFY(!driver.wakeUp());QCOMPARE(driver.lastErrorCode(),static_cast<unsigned long>(errManagerNotResponding));
-        QVERIFY(driver.stopDevice());QVERIFY(!driver.wakeUp());QCOMPARE(api.wakes,2);
-        driver.setDevMode(modSlave);QVERIFY(driver.startDevice());QVERIFY(!driver.wakeUp());QCOMPARE(api.wakes,2);
+        api.breakBits=12;QVERIFY(!driver.wakeUp());QCOMPARE(api.writes,0);
+        api.breakBits=50;QVERIFY(!driver.wakeUp());QCOMPARE(api.writes,0); // >5 ms at 9600.
+        api.breakBits=13;quint64 before=0;QVERIFY(driver.wakeUp(&before));
+        QCOMPARE(before,quint64(123456));QCOMPARE(api.writes,1);QCOMPARE(api.wakes,0);
+        QVERIFY(driver.stopDevice());QVERIFY(!driver.wakeUp());
+        driver.setDevMode(modSlave);QVERIFY(driver.startDevice());QVERIFY(!driver.wakeUp());QCOMPARE(api.writes,1);
     }
     void rawLinDiagnosticUsesClassicChecksumAndProtectedId() {
         FakeLinApi api;tstPeakLin driver(nullptr,&api);driver.setHardwareHandle(21);driver.setDevMode(modMaster);driver.setDevBaudrate(19200);

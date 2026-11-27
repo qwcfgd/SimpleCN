@@ -20,6 +20,7 @@ ChannelViewModel::ChannelViewModel(ChannelSettings settings,QObject *parent,Chan
     connect(m_signals,&SignalTransmitViewModel::scheduleRequested,m_model,&ChannelModel::signalScheduleRequested);
     connect(m_model,&ChannelModel::signalStatus,m_signals,&SignalTransmitViewModel::applyStatus);
     connect(m_model,&ChannelModel::busEvents,m_signals,&SignalTransmitViewModel::receive);
+    connect(m_model,&ChannelModel::peakReads,&m_frames,&FrameTableModel::appendPeakReads);
     connect(m_model,&ChannelModel::observedFrames,m_signals,&SignalTransmitViewModel::observeFrames);
     connect(&m_frames,&FrameTableModel::cleared,m_signals,&SignalTransmitViewModel::clearTrace);
     const auto updateMonitorNames=[this]{
@@ -292,8 +293,8 @@ bool ChannelViewModel::exportLogs(const QString &path,QString &error) const {
 bool ChannelViewModel::flashProfile(boot::FlashProfile &profile,QString &error) const {
     return boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error);
 }
-bool ChannelViewModel::exportFrames(const QString &path,const FrameBatch &snapshot,QString &error)const{
-    return TraceExporter::write(path,snapshot,error);
+bool ChannelViewModel::exportFrames(const QString &path,const FrameBatch &snapshot,QString &error,const PeakReadBatch &raw)const{
+    return TraceExporter::write(path,snapshot,error,{},raw);
 }
 bool ChannelViewModel::inspectDownloadFile(const QString &path,QString &suggestedRole,QString &error)const{
     suggestedRole.clear();error.clear();boot::FirmwareImage image;

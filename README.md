@@ -6,7 +6,7 @@
 
 简体中文 · [English](README.en.md) · [GitHub：SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.65-2563eb)
+![Version](https://img.shields.io/badge/version-1.66-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
@@ -18,6 +18,12 @@
 </div>
 
 实物 LIN 下载在 19,200 bit/s 且诊断调度间隔设为自动时，以 10 ms 为请求帧头（0x3C）的目标间隔，以 20 ms 轮询响应帧头（0x3D）。发送确认和主机调度可能延长实际间隔。
+
+## V1.66
+
+- 每轮自动 LIN 下载先唤醒总线。PEAK 主机确认独立的 0x3D 帧头时隙后至少等待 100 ms，再发出首条诊断请求。唤醒失败或取消会停止本轮下载。
+- 报文监视按每个实际 LIN 时隙显示一次最终结果。同一 PEAK 时钟段内的相对时间和相邻实测帧间隔使用设备微秒时间戳，电脑本地时间另列显示。
+- 从“导出 → 筛选前全部缓存”可保存 PEAK 原始帧和状态事件。CSV 在同一文件保留原始字段。ASC、BLF 同时生成带主文件 SHA-256 的 `.peak.jsonl` 伴随文件。
 
 ## V1.65
 

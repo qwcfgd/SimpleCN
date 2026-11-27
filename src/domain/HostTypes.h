@@ -7,6 +7,7 @@
 #include <limits>
 #include "domain/ChannelDefaults.h"
 #include "domain/SignalTypes.h"
+#include "domain/PeakRead.h"
 namespace host {
 struct ChannelSettings : ChannelPageInitialValues {
     ChannelSettings();
@@ -45,6 +46,11 @@ struct FrameRecord {
     quint32 errorFlags=0;
     QString detail;
     bool hardwareStatus=false;
+    // Nonzero only for a physical PEAK read in one uninterrupted clock domain.
+    // A device timestamp of zero is valid.
+    quint64 peakClockDomain=0;
+    bool intervalFromHardware=false;
+    PeakReadPtr peakRead;
 };
 using FrameBatch=QVector<FrameRecord>;
 enum class TaskState {Idle,Running,Completed,Cancelled,Failed};

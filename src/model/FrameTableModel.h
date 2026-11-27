@@ -67,6 +67,8 @@ class FrameTableModel : public QAbstractItemModel {
   int windowSize() const {
     return m_windowSize;
   }
+  void appendPeakReads(const PeakReadBatch &reads){m_peakReads+=reads;}
+  const PeakReadBatch &peakReads() const {return m_peakReads;}
   const FrameBatch &history() const {
     return m_history;
   }
@@ -111,6 +113,7 @@ class FrameTableModel : public QAbstractItemModel {
   const FrameRecord &viewHistoryAt(qint64 index) const {
     return m_history.at(m_viewFilter ? m_filteredHistory.at(index) : index);
   }
+  PeakReadBatch m_peakReads;
   FrameBatch m_rows, m_history;
   QHash<QString, FrameRecord> m_firstFrames;
   std::function<bool(const FrameRecord &)> m_viewFilter;
@@ -128,6 +131,12 @@ class FrameTableModel : public QAbstractItemModel {
   qint64 m_windowStart = 0;
   int m_windowSize = 0;
   quintptr m_nextToken = 1;
+  struct ClockAnchor {
+    quint64 hardwareUs;
+    qint64 relativeUs;
+  };
+  QHash<quint64,ClockAnchor> m_peakAnchors;
+  quint64 m_previousDomain=0,m_previousHardwareUs=0;
   double m_relativeOriginUs = 0;
   qint64 m_startedEpochMs = 0;
   bool m_hasRelativeOrigin = false;

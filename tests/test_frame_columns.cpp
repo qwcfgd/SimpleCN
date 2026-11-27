@@ -36,6 +36,7 @@
 #include "infrastructure/BusHardware.h"
 #include "infrastructure/SignalTransmitter.h"
 #include "domain/TraceClock.h"
+#include "infrastructure/TraceReader.h"
 using namespace host;
 class EchoCanHardware final:public CanHardware {
 public:
@@ -63,6 +64,44 @@ class FrameColumnsTest:public QObject {
     }
     ChannelSettings settings(){auto s=ChannelSettings::defaults(communication::Bus::Can);s.simulation=true;return s;}
 private slots:
+    void peakClockMixedSourcesAndExport(){
+        FrameTableModel model;
+        auto a=record(100000,0x3d);a.bus=signal::Bus::Lin;a.channel="LIN1";
+        a.timestamp="12:47:16.239";a.peakClockDomain=1;a.hardwareUs=0;
+        auto b=a;b.captureUs+=64;b.hardwareUs=10001;
+        model.append({a,b});
+        const auto &first=model.history().first();
+        QCOMPARE(first.timeUs,qint64(0));QCOMPARE(first.timestamp,a.timestamp);
+        QCOMPARE(model.history()[1].relativeTime,QString("0.010001"));
+        QCOMPARE(model.history()[1].intervalSeconds,QString("0.010001"));
+        QTemporaryDir directory;QString error;
+        for(const auto ext:{"csv","asc","blf"}){
+            const auto path=directory.filePath("clock."+QString(ext));
+            QVERIFY2(model.exportTrace(path,error),qPrintable(error));
+            if(QString(ext)=="csv"){
+                QFile csv(path);QVERIFY(csv.open(QIODevice::ReadOnly));const auto data=csv.readAll();
+                QVERIFY(data.contains(QString("PEAK 设备时间戳/µs").toUtf8()));
+                QVERIFY(data.contains("\"1\",\"0\",\"100000\",\"Host\""));
+                QVERIFY(data.contains("\"1\",\"10001\",\"100064\",\"PEAK\""));
+            }else{
+                const auto log=TraceReader::read(path);QVERIFY2(log.error.isEmpty(),qPrintable(log.error));
+                QCOMPARE(log.frames.size(),2);QCOMPARE(log.frames.last().timeUs,qint64(10001));
+                QCOMPARE(log.frames.last().peakClockDomain,quint64(0)); // A replay file has its own clock.
+            }
+        }
+        auto sw=a;sw.captureUs=120000;sw.peakClockDomain=0;sw.hardwareUs=999;sw.request=true;
+        auto can=record(125000,0x715);can.peakClockDomain=2;can.hardwareUs=(quint64(1)<<54);
+        auto next=can;next.captureUs+=32;next.hardwareUs+=1;
+        auto again=b;again.captureUs=140000;again.hardwareUs=30003;
+        model.append({sw,can,next,again});
+        const auto &rows=model.history();
+        QCOMPARE(rows[2].relativeTime,QString("0.02"));QCOMPARE(rows[2].intervalSeconds,QString("0.019936"));
+        QCOMPARE(rows[3].relativeTime,QString("0.025"));QCOMPARE(rows[3].intervalSeconds,QString("0.005"));
+        QCOMPARE(rows[4].timeUs,qint64(25001));QCOMPARE(rows[4].intervalSeconds,QString("0.000001"));
+        QCOMPARE(rows[5].timeUs,qint64(30003));QCOMPARE(rows[5].intervalSeconds,QString("0.014968"));
+        QVERIFY(!rows[2].intervalFromHardware && !rows[3].intervalFromHardware && !rows[5].intervalFromHardware);
+        model.clear();model.append({again});QCOMPARE(model.history().first().timeUs,qint64(0));
+    }
     void monitorNameColumn_data(){
         QTest::addColumn<bool>("lin");
         QTest::newRow("CAN")<<false;

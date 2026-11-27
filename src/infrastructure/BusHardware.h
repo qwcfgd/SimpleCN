@@ -3,13 +3,16 @@
 #include <memory>
 namespace host {
 enum class CanBusState { Unsupported, Ready, Warning, BusOff, Fatal };
-enum class LinWakeResult { Sent, Unsupported, Failed };
+enum class LinWakeResult { HeaderQueued, PulseQueued, Unsupported, Failed };
 // Raw wire types are confined to infrastructure; application ViewModels are vendor independent.
 class CanHardware : public communication::HardwareBackend {
 public:
     communication::Bus bus()const override{return communication::Bus::Can;}
     virtual bool sendRaw(TPCANMsg)=0;
     virtual DWORD recvRaw(DWORD,TPCANMsg*,TPCANTimestamp*)=0;
+    virtual DWORD recvRawWithTail(DWORD n,TPCANMsg *m,TPCANTimestamp *t,bool &tail){
+        tail=false;return recvRaw(n,m,t);
+    }
     virtual unsigned long lastErrorCode()const=0;
     virtual QString lastErrorText()const=0;
     virtual bool enableEcho()=0;
@@ -22,14 +25,15 @@ public:
 class LinHardware : public communication::HardwareBackend {
 public:
     communication::Bus bus()const override{return communication::Bus::Lin;}
-    // Optional vendor pulse API. Unsupported preserves backends whose SDK
-    // has no verified wake primitive; it never means the ECU is ready.
-    virtual LinWakeResult wakeUp(){return LinWakeResult::Unsupported;}
+    // A successful submission still needs a matching hardware event.
+    virtual LinWakeResult wakeUp(quint64 * = nullptr){return LinWakeResult::Unsupported;}
     virtual bool sendRaw(TLINMsg)=0;
     virtual DWORD recvRaw(DWORD,TLINRcvMsg*)=0;
     virtual unsigned long lastErrorCode()const=0;
     virtual QString lastErrorText()const=0;
+    virtual void setWriteObserver(tstPeakLin::WriteObserver){}
     virtual bool clearMsg()=0;
+    virtual bool clearMsgObserved(const tstPeakLin::DrainObserver &){return clearMsg();}
     virtual int getDevMode()const=0;
     virtual bool signalConfigureMode(bool)=0;
     virtual bool signalConfigureMonitor(){return signalConfigureMode(false);}

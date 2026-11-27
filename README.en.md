@@ -6,7 +6,7 @@
 
 [简体中文](README.md) · English · [GitHub: SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.65-2563eb)
+![Version](https://img.shields.io/badge/version-1.66-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
@@ -18,6 +18,12 @@ Developed with assistance from OpenAI Codex.
 </div>
 
 For physical LIN downloads at 19,200 bit/s with automatic diagnostic scheduling, the target interval is 10 ms for request headers (0x3C) and 20 ms for response headers (0x3D). Transmit confirmation and host scheduling can extend the observed interval.
+
+## V1.66
+
+- Each automatic LIN download starts with a bus wake-up. The PEAK master waits at least 100 ms after confirming the separate 0x3D header slot before sending the first diagnostic request. A failed or cancelled wake-up stops the download.
+- The monitor shows one final result per actual LIN slot. Relative time and intervals between adjacent physical reads in the same PEAK clock segment use device microseconds. The local computer time remains available separately.
+- Export the full, unfiltered capture to save PEAK frames and status events. CSV includes the original fields in the file. ASC and BLF each include a companion `.peak.jsonl` file with the standard file’s SHA-256.
 
 ## V1.65
 

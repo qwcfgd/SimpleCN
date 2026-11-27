@@ -108,6 +108,7 @@ bool tstPeakLin::startDevice()
 bool tstPeakLin::stopDevice()
 {
     t_open = false;
+    pendingResponseHeaders=0;
     if (!t_hClient) { t_acquired = false; t_LastLinErr = errOK; return true; }
     TLINError firstError = errOK;
     const auto remember = [&firstError](TLINError error) { if (firstError==errOK && error!=errOK) firstError=error; };
@@ -353,9 +354,21 @@ bool tstPeakLin::setSlotData(const byte schdidx, const byte slotidx, const StrtL
     return rlt;
 };
 
-bool tstPeakLin::clearMsg()
+bool tstPeakLin::clearMsg(const DrainObserver &observe)
 {
     if (!t_open || t_SimTxLIN) return true;
+    // Account for previous diagnostic polls before discarding their readbacks.
+    // A late poll must never confirm the next download's wake header.
+    if (pendingResponseHeaders) {
+        for (int batch=0;batch<64;++batch) {
+            TLINRcvMsg messages[64]={};
+            const auto count=recvRaw(64,messages);
+            if (count && observe) observe(messages,count,t_LastLinErr);
+            if (count<64) return t_LastLinErr==errOK || t_LastLinErr==errRcvQueueEmpty;
+        }
+        t_LastLinErr=errBufferInsufficient;
+        return false;
+    }
     t_LastLinErr=t_pPLinApi->ResetClient(t_hClient);
     return t_LastLinErr==errOK;
 }
@@ -886,21 +899,33 @@ QString tstPeakLin::lastErrorText() const
     }
     return QString("PLIN %1: %2").arg(t_LastLinErr).arg(QString::fromLocal8Bit(text));
 }
-bool tstPeakLin::wakeUp()
+bool tstPeakLin::wakeUp(quint64 *earliestHeaderUs)
 {
-    if (!t_open || t_HwMode != modMaster) { t_LastLinErr=errIllegalHardwareState; return false; }
-    if (t_SimTxLIN) { t_LastLinErr=errOK; return true; }
-    if (t_baudrate==19200) {
-        // A LIN master header can wake the bus (PLIN manual 3.2.2).
-        // Use the standard response header, without a UDS request payload.
-        // Native XmtWakeUp alone did not establish this target's first reply.
-        TLINMsg header={};header.FrameId=0x3d;header.Length=8;
-        header.Direction=dirSubscriber;header.ChecksumType=cstClassic;
-        return sendRaw(header);
+    if (!t_open || t_HwMode != modMaster || t_SimTxLIN || t_SimRxLIN || pendingResponseHeaders) {
+        t_LastLinErr=errIllegalHardwareState;
+        return false;
     }
-    // Preserve the existing primitive for other, unqualified bitrates.
-    t_LastLinErr=t_pPLinApi->XmtWakeUp(t_hClient,t_hHw);
-    return t_LastLinErr==errOK;
+    TLINHardwareStatus hardware={};
+    t_LastLinErr=t_pPLinApi->GetStatus(t_hHw,&hardware);
+    if (t_LastLinErr!=errOK) return false;
+    if (hardware.Mode!=modMaster) { t_LastLinErr=errIllegalHardwareState; return false; }
+    int breakBits=0;
+    t_LastLinErr=t_pPLinApi->GetHardwareParam(t_hHw,hwpBreakLength,&breakBits,sizeof breakBits);
+    if (t_LastLinErr!=errOK) return false;
+    // LIN 2.0: header BREAK >= 13 bits and wake dominant time 250 us to 5 ms.
+    if (breakBits<13 || !t_baudrate ||
+        breakBits*1000000LL<250LL*t_baudrate || breakBits*1000000LL>5000LL*t_baudrate) {
+        t_LastLinErr=errWrongParameterValue;
+        return false;
+    }
+    UINT64 beforeWrite=0;
+    t_LastLinErr=t_pPLinApi->GetTargetTime(t_hHw,&beforeWrite);
+    if (t_LastLinErr!=errOK) return false;
+    if (earliestHeaderUs) *earliestHeaderUs=beforeWrite;
+    TLINMsg header={};
+    header.FrameId=0x3d;header.Length=8;
+    header.Direction=dirSubscriber;header.ChecksumType=cstClassic;
+    return sendRaw(header);
 }
 
 bool tstPeakLin::sendRaw(TLINMsg message)
@@ -920,7 +945,11 @@ bool tstPeakLin::sendRaw(TLINMsg message)
         t_LastLinErr=t_pPLinApi->CalculateChecksum(&message);
         if (t_LastLinErr!=errOK) return false;
     }
+    if(writeObserver)writeObserver(message,nullptr);
     t_LastLinErr=t_pPLinApi->Write(t_hClient,t_hHw,&message);
+    if(writeObserver)writeObserver(message,&t_LastLinErr);
+    if (t_LastLinErr==errOK && message.FrameId==0x7d && message.Direction==dirSubscriber && message.Length==8)
+        ++pendingResponseHeaders;
     return t_LastLinErr==errOK;
 }
 DWORD tstPeakLin::recvRaw(DWORD capacity, TLINRcvMsg messages[])
@@ -933,5 +962,11 @@ DWORD tstPeakLin::recvRaw(DWORD capacity, TLINRcvMsg messages[])
     t_LastLinErr=t_pPLinApi->ReadMulti(t_hClient,messages,limit,&count);
     if (t_LastLinErr!=errOK && t_LastLinErr!=errRcvQueueEmpty) return 0;
     if (count<0 || count>limit) { t_LastLinErr=errBufferInsufficient; return 0; }
+    for (int i=0;i<count && pendingResponseHeaders;++i) {
+        const auto &m=messages[i];
+        if (m.hHw==t_hHw && m.Type==mstStandard && m.FrameId==0x7d && m.Direction==dirSubscriber &&
+            m.Length==8 && m.ChecksumType==cstClassic)
+            --pendingResponseHeaders;
+    }
     return static_cast<DWORD>(count);
 }

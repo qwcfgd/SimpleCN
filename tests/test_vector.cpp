@@ -49,7 +49,11 @@ private slots:
     void linWakeChecksRoleOwnershipErrorsAndOptionalExport(){
         Fake f;QString e;auto lin=createVectorLin(f.runtime);communication::SoftwareChannelConfiguration c;c.bus=communication::Bus::Lin;c.bitrate=19200;
         QCOMPARE(lin->wakeUp(),LinWakeResult::Failed);QVERIFY(lin->open(lin->scan(e)[0],c,e));QCOMPARE(lin->wakeUp(),LinWakeResult::Failed);QCOMPARE(f.wakes,0);
-        QVERIFY(lin->signalConfigureMode(true));QCOMPARE(lin->wakeUp(),LinWakeResult::Sent);QCOMPARE(f.wakeHandle,Handle(7));QCOMPARE(f.wakeMask,f.lastMask);QCOMPARE(f.wakes,1);QVERIFY(f.requests.isEmpty());
+        QVERIFY(lin->signalConfigureMode(true));QCOMPARE(lin->wakeUp(),LinWakeResult::PulseQueued);QCOMPARE(f.wakeHandle,Handle(7));QCOMPARE(f.wakeMask,f.lastMask);QCOMPARE(f.wakes,1);QVERIFY(f.requests.isEmpty());
+        Event wake{};wake.tag=24;wake.channel=f.cfg.channels[1].channelIndex;f.rx.enqueue(wake); // external
+        wake.data.raw[0]=1;--wake.channel;f.rx.enqueue(wake); // other channel
+        TLINRcvMsg event{};QCOMPARE(lin->recvRaw(1,&event),DWORD(0));QCOMPARE(lin->wakeUp(),LinWakeResult::Failed);
+        ++wake.channel;f.rx.enqueue(wake);QCOMPARE(lin->recvRaw(1,&event),DWORD(1));QCOMPARE(event.Type,BYTE(mstBusWakeUp));
         f.wakeResult=101;QCOMPARE(lin->wakeUp(),LinWakeResult::Failed);QVERIFY(lin->lastErrorText().contains("xlLinWakeUp"));
         f.runtime->api.linWakeUp={};QCOMPARE(lin->wakeUp(),LinWakeResult::Unsupported);QCOMPARE(f.wakes,2);
         TLINMsg msg{};msg.FrameId=61;msg.Direction=dirSubscriber;msg.Length=8;msg.ChecksumType=cstClassic;QVERIFY(lin->sendRaw(msg));QCOMPARE(f.requests.last(),61);

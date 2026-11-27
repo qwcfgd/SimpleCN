@@ -750,16 +750,16 @@ void ChannelPage::exportFrames(){
     if(!ok)return;
     m_vm->flushMonitorFrames();
     const FrameBatch frames=scope==scopes[1]?m_frameProxy->filteredHistory():m_vm->frames()->history();
-    exportFrameBatch(frames,"导出当前缓存报文");
+    exportFrameBatch(frames,"导出当前缓存报文",scope==scopes[0]?m_vm->frames()->peakReads():PeakReadBatch{});
 }
-void ChannelPage::exportFrameBatch(const FrameBatch &frames,const QString &title){
+void ChannelPage::exportFrameBatch(const FrameBatch &frames,const QString &title,PeakReadBatch raw){
     QString filter="BLF (*.blf)";
     auto user=qEnvironmentVariable("USERNAME");if(user.isEmpty())user=qEnvironmentVariable("USER");if(user.isEmpty())user="user";
     const auto epoch=m_vm->frames()->startedEpochMs();const auto stamp=QDateTime::fromMSecsSinceEpoch(epoch?epoch:QDateTime::currentMSecsSinceEpoch()).toString("yyyyMMdd_HHmmss_zzz");
     QString name="Qt-SimpleCN_"+m_vm->settings().softwareId+"_"+user+"_"+stamp;name.replace(QRegularExpression("[<>:\"/\\\\|?*]"),"_");
     auto file=QFileDialog::getSaveFileName(this,Language::text(title),name,"BLF (*.blf);;ASC (*.asc);;CSV (*.csv)",&filter);
     if(file.isEmpty())return;if(QFileInfo(file).suffix().isEmpty())file+=filter.startsWith("BLF")?".blf":filter.startsWith("CSV")?".csv":".asc";QString error;
-    m_vm->log(m_vm->exportFrames(file,frames,error)?"已导出报文："+file:error);
+    m_vm->log(m_vm->exportFrames(file,frames,error,raw)?"已导出报文："+file:error);
 }
 void ChannelPage::exportLogs(){
     const auto file=QFileDialog::getSaveFileName(this,Language::text("导出运行日志"),m_vm->settings().softwareId+"-log.txt","Text (*.txt)");

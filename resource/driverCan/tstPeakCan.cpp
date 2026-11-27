@@ -384,8 +384,9 @@ bool tstPeakCan::sendRaw(TPCANMsg message)
     t_PCANStatus = SimTxCAN ? PCAN_ERROR_OK : t_pPCANBasic->Write(t_hHw,&message);
     return t_PCANStatus == PCAN_ERROR_OK;
 }
-DWORD tstPeakCan::recvRaw(DWORD capacity, TPCANMsg messages[], TPCANTimestamp timestamps[])
+DWORD tstPeakCan::recvRaw(DWORD capacity, TPCANMsg messages[], TPCANTimestamp timestamps[], bool *rawTail)
 {
+    if(rawTail)*rawTail=false;
     if (!messages || !capacity) return 0;
     if (!t_open) { t_PCANStatus = PCAN_ERROR_INITIALIZE; return 0; }
     capacity = std::min<DWORD>(capacity,CAN_MAX_MSG_NUM);
@@ -394,8 +395,20 @@ DWORD tstPeakCan::recvRaw(DWORD capacity, TPCANMsg messages[], TPCANTimestamp ti
     while (count < capacity) {
         TPCANMsg msg = {}; TPCANTimestamp time = {};
         t_PCANStatus = t_pPCANBasic->Read(t_hHw,&msg,&time);
-        if (t_PCANStatus != PCAN_ERROR_OK) break;
-        if (msg.LEN > 8) { t_PCANStatus = PCAN_ERROR_ILLDATA; break; }
+        const bool statusMessage=(msg.MSGTYPE & PCAN_MESSAGE_STATUS) &&
+            (t_PCANStatus==PCAN_ERROR_BUSLIGHT || t_PCANStatus==PCAN_ERROR_BUSHEAVY ||
+             t_PCANStatus==PCAN_ERROR_BUSOFF || t_PCANStatus==PCAN_ERROR_BUSPASSIVE);
+        if (t_PCANStatus != PCAN_ERROR_OK || msg.LEN > 8) {
+            // PCAN can return a valid status message alongside a bus error.
+            // Preserve its raw fields without feeding it into the protocol frame list.
+            if(rawTail && (statusMessage || t_PCANStatus==PCAN_ERROR_OK)){
+                messages[count]=msg;
+                if(timestamps)timestamps[count]=time;
+                *rawTail=true;
+            }
+            if(t_PCANStatus==PCAN_ERROR_OK)t_PCANStatus=PCAN_ERROR_ILLDATA;
+            break;
+        }
         messages[count] = msg;
         if (timestamps) timestamps[count] = time;
         ++count;

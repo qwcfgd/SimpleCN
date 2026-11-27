@@ -37,7 +37,7 @@ public:
     bool enableEcho();
     void *receiveEventHandle() const { return t_receiveEvent; }
     bool sendRaw(TPCANMsg message);
-    DWORD recvRaw(DWORD capacity, TPCANMsg messages[], TPCANTimestamp timestamps[] = nullptr);
+    DWORD recvRaw(DWORD capacity, TPCANMsg messages[], TPCANTimestamp timestamps[] = nullptr, bool *rawTail = nullptr);
 
 
     //following are the channel function:

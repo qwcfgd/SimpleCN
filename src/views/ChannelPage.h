@@ -33,7 +33,7 @@ private:
     void rememberDownloadFiles();
     void restoreDownloadFiles();
     void exportFrames();
-    void exportFrameBatch(const FrameBatch &,const QString &title);
+    void exportFrameBatch(const FrameBatch &,const QString &title,PeakReadBatch raw={});
     void configureColumnFilter(int,QPoint);
     void saveFrameFilter();
     void followLatestFrame();
