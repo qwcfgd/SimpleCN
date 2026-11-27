@@ -9,9 +9,10 @@ QByteArray SimulationKey::calculate(quint8 level,const QByteArray &seed,QString 
     QByteArray key=seed;for(int i=0;i<key.size();++i)key[i]=char(quint8(key[i])^0xa5^level);return key;
 }
 QJsonObject FlashProfile::toJson() const{
-    auto steps=stepEnabled,negative=negativeResponseChecks,timeouts=timeoutChecks;
+    auto steps=stepEnabled,negative=negativeResponseChecks,timeouts=timeoutChecks,errors=errorFrameChecks;
     for(const auto&s:downloadSteps()){
         const QString id=s.id;
+        errors[id]=checksErrorFrame(id);
         if(isT008()||isS32kV2())steps[id]=enabled(id);
         if(isT008()||isS32kV2()||requiresNegativeResponseCheck(id))negative[id]=checksNegativeResponse(id);
         if(isT008()||isS32kV2()||fixedUncheckedTimeout(id))timeouts[id]=checksTimeout(id);
@@ -19,7 +20,7 @@ QJsonObject FlashProfile::toJson() const{
     return {{"name",name},{"simulationOnly",simulationOnly},{"keyProvider",keyProvider},{"session",session},{"appSecurityLevel",appSecurityLevel},{"securityLevel",securityLevel},
         {"eraseRoutine",eraseRoutine},{"verifyRoutine",verifyRoutine},{"dependencyRoutine",dependencyRoutine},{"identityDid",identityDid},
         {"consecutiveFrameByteLimit",consecutiveFrameByteLimit},{"resetWaitMs",resetWaitMs},{"flow",flow},
-        {"stepEnabled",steps},{"negativeResponseChecks",negative},{"timeoutChecks",timeouts},
+        {"stepEnabled",steps},{"negativeResponseChecks",negative},{"timeoutChecks",timeouts},{"errorFrameChecks",errors},
         {"keyLibrary",keyLibrary},{"target",target}};
 }
 bool FlashProfile::fromJson(const QJsonObject &o,FlashProfile &out,QString &error){
@@ -36,7 +37,7 @@ bool FlashProfile::fromJson(const QJsonObject &o,FlashProfile &out,QString &erro
     if(p.target!="generic"&&!p.isT008()&&!p.isS32kV2())return bad();
     if(p.isS32kV2()&&p.flow=="legacy")return bad();
     if(p.flow!="legacy"&&p.flow!="app"&&p.flow!="boot")return bad();
-    for(const auto key:{"feedbackChecks","stepEnabled","negativeResponseChecks","timeoutChecks"})
+    for(const auto key:{"feedbackChecks","stepEnabled","negativeResponseChecks","timeoutChecks","errorFrameChecks"})
         if(o.contains(key)&&!o[key].isObject())return bad();
     const auto validateChecks=[&](const QJsonObject &checks){
         for(auto it=checks.begin();it!=checks.end();++it){
@@ -48,8 +49,9 @@ bool FlashProfile::fromJson(const QJsonObject &o,FlashProfile &out,QString &erro
     const auto legacyChecks=o["feedbackChecks"].toObject();
     p.stepEnabled=o["stepEnabled"].toObject();
     p.negativeResponseChecks=o.contains("negativeResponseChecks")?o["negativeResponseChecks"].toObject():legacyChecks;
+    p.errorFrameChecks=o["errorFrameChecks"].toObject();
     p.timeoutChecks=o["timeoutChecks"].toObject();
-    if(!validateChecks(p.stepEnabled)||!validateChecks(p.negativeResponseChecks)||!validateChecks(p.timeoutChecks))return bad();
+    if(!validateChecks(p.stepEnabled)||!validateChecks(p.negativeResponseChecks)||!validateChecks(p.timeoutChecks)||!validateChecks(p.errorFrameChecks))return bad();
     for(const auto &s:downloadSteps()){const QString id=s.id;
         if(requiresNegativeResponseCheck(id))p.negativeResponseChecks[id]=true;
         if(fixedUncheckedTimeout(id))p.timeoutChecks[id]=false;
@@ -220,12 +222,31 @@ bool FlashJob::start(const FirmwareImage &app,const FirmwareImage &driverFile,co
     if(m_calibIndex>=0)describe("Calib",m_segments[m_calibIndex],m_profile.calibBase,m_profile.calibLength,true);
     if(m_appIndex>=0)describe("App",m_segments[m_appIndex],m_appUsingB?m_profile.applicationBBase:m_profile.applicationEraseBase,m_profile.applicationEraseLength,true);
     for(const auto &part:m_appAlternate)describe("App B",part,m_profile.applicationBBase,m_profile.applicationEraseLength,true);
-    ++m_epoch;m_index=0;m_acked=0;m_ignored=0;m_running=true;m_unresolvedSids.clear();m_versionObservation.clear();
+    ++m_epoch;m_index=0;m_acked=0;m_ignored=0;m_running=true;m_wireStep.clear();m_wireLabel.clear();m_unresolvedSids.clear();m_versionObservation.clear();
     if(m_isV2)emit notice("ROM targets follow the configured 34/36/37/security loop, then one programming dependency check. Positive responses are ECU evidence only; no host signature verification is implemented.");
     if(m_profile.isT008()){
         m_wall.start();m_deadline.start(t008::JobDeadlineMs);emit notice("Reset is software reset, not physical POR.");
         preSteps(0);
     }else if(m_profile.flow=="legacy")enterProgramming();else preSteps(0);return true;
+}
+void FlashJob::confirmRequestStart(const QString &id){
+    if(!m_running)return;
+    m_wireStep=id;
+    m_wireLabel=id.isEmpty()?QString():stepText(id);
+}
+void FlashJob::stopForLinkFault(const QString &detail){
+    if(!m_running)return;
+    const QString reason=m_wireLabel+detail;
+    emit stepEvent(reason);
+    fail(reason);
+}
+void FlashJob::handleWireError(const QString &detail){
+    if(!ownsWireStep())return;
+    if(stopsOnWireError()){
+        const QString reason=m_wireLabel+QStringLiteral("错误帧 · ")+detail;
+        emit stepEvent(reason);
+        fail(reason);
+    }
 }
 void FlashJob::ask(const QByteArray &request,const QByteArray &expected,std::function<void(const QByteArray &)> next){
     if(!m_running||!withinDeadline())return;const auto epoch=m_epoch;
@@ -273,7 +294,7 @@ void FlashJob::step(const QString &id,const QByteArray &request,const QByteArray
         }
         QString why;if(m_profile.isT008()&&!t008::response(request,pdu,suppressed,why)){fail(id+": "+why);return;}
         next(pdu);
-    },suppressed,false,std::move(recoverableNegative)))fail("UDS request rejected by session");
+    },suppressed,false,std::move(recoverableNegative),id))fail("UDS request rejected by session");
 }
 void FlashJob::enterProgramming(){
     const QByteArray req=QByteArray(1,char(0x10))+char(m_profile.flow=="legacy"?m_profile.session:2);

@@ -213,6 +213,8 @@ void ChannelWorker::createSession() {
                 handleCanState(state,detail);return;
             }
         }
+        if(m_lin && m_running && health!=Health::Ready && health!=Health::Sleeping)
+            failPreview(detail);
         emit healthChanged(health,detail,m_reconnectingCan);
     });
     connect(m_session.get(),&SoftwareChannel::connectionClosing,this,[this](){
@@ -386,7 +388,16 @@ void ChannelWorker::beginPreviewRound() {
     emit taskChanged(TaskState::Running,0,QString("第 %1/%2 次 · 检查镜像").arg(m_round).arg(m_totalRounds));
     beginDownload();
 }
+void ChannelWorker::restoreCanErrorReception(){
+    if(!m_canDownloadReception)return;
+    if(m_can && !m_can->setDownloadErrorReception(false)){
+        emit logMessage("恢复 CAN 错误帧接收设置失败 · "+m_can->lastErrorText());
+        return;
+    }
+    m_canDownloadReception=false;
+}
 void ChannelWorker::failPreview(const QString &reason) {
+    restoreCanErrorReception();
     m_afterWake={};
     m_operations.release(OperationCoordinator::Task::Download);
     if(m_job)m_job->cancel();
@@ -394,6 +405,7 @@ void ChannelWorker::failPreview(const QString &reason) {
     emit taskChanged(TaskState::Failed,m_progress,"下载停止 · "+reason);emit logMessage((m_totalRounds>1?QString("\u91cd\u590d\u4e0b\u8f7d\u5df2\u505c\u6b62\uff1a"):QString("\u4e0b\u8f7d\u5df2\u505c\u6b62\uff1a"))+reason);
 }
 void ChannelWorker::completeRound(const QString &result) {
+    restoreCanErrorReception();
     if(!m_running)return;
     m_progress=100;
     emit logMessage(QString("第 %1/%2 次下载完成").arg(m_round).arg(m_totalRounds));
@@ -409,6 +421,8 @@ void ChannelWorker::completeRound(const QString &result) {
     }
 }
 void ChannelWorker::clearProtocol(){
+    m_firstLinWrite.clear();m_firstLinStep.clear();
+    restoreCanErrorReception();
     m_afterWake={};
     m_operations.release(OperationCoordinator::Task::Diagnostic);
     if(m_job)m_job->cancel();
@@ -417,6 +431,11 @@ void ChannelWorker::clearProtocol(){
 }
 void ChannelWorker::beginDownload(){
     clearProtocol();
+    if(m_lin && !m_settings.simulation){
+        QString detail;
+        const auto health=m_lin->hardwareHealth(&detail);
+        if(health!=Health::Ready && health!=Health::Sleeping){failPreview(detail);return;}
+    }
     boot::FirmwareImage application,driver,bootBundle,calibration;QString error;
     boot::FlashProfile profile;
     if(!boot::FlashProfile::fromJson(m_settings.downloadProfile,profile,error)){failPreview(error);return;}
@@ -492,6 +511,12 @@ void ChannelWorker::beginDownload(){
     const QPointer<boot::FlashJob> job(m_job.get());
     auto start=[this,job,application=std::move(application),driver=std::move(driver),bootBundle=std::move(bootBundle),calibration=std::move(calibration)]{
         if(!m_running||!job||job.data()!=m_job.get()||!m_session||m_session->state()!=ConnectionState::Connected)return;
+        if(m_can && !m_settings.simulation){
+            if(!m_can->setDownloadErrorReception(true)){
+                failPreview("开启 CAN 错误帧接收失败 · "+m_can->lastErrorText());return;
+            }
+            m_canDownloadReception=true;
+        }
         QString why;if(!job->start(application,driver,bootBundle,calibration,why))failPreview(why);
     };
     if(m_settings.bus==Bus::Lin&&!m_settings.simulation){
@@ -532,6 +557,10 @@ bool ChannelWorker::createProtocol(const boot::FlashProfile &profile,QString &er
             message.Direction=id==0x3c?dirPublisher:dirSubscriber;
             for(int i=0;i<8;++i)message.Data[i]=i<data.size()?BYTE(data[i]):BYTE(0xff);
             if(!m_lin->sendRaw(message)){error=m_lin->lastErrorText();return false;}
+            if(m_job && m_job->running() && id==0x3c && data.size()==8 && (quint8(data[1])>>4)<=1){
+                m_firstLinWrite=data;
+                m_firstLinStep=m_uds->activeDownloadStep();
+            }
             if(requestSlotMs > 0 && id == 0x3c && !m_receivePump->isActive()){
                 const int bitrate=m_settings.bitrate;
                 m_receivePump->start((boot::LinTransport::diagnosticFrameBits*1000+bitrate-1)/bitrate);
@@ -768,6 +797,7 @@ void ChannelWorker::beginManualDiagnostic(ChannelSettings settings,diag::Request
 }
 
 void ChannelWorker::cancelTask() {
+    restoreCanErrorReception();
     if(m_running || m_manualBusy || m_scanning)noteLinCancel("cancelTask");
     m_afterWake={};
     m_canStartAfterReconnect=false;
@@ -832,22 +862,43 @@ void ChannelWorker::receive() {
             const bool subscriber=m.Direction==dirSubscriber||m.Direction==dirSubscriberAutoLength;
             const auto frameId=quint8(m.FrameId&0x3f);
             // Fixed-length PLIN subscribers report the received byte count in Checksum on TIMEOUT.
-            const bool emptyPeakSlot = m.ErrorFlags == (MSG_ERR_SLAVE_NOT_RESPONDING | MSG_ERR_TIMEOUT)
-                && m.Direction == dirSubscriber && frameId == 0x3d && m.Length == 8
+            const bool peakResponseHeader = m.Direction == dirSubscriber && frameId == 0x3d && m.Length == 8
                 && m.ChecksumType == cstClassic && m.Checksum == 0
                 && m_session->configuration().hardwareKey.startsWith(QLatin1String("lin:"));
-            const bool absent = (subscriber && m.ErrorFlags == MSG_ERR_SLAVE_NOT_RESPONDING)
-                || (emptyPeakSlot && (wakeReceipt || (m_uds && m_uds->hasActiveRequest())));
+            const bool emptyPeakSlot = peakResponseHeader && m.ErrorFlags==(MSG_ERR_SLAVE_NOT_RESPONDING | MSG_ERR_TIMEOUT);
+            const bool publisherReadback=frameId==0x3c && m.Direction==dirPublisher && m.Length==8;
+            if(publisherReadback && !m_firstLinWrite.isEmpty() &&
+               QByteArray(reinterpret_cast<const char*>(m.Data),8)==m_firstLinWrite &&
+               (!timeout || m.Checksum>=8)){
+                if(m_job)m_job->confirmRequestStart(m_firstLinStep);
+                m_firstLinWrite.clear();
+            }
+            const bool inDownload=m_job && m_job->running();
+            const bool hasStep=inDownload && m_job->ownsWireStep();
+            const bool emptyVendorSlot=hasStep && m_lin->isEmptySlot(int(i));
+            // In an owned 0x3D slot PLIN TIMEOUT reports how many bytes arrived.
+            const bool zeroByteTimeout=hasStep && m_peakClockDomain && m.Direction==dirSubscriber && m.Checksum==0
+                && (m.ErrorFlags==MSG_ERR_TIMEOUT || m.ErrorFlags==(MSG_ERR_TIMEOUT|MSG_ERR_SLAVE_NOT_RESPONDING));
+            const bool absent = zeroByteTimeout || emptyVendorSlot || (subscriber && m.ErrorFlags == MSG_ERR_SLAVE_NOT_RESPONDING)
+                || (emptyPeakSlot && (wakeReceipt || hasStep || (m_uds && m_uds->hasActiveRequest())));
             // Length remains the expected size when TIMEOUT is set.
             const int dataLength=timeout?qMin(int(m.Checksum),8):noData?0:qMin(int(m.Length),8);
-            const bool malformedLength=m.Length<1||m.Length>8||(frameId==0x3c&&m.Length!=8);
+            const bool malformedLength=m.Length<1||m.Length>8||((frameId==0x3c || (hasStep && frameId==0x3d)) && m.Length!=8);
             const bool bad=(m.ErrorFlags!=0&&!absent)||(!m.ErrorFlags&&malformedLength);
             const bool valid=!m.ErrorFlags&&!malformedLength;
             // Only a publisher's full diagnostic frame can confirm our write.
-            // Matching payload errors still fail the existing pending request.
-            if(m_transport&&frameId==0x3c&&m.Direction==dirPublisher&&m.Length==8)
+            const bool discard=inDownload && bad;
+            QString frameDetail;
+            if(discard){
+                frameDetail=QString("LIN ID 0x%1 · ErrorFlags 0x%2 · length %3").arg(frameId,2,16,QChar('0')).arg(m.ErrorFlags,0,16).arg(dataLength);
+                if(m_peakClockDomain && (m.ErrorFlags & MSG_ERR_GND_SHORT))frameDetail+=QStringLiteral(" · PEAK 逐帧报告对 GND 短路");
+                if(m_peakClockDomain && (m.ErrorFlags & MSG_ERR_VBAT_SHORT))frameDetail+=QStringLiteral(" · PEAK 逐帧报告对 VBAT 短路");
+                if(m_lin->isWireError(int(i),m))m_job->handleWireError(frameDetail);
+                else m_job->stopForLinkFault(frameDetail+QStringLiteral(" · 通道或适配器事件"));
+            }
+            if(!discard && m_transport && publisherReadback)
                 m_transport->confirmTransmitted(QByteArray(reinterpret_cast<const char*>(m.Data),8),valid);
-            if(m_transport && !wakeReceipt)m_transport->receiveFrame(m.FrameId&0x3f,QByteArray(reinterpret_cast<const char*>(m.Data),dataLength),absent,bad);
+            if(!discard && m_transport && !wakeReceipt)m_transport->receiveFrame(m.FrameId&0x3f,QByteArray(reinterpret_cast<const char*>(m.Data),dataLength),absent,bad);
             FrameRecord record;stampFrame(record);record.channel=m_settings.softwareId;
             record.bus=signal::Bus::Lin;record.id=m.FrameId&0x3f;record.typed=true;
             record.payload=QByteArray(reinterpret_cast<const char*>(m.Data),dataLength);
@@ -867,6 +918,7 @@ void ChannelWorker::receive() {
             record.length=dataLength;
             if(valid||timeout)record.data=QString::fromLatin1(record.payload.toHex(' ')).toUpper();
             record.status=transmitReadback&&valid?"发送回读":(record.noResponse?"无从节点响应":(bad?QString("LIN 错误 0x%1").arg(m.ErrorFlags,0,16):"有效响应"));
+            if(!frameDetail.isEmpty())record.status=frameDetail;
             record.error=bad && !record.noResponse;record.warning=record.noResponse;
             // A scheduled publisher has no separate software TX record. Its
             // hardware echo is the transmission record, not a duplicate RxD.
@@ -929,7 +981,9 @@ void ChannelWorker::receive() {
             event.hardwareUs=(quint64(stamps[i].millis_overflow)<<32)*1000+quint64(stamps[i].millis)*1000+stamps[i].micros;
             event.arrivalUs=captureTimeUs();event.detail=event.valid?"CAN 总线帧":"CAN 状态/错误/非经典数据帧";events.append(event);
             int echoIndex=-1;
-            if(echo)for(int k=0;k<m_canEchoes.size();++k){const auto &pending=m_canEchoes[k];
+            const bool downloadWireError=!batchFault && m_job && m_job->running()
+                && frame.error && m_can->isWireError(int(i),m);
+            if(echo && !downloadWireError)for(int k=0;k<m_canEchoes.size();++k){const auto &pending=m_canEchoes[k];
                 if(pending.frame.id==frame.id&&pending.frame.extended==frame.extended&&pending.frame.data==frame.data){echoIndex=k;break;}
             }
             if(echoIndex>=0&&(echoIndex>0||!m_session||m_canEchoes[echoIndex].generation!=m_session->generation())){
@@ -941,8 +995,22 @@ void ChannelWorker::receive() {
             if(echoIndex>=0)timing.sendCallUs=m_canEchoes[echoIndex].sendCallUs;
             if(!traceRecord(echo?"TX echo":"RX",m.ID,m.LEN,frame.data,event.valid,timing))return;
             if(frame.error&&!supported&&m_signal)m_signal->linkFailed(event.detail);
-            if(echo){
-                if(echoIndex>=0){const auto pending=m_canEchoes[echoIndex];m_canEchoes.removeAt(echoIndex);if(!batchFault&&pending.owner)pending.owner->confirmTransmitted(pending.token);}
+            if(downloadWireError){
+                if(m_job->stopsOnWireError() && (!m_canEchoes.isEmpty() || (m_uds->hasActiveRequest() && m_udsWriteAttempted))){
+                    m_canUnresolved=true;m_recoveryCloseSucceeded=false;
+                }
+                m_job->handleWireError(QString("CAN · ID 0x%1 · type 0x%2").arg(m.ID,0,16).arg(m.MSGTYPE,0,16));
+            }else if(echo){
+                if(echoIndex>=0 && !event.valid && m_job && m_job->running()){
+                    m_canTransport->linkFailed("CAN transmit confirmation contained invalid controller or frame metadata");
+                }else if(echoIndex>=0){
+                    const auto pending=m_canEchoes.takeAt(echoIndex);
+                    if(!batchFault && pending.owner){
+                        if(event.valid && m_job && m_job->running() && !frame.data.isEmpty() && (quint8(frame.data[0])>>4)<=1)
+                            m_job->confirmRequestStart(m_uds->activeDownloadStep());
+                        pending.owner->confirmTransmitted(pending.token);
+                    }
+                }
             }else if(!batchFault&&m_canTransport){
                 if(frame.error)m_canTransport->linkFailed("CAN 总线错误或状态帧");
                 else m_canTransport->receiveFrame(frame);

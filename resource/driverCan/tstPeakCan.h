@@ -35,6 +35,7 @@ public:
     communication::Health hardwareHealth();
     bool isDeviceActive();
     bool enableEcho();
+    bool setDownloadErrorReception(bool active);
     void *receiveEventHandle() const { return t_receiveEvent; }
     bool sendRaw(TPCANMsg message);
     DWORD recvRaw(DWORD capacity, TPCANMsg messages[], TPCANTimestamp timestamps[] = nullptr, bool *rawTail = nullptr);
@@ -96,6 +97,7 @@ private:
 
     // hardware configuration
 
+    bool restoreErrorReception=false;
     TPCANHandle t_hHw, t_hAllHw[2]; //hardware ID and all hardware ID
     TPCANBaudrate t_baudrate; //baudrate
 

@@ -135,6 +135,7 @@ bool ChannelSettings::fromJson(const QJsonObject &o,ChannelSettings &result,QStr
         if(!s.downloadProfile.contains("negativeResponseChecks"))
             s.downloadProfile["negativeResponseChecks"]=s.downloadProfile.value("feedbackChecks").isObject()
                 ?s.downloadProfile.value("feedbackChecks"):defaults["negativeResponseChecks"];
+        if(!s.downloadProfile.contains("errorFrameChecks"))s.downloadProfile["errorFrameChecks"]=defaults["errorFrameChecks"];
         if(!s.downloadProfile.contains("timeoutChecks"))s.downloadProfile["timeoutChecks"]=defaults["timeoutChecks"];
         s.downloadProfile.remove("feedbackChecks");
     }

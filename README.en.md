@@ -6,7 +6,7 @@
 
 [简体中文](README.md) · English · [GitHub: SimpleCN](https://github.com/qwcfgd/SimpleCN)
 
-![Version](https://img.shields.io/badge/version-1.66-2563eb)
+![Version](https://img.shields.io/badge/version-1.67-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Windows_x64-475569)
 ![Qt](https://img.shields.io/badge/Qt-5_%7C_6-41cd52)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
@@ -18,6 +18,11 @@ Developed with assistance from OpenAI Codex.
 </div>
 
 For physical LIN downloads at 19,200 bit/s with automatic diagnostic scheduling, the target interval is 10 ms for request headers (0x3C) and 20 ms for response headers (0x3D). Transmit confirmation and host scheduling can extend the observed interval.
+
+## V1.67
+
+- Each CAN and LIN download step now has an Error frame checkbox. It defaults to checked, including when an older configuration omits the setting. The checkbox is disabled when the step is disabled.
+- When checked, a frame error on the selected channel stops the download and identifies the active step in the log. When cleared, the monitor still records bad frames and the host continues waiting for a valid response on the existing schedule. Negative responses and timeouts follow their own settings. Driver failures, disconnections, and independent channel faults still stop downloads.
 
 ## V1.66
 

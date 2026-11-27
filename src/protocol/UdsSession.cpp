@@ -30,10 +30,10 @@ UdsSession::UdsSession(DiagnosticTransport &transport,SessionOptions options,QOb
     });
     if(options.testerPresentMs>0)m_keepalive.start(options.testerPresentMs);
 }
-bool UdsSession::request(QByteArray b,QByteArray expected,Reply reply,bool suppressed,bool functional,QByteArray recoverableNegative){
+bool UdsSession::request(QByteArray b,QByteArray expected,Reply reply,bool suppressed,bool functional,QByteArray recoverableNegative,QString downloadStep){
     if(b.isEmpty()||b.size()>maximumPdu()||m_queue.size()>=32)return false;
     if(expected.isEmpty())expected=QByteArray(1,char(quint8(b[0])+0x40));
-    m_queue.enqueue({std::move(b),std::move(expected),std::move(reply),suppressed,functional,std::move(recoverableNegative)});
+    m_queue.enqueue({std::move(b),std::move(expected),std::move(reply),suppressed,functional,std::move(recoverableNegative),std::move(downloadStep)});
     emit activityChanged(true);
     const auto epoch=m_epoch;QTimer::singleShot(0,this,[this,epoch]{if(epoch==m_epoch)pump();});return true;
 }

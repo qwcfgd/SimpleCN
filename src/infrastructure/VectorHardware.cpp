@@ -44,6 +44,8 @@ public:
     unsigned long lastErrorCode()const override{return code;}
     QString lastErrorText()const override{return p.error;}
     CanBusState busState()override{return p.handle<0||!p.error.isEmpty()?CanBusState::Fatal:state;}
+    QVector<bool> wireErrors;
+    bool isWireError(int index,const TPCANMsg &)const override{return wireErrors.value(index);}
     bool enableEcho()override{return p.active;}
     bool sendRaw(TPCANMsg msg)override{
         if(!p.active||msg.LEN>8||(msg.MSGTYPE&~(PCAN_MESSAGE_EXTENDED|PCAN_MESSAGE_RTR))||msg.ID>((msg.MSGTYPE&PCAN_MESSAGE_EXTENDED)?0x1fffffffu:0x7ffu)){code=PCAN_ERROR_ILLPARAMVAL;p.error="Invalid classic CAN frame or closed Vector channel";return false;}
@@ -52,10 +54,13 @@ public:
         if(ok&&count!=1)p.error="Vector transmit queue did not accept the frame";code=ok&&count==1?PCAN_ERROR_OK:PCAN_ERROR_XMTFULL;return code==PCAN_ERROR_OK;
     }
     DWORD recvRaw(DWORD capacity,TPCANMsg*out,TPCANTimestamp*stamps)override{
+        wireErrors.clear();
         if(!p.active||(!out&&capacity)){code=PCAN_ERROR_INITIALIZE;return 0;}DWORD n=0;
         for(unsigned budget=0;n<capacity&&budget<1024;++budget){Event event{};if(!p.receive(event))break;if(event.channel!=p.index)continue;
             if(event.tag==4){const quint8 s=event.data.raw[0];state=(s&1)?CanBusState::BusOff:(s&6)?CanBusState::Warning:CanBusState::Ready;continue;}
             if(event.tag!=1)continue;const auto&m=event.data.can;if(m.flags&0x80)continue;
+            // An independently reported RX overrun takes priority over a wire error.
+            wireErrors.append((m.flags&1) && !(m.flags&2) && !(event.flags&1));
             auto&f=out[n];f={};f.ID=m.id&0x1fffffffu;f.LEN=quint8(qMin<quint16>(m.dlc,8));
             f.MSGTYPE=TPCANMessageType(((m.id&0x80000000u)?PCAN_MESSAGE_EXTENDED:0)|((m.flags&0x10)?PCAN_MESSAGE_RTR:0)|((m.flags&0x40)?PCAN_MESSAGE_ECHO:0)|((m.flags&3)||m.dlc>8||(event.flags&1)?PCAN_MESSAGE_ERRFRAME:0));std::memcpy(f.DATA,m.data,8);
             if(stamps){const quint64 us=event.ns/1000,ms=us/1000;stamps[n].millis=DWORD(ms);stamps[n].millis_overflow=WORD(ms>>32);stamps[n].micros=WORD(us%1000);}++n;
@@ -130,20 +135,30 @@ public:
         else {if(!switchResponse(id,false)||!setDefinition(id,autoLength?0xff:msg.Length,msg.ChecksumType==cstAuto?0xff:msg.ChecksumType==cstClassic?0:1))return false;}
         if(role==modSlave)return true;QMutexLocker lock(&p.runtime->mutex);return p.checked(p.runtime->api.linRequest(p.handle,p.mask,id,0),"xlLinSendRequest");
     }
+    enum class RxKind { Other,Frame,NoAnswer };
+    QVector<RxKind> rxKinds;
+    bool isWireError(int index,const TLINRcvMsg &)const override{return rxKinds.value(index)==RxKind::Frame;}
+    bool isEmptySlot(int index)const override{return rxKinds.value(index)==RxKind::NoAnswer;}
     DWORD recvRaw(DWORD capacity,TLINRcvMsg*out)override{
+        rxKinds.clear();
         if(!p.active||(!out&&capacity)){fail("Vector LIN channel is closed or receive buffer is invalid");return 0;}DWORD n=0;
         for(unsigned budget=0;n<capacity&&budget<1024;++budget){Event event{};if(!p.receive(event))break;if(event.channel!=p.index)continue;
             // XL_LIN_WAKEUP with XL_LIN_WAKUP_INTERNAL is the local transmitter event.
             if(event.tag==24 && (event.data.raw[0]&1) && wakePending){
+                rxKinds.append(RxKind::Other);
                 auto &wake=out[n++];wake={};wake.Type=mstBusWakeUp;wake.TimeStamp=event.ns/1000;
                 wake.ErrorFlags=event.flags;wakePending=false;continue;
             }
             if(event.tag!=20&&event.tag!=21&&event.tag!=22&&event.tag!=23)continue;
+            // XL_LIN_ERRMSG / SYNCERR are frame errors; NOANS is an empty response slot.
+            const bool overrun=event.flags&1;
+            rxKinds.append(overrun?RxKind::Other:event.tag==23?RxKind::NoAnswer:RxKind::Frame);
             auto&f=out[n++];f={};f.Type=mstStandard;f.TimeStamp=event.ns/1000;
             if(event.tag!=20){f.FrameId=event.data.raw[0]&0x3f;f.ErrorFlags=0x10000;continue;}
             const auto&m=event.data.lin;f.FrameId=m.id&0x3f;f.Length=quint8(qMin<int>(m.dlc,8));f.Direction=(m.flags&0x40)?dirPublisher:dirSubscriber;f.Checksum=m.crc;std::memcpy(f.Data,m.data,8);
             auto checksum=[&](unsigned sum){for(int k=0;k<f.Length;++k){sum+=m.data[k];if(sum>255)sum-=255;}return quint8(~sum);};
             const bool classic=checksum(0)==m.crc,enhanced=f.FrameId<60&&checksum(signal::SignalCodec::linPid(f.FrameId))==m.crc;f.ChecksumType=classic?cstClassic:cstEnhanced;
+            // XL_LIN_MSGFLAG_CRCERROR (0x81) belongs to the LIN frame.
             if((!classic&&!enhanced)||(m.flags&0x81)||m.dlc>8||(event.flags&1))f.ErrorFlags=0x10000;
         }return n;
     }

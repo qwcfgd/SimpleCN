@@ -32,12 +32,13 @@ struct FlashProfile {
     bool isT008()const{return target==t008::Target;}
     bool isS32kV2()const{return target=="s32k144-t008-t009-v2"||target=="s32k144-t010-v2";}
     bool isT010V2()const{return target=="s32k144-t010-v2";}
-    QJsonObject stepEnabled,negativeResponseChecks,timeoutChecks;
+    QJsonObject stepEnabled,negativeResponseChecks,timeoutChecks,errorFrameChecks;
     bool enabled(const QString &id)const{
         for(const auto &step:downloadSteps())if(id==step.id)return stepEnabled.value(id).toBool(flow!="boot"||!step.appOnly);
         return false;
     }
     bool checksNegativeResponse(const QString &step)const{return requiresNegativeResponseCheck(step)||negativeResponseChecks.value(step).toBool(isT008()||flow=="legacy");}
+    bool checksErrorFrame(const QString &id) const{return errorFrameChecks.value(id).toBool(true);}
     bool checksTimeout(const QString &step)const{
         return !suppressesPositiveResponse(step)&&!fixedUncheckedTimeout(step)&&timeoutChecks.value(step).toBool(isT008()||flow=="legacy");
     }
@@ -62,6 +63,11 @@ public:
     bool start(const FirmwareImage &application,const FirmwareImage &driver,const FirmwareImage &bootBundle,QString &error);
     bool start(const FirmwareImage &application,const FirmwareImage &driver,const FirmwareImage &bootBundle,const FirmwareImage &calibration,QString &error);
     void cancel();
+    void confirmRequestStart(const QString &id);
+    void stopForLinkFault(const QString &detail);
+    void handleWireError(const QString &detail);
+    bool stopsOnWireError() const{return ownsWireStep() && m_profile.checksErrorFrame(m_wireStep);}
+    bool ownsWireStep() const{return m_running && !m_wireStep.isEmpty();}
     bool running() const{return m_running;}
 signals:
     void progress(int,QString);
@@ -100,6 +106,7 @@ private:
     bool m_bootUsingB=false,m_appUsingB=false;
     quint8 m_sequence=1;quint64 m_epoch=0;qint64 m_total=0,m_acked=0;bool m_running=false;
     int m_ignored=0,m_transferPacket=0;bool m_isV2=false;
+    QString m_wireStep,m_wireLabel;
     QSet<quint8> m_unresolvedSids;
     t008::Plan m_targetPlan,m_alternateTargetPlan;QTimer m_deadline;QElapsedTimer m_wall;QString m_versionObservation;
 };

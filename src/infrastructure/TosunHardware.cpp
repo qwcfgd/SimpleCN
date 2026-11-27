@@ -36,6 +36,8 @@ public:
     }
     bool close(QString &e)override{const bool ok=p.close();e=p.error;return ok;}
     communication::Health health(QString &e)override{return p.health(e);}
+    QVector<bool> wireErrors;
+    bool isWireError(int index,const TPCANMsg &)const override{return wireErrors.value(index);}
     bool enableEcho()override{return p.handle!=0;}
     bool sendRaw(TPCANMsg message)override{
         if(!p.handle||message.LEN>8||message.ID>((message.MSGTYPE&PCAN_MESSAGE_EXTENDED)?0x1fffffffu:0x7ffu)||(message.MSGTYPE&PCAN_MESSAGE_FD)){p.error="同星经典 CAN 帧无效或通道未打开";code=PCAN_ERROR_ILLPARAMVAL;return false;}
@@ -57,8 +59,9 @@ public:
         }
         if(!p.result(status,"CAN 接收")){code=PCAN_ERROR_UNKNOWN;return 0;}
         if(count<0||count>data.size()){code=PCAN_ERROR_UNKNOWN;p.error="同星 SDK 返回异常 CAN 帧数";return 0;}
-        code=PCAN_ERROR_OK;
+        code=PCAN_ERROR_OK;wireErrors.resize(count);
         for(int n=0;n<count;++n){const auto &in=data[n];auto &out=messages[n];out={};out.ID=in.id;out.LEN=in.length;
+            wireErrors[n]=(in.properties&128)!=0;
             out.MSGTYPE=TPCANMessageType(((in.properties&4)?PCAN_MESSAGE_EXTENDED:0)|((in.properties&2)?PCAN_MESSAGE_RTR:0)|((in.properties&1)?PCAN_MESSAGE_ECHO:0)|((in.properties&128)||in.length>8?PCAN_MESSAGE_ERRFRAME:0)|((in.fdProperties&1)?PCAN_MESSAGE_FD:0));
             std::memcpy(out.DATA,in.data,8);
             if(stamps){const auto ms=in.us/1000;stamps[n].millis=DWORD(ms);stamps[n].millis_overflow=WORD(ms>>32);stamps[n].micros=WORD(in.us%1000);}

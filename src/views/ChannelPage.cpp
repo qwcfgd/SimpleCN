@@ -436,41 +436,45 @@ void ChannelPage::editDownload() {
     downloadRowLayout->addWidget(label("下载起始流程"));downloadRowLayout->addWidget(flow,1);
     form->addRow(downloadRow);
     auto checksWidget=new QWidget;auto grid=new QGridLayout(checksWidget);grid->setContentsMargins(0,0,0,0);
-    QVector<QCheckBox*> stepEnables,negativeChecks,timeoutChecks;
+    QVector<QCheckBox*> stepEnables,negativeChecks,timeoutChecks,errorFrameChecks;
     checksWidget->setStyleSheet("QCheckBox::indicator:disabled { background-color:#D9DDE3;border:1px solid #AAB2BE;border-radius:2px; } QCheckBox:disabled { color:#8993A2; }");
     for(int group=0;group<2;++group){
-        const int base=group*5;
-        for(int col=0;col<4;++col){auto header=label(QStringList({"步骤","使能","负响应","超时"})[col]);header->setObjectName("feedbackHeader");grid->addWidget(header,0,base+col);}
-        if(group==0)grid->setColumnMinimumWidth(4,16);
+        const int base=group*6;
+        for(int col=0;col<5;++col){auto header=label(QStringList({"步骤","使能","负响应","超时","错误帧"})[col]);header->setObjectName("feedbackHeader");grid->addWidget(header,0,base+col);}
+        if(group==0)grid->setColumnMinimumWidth(5,16);
     }
     QVector<QLabel*> stepLabels;
     const int rowsPerColumn=(boot::downloadSteps().size()+1)/2;
     for(int i=0;i<boot::downloadSteps().size();++i){
         const auto &step=boot::downloadSteps()[i];
         const auto id=QString::fromLatin1(step.id);
-        const int group=i/rowsPerColumn,base=group*5,row=i%rowsPerColumn+1;
+        const int group=i/rowsPerColumn,base=group*6,row=i%rowsPerColumn+1;
         auto stepLabel=label(QString("%1 · %2").arg(i+1,2,10,QChar('0')).arg(QString::fromUtf8(step.label)));
         stepLabel->setObjectName("step_"+id);stepLabels.append(stepLabel);
         auto stepEnable=new QCheckBox;stepEnable->setObjectName("enable_"+id);
         stepEnable->setChecked(profile.enabled(id));
-        stepEnable->setToolTip("勾选：下载时执行该步骤。未勾选：跳过该步骤，负响应和超时判定不可用。");
+        stepEnable->setToolTip("勾选：下载时执行该步骤。未勾选：跳过该步骤，负响应、超时和错误帧判定不可用。");
         auto negative=new QCheckBox;negative->setObjectName("negative_"+id);
         negative->setChecked(profile.checksNegativeResponse(id));
         negative->setToolTip("勾选：收到除 78 以外的负响应时停止。未勾选：忽略该负响应并继续流程。");
         auto timeout=new QCheckBox;timeout->setObjectName("timeout_"+id);
         timeout->setChecked(profile.checksTimeout(id));
         timeout->setToolTip(boot::suppressesPositiveResponse(id)?"本步骤开启正响应抑制，超时判定不可用。":"勾选：达到 P2/P2* 或总时限时停止。未勾选：达到时限后忽略该超时并继续下一步。");
+        auto errorFrame=new QCheckBox;errorFrame->setObjectName("errorFrame_"+id);
+        errorFrame->setChecked(profile.checksErrorFrame(id));
+        errorFrame->setToolTip("勾选：本步骤遇到通道错误帧时停止下载。未勾选：记录并丢弃错误帧，继续等待有效响应。");
+        grid->addWidget(errorFrame,row,base+4,Qt::AlignHCenter);
         grid->addWidget(stepLabel,row,base);
         grid->addWidget(stepEnable,row,base+1,Qt::AlignHCenter);
         grid->addWidget(negative,row,base+2,Qt::AlignHCenter);
         grid->addWidget(timeout,row,base+3,Qt::AlignHCenter);
-        stepEnables.append(stepEnable);negativeChecks.append(negative);timeoutChecks.append(timeout);
+        stepEnables.append(stepEnable);negativeChecks.append(negative);timeoutChecks.append(timeout);errorFrameChecks.append(errorFrame);
     }
-    grid->setColumnStretch(0,1);grid->setColumnStretch(5,1);
+    grid->setColumnStretch(0,1);grid->setColumnStretch(6,1);
     const auto selectedPolicy=[flow]{
         boot::FlashProfile selected;selected.flow=flow->currentData().toString();return selected;
     };
-    auto enableChecks=[stepEnables,negativeChecks,timeoutChecks]{
+    auto enableChecks=[stepEnables,negativeChecks,timeoutChecks,errorFrameChecks]{
         for(int i=0;i<negativeChecks.size();++i){
             stepEnables[i]->setEnabled(true);
             const bool active=stepEnables[i]->isChecked();
@@ -481,6 +485,7 @@ void ChannelPage::editDownload() {
             const bool fixedTimeout=boot::suppressesPositiveResponse(id)||boot::fixedUncheckedTimeout(id);
             if(fixedTimeout){QSignalBlocker blocker(timeoutChecks[i]);timeoutChecks[i]->setChecked(false);}
             timeoutChecks[i]->setEnabled(active&&!fixedTimeout);
+            errorFrameChecks[i]->setEnabled(active);
         }
     };
     for(auto stepEnable:stepEnables)connect(stepEnable,&QCheckBox::toggled,&dialog,[enableChecks](bool){enableChecks();});
@@ -494,7 +499,7 @@ void ChannelPage::editDownload() {
     });
     enableChecks();
 
-    auto policy=label("使能：勾选后执行该步骤；未勾选时跳过，且负响应/超时判定不可操作。负响应或超时判定勾选时遇到对应异常停止，未勾选时忽略并继续。App 默认全部使能；Boot 默认启用 10 03，其余 10 02 之前的步骤默认不启用。下载开始后本页不可修改。");policy->setWordWrap(true);policy->setObjectName("muted");
+    auto policy=label("使能：勾选后执行该步骤；未勾选时跳过，且负响应、超时和错误帧判定不可操作。勾选的判定遇到对应异常时停止。未勾选错误帧时丢弃坏帧并继续等待。App 默认全部使能；Boot 默认启用 10 03，其余 10 02 之前的步骤默认不启用。下载开始后本页不可修改。");policy->setWordWrap(true);policy->setObjectName("muted");
     const auto defaults=ChannelSettings::defaults(original.bus);
     boot::FlashProfile defaultProfile;QString defaultError;boot::FlashProfile::fromJson(defaults.downloadProfile,defaultProfile,defaultError);
     auto enabled=new QCheckBox("重复下载使能（默认关闭）");enabled->setObjectName("repeatDownloadEnabled");enabled->setChecked(original.repeatDownloadEnabled);
@@ -560,10 +565,11 @@ void ChannelPage::editDownload() {
         s.calibAddress=calibAddress->text().trimmed();s.calibLength=calibLength->text().trimmed();
         if(txId){s.downloadTxId=txId->text();s.downloadRxId=rxId->text();}
         if(nad)s.nad=nad->text().trimmed().toUpper();
-        profile.flow=flow->currentData().toString();profile.stepEnabled={};profile.negativeResponseChecks={};profile.timeoutChecks={};
+        profile.flow=flow->currentData().toString();profile.stepEnabled={};profile.negativeResponseChecks={};profile.timeoutChecks={};profile.errorFrameChecks={};
         for(int i=0;i<stepEnables.size();++i){
             profile.stepEnabled[boot::downloadSteps()[i].id]=stepEnables[i]->isChecked();
             profile.negativeResponseChecks[boot::downloadSteps()[i].id]=negativeChecks[i]->isChecked();
+            profile.errorFrameChecks[boot::downloadSteps()[i].id]=errorFrameChecks[i]->isChecked();
             profile.timeoutChecks[boot::downloadSteps()[i].id]=timeoutChecks[i]->isChecked();
         }
         profile.keyLibrary=keyLibrary->text();profile.simulationOnly=false;

@@ -112,6 +112,10 @@ private:
     quint64 m_wakeEarliestHeaderUs=0;
     LinWakeResult m_wakeRequest=LinWakeResult::Unsupported;
     std::function<void()> m_afterWake;
+    QByteArray m_firstLinWrite;
+    QString m_firstLinStep;
+    bool m_canDownloadReception=false;
+    void restoreCanErrorReception();
     QTimer *m_receive=nullptr,*m_receivePump=nullptr,*m_scan=nullptr,*m_repeat=nullptr;
     QObject *m_canNotifier=nullptr;
     qint64 m_traceOffsetUs=0,m_lastCaptureUs=0;

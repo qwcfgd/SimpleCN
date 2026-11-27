@@ -69,6 +69,7 @@ bool tstPeakCan::startDevice()
         if(t_pPCANBasic->SetValue(t_hHw,PCAN_RECEIVE_EVENT,&receiveEvent,sizeof(receiveEvent))==PCAN_ERROR_OK)t_receiveEvent=receiveEvent;
         else CloseHandle(receiveEvent);
     }
+    restoreErrorReception=false;
     t_open = true;
     return true;
 }
@@ -364,6 +365,22 @@ QString tstPeakCan::lastErrorText() const
     char text[256] = {};
     t_pPCANBasic->GetErrorText(t_PCANStatus,0,text);
     return QString("PCAN 0x%1: %2").arg(t_PCANStatus,0,16).arg(QString::fromLocal8Bit(text));
+}
+bool tstPeakCan::setDownloadErrorReception(bool active)
+{
+    if(!active && !restoreErrorReception)return true;
+    if(!t_open){t_PCANStatus=PCAN_ERROR_INITIALIZE;return false;}
+    DWORD value=PCAN_PARAMETER_OFF;
+    if(active){
+        t_PCANStatus=t_pPCANBasic->GetValue(t_hHw,PCAN_ALLOW_ERROR_FRAMES,&value,sizeof(value));
+        if(t_PCANStatus!=PCAN_ERROR_OK)return false;
+        if(value==PCAN_PARAMETER_ON)return true;
+        value=PCAN_PARAMETER_ON;
+    }
+    t_PCANStatus=t_pPCANBasic->SetValue(t_hHw,PCAN_ALLOW_ERROR_FRAMES,&value,sizeof(value));
+    if(t_PCANStatus!=PCAN_ERROR_OK)return false;
+    restoreErrorReception=active;
+    return true;
 }
 bool tstPeakCan::enableEcho()
 {

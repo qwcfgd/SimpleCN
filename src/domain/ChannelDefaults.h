@@ -20,10 +20,10 @@ struct ChannelPageInitialValues {
         return enabled;
     }
     static QJsonObject initialDownloadProfile(){
-        QJsonObject checks,timeouts;for(const auto &step:boot::downloadSteps()){
-            checks[step.id]=feedbackChecked;timeouts[step.id]=!boot::suppressesPositiveResponse(step.id)&&feedbackChecked;
+        QJsonObject checks,timeouts,errors;for(const auto &step:boot::downloadSteps()){
+            errors[step.id]=true;checks[step.id]=feedbackChecked;timeouts[step.id]=!boot::suppressesPositiveResponse(step.id)&&feedbackChecked;
         }
-        return {{"flow","app"},{"stepEnabled",initialStepEnabled("app")},{"negativeResponseChecks",checks},{"timeoutChecks",timeouts},{"simulationOnly",false},
+        return {{"flow","app"},{"stepEnabled",initialStepEnabled("app")},{"negativeResponseChecks",checks},{"timeoutChecks",timeouts},{"errorFrameChecks",errors},{"simulationOnly",false},
             {"keyProvider","seed-as-key"},{"keyLibrary",""},{"appSecurityLevel",0x01},{"securityLevel",0x11},
             {"eraseRoutine",0xff00},{"verifyRoutine",0xdd02},{"dependencyRoutine",0xff01},
             {"identityDid",0xf180},{"consecutiveFrameByteLimit",4095},{"resetWaitMs",1000}};

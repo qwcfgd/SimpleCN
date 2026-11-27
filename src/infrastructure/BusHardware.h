@@ -16,6 +16,10 @@ public:
     virtual unsigned long lastErrorCode()const=0;
     virtual QString lastErrorText()const=0;
     virtual bool enableEcho()=0;
+    virtual bool setDownloadErrorReception(bool){return true;}
+    virtual bool isWireError(int,const TPCANMsg &frame) const{
+        return (frame.MSGTYPE & PCAN_MESSAGE_ERRFRAME) && !(frame.MSGTYPE & PCAN_MESSAGE_STATUS);
+    }
     virtual void *receiveEventHandle() const { return nullptr; }
     virtual CanBusState classifyStatus(unsigned long) const {return CanBusState::Unsupported;}
     virtual CanBusState statusFrame(const TPCANMsg&) const {return CanBusState::Unsupported;}
@@ -32,6 +36,10 @@ public:
     virtual unsigned long lastErrorCode()const=0;
     virtual QString lastErrorText()const=0;
     virtual void setWriteObserver(tstPeakLin::WriteObserver){}
+    // Called on a malformed standard frame. Backends that multiplex controller
+    // events into this representation must distinguish them before dispatch.
+    virtual bool isWireError(int,const TLINRcvMsg &frame) const{return frame.Type==mstStandard;}
+    virtual bool isEmptySlot(int) const{return false;}
     virtual bool clearMsg()=0;
     virtual bool clearMsgObserved(const tstPeakLin::DrainObserver &){return clearMsg();}
     virtual int getDevMode()const=0;

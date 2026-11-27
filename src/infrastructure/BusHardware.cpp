@@ -19,6 +19,7 @@ public:
     unsigned long lastErrorCode()const override{return driver.lastErrorCode();}
     QString lastErrorText()const override{return driver.lastErrorText();}
     bool enableEcho()override{return driver.enableEcho();}
+    bool setDownloadErrorReception(bool active)override{return driver.setDownloadErrorReception(active);}
     void *receiveEventHandle()const override{return driver.receiveEventHandle();}
     CanBusState classifyStatus(unsigned long status)const override{
         const auto allowed=PCAN_ERROR_ANYBUSERR|PCAN_ERROR_QRCVEMPTY;
@@ -90,6 +91,8 @@ public:
     DWORD recvRaw(DWORD n,TPCANMsg*m,TPCANTimestamp*t)override{return choice.active->recvRaw(n,m,t);}
     DWORD recvRawWithTail(DWORD n,TPCANMsg*m,TPCANTimestamp*t,bool &tail)override{return choice.active->recvRawWithTail(n,m,t,tail);}
     bool enableEcho()override{return choice.active->enableEcho();}
+    bool setDownloadErrorReception(bool active)override{return choice.active->setDownloadErrorReception(active);}
+    bool isWireError(int index,const TPCANMsg &f)const override{return choice.active->isWireError(index,f);}
     void *receiveEventHandle()const override{return choice.active->receiveEventHandle();}
     CanBusState classifyStatus(unsigned long status)const override{return choice.active->classifyStatus(status);}
     CanBusState busState()override{return choice.active->busState();}
@@ -103,6 +106,8 @@ public:
     bool sendRaw(TLINMsg m)override{return choice.active->sendRaw(m);}
     DWORD recvRaw(DWORD n,TLINRcvMsg*m)override{return choice.active->recvRaw(n,m);}
     void setWriteObserver(tstPeakLin::WriteObserver observer)override{choice.active->setWriteObserver(std::move(observer));}
+    bool isWireError(int index,const TLINRcvMsg &f)const override{return choice.active->isWireError(index,f);}
+    bool isEmptySlot(int index)const override{return choice.active->isEmptySlot(index);}
     bool clearMsg()override{return choice.active->clearMsg();}
     bool clearMsgObserved(const tstPeakLin::DrainObserver &observer)override{return choice.active->clearMsgObserved(observer);}
     int getDevMode()const override{return choice.active->getDevMode();}
